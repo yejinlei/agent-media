@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>在线分析器 · 把音视频文件拆开看</title>
+<meta name="description" content="在浏览器本地解析 MP4/TS/FLV/MKV/WAV/AVI 容器、H.264/AAC/HEVC 码流与 RTP/RTCP/SIP/RTSP/SDP 协议；拖入文件即可查看 box 树、PID 表、SPS 字段与协议头部，文件不上传。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html">GB28181</a>
+    <a href="player.html">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html">WASM</a>
+    <a href="lab.html">实验室</a>
+    <a href="analyze.html" class="cur">分析器</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.6rem 0 3rem">
+  <div class="wrap">
+    <h1>在线<em>分析器</em><br>把音视频文件拆开看</h1>
+    <p>拖入一个本地文件，逐层拆开容器、码流和协议：MP4 的 box 树、TS 的 PID 与 PCR、FLV 的 tag、MKV 的 EBML；H.264 SPS 的 Exp-Golomb、AAC 的位域；RTP/RTCP 头部与 SIP/RTSP/SDP 文本。所有字节都在你的浏览器里处理，<strong>文件不离开本机</strong>。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#lab">🔬 直接打开分析台</a>
+      <a class="btn btn-ghost" href="#container">📦 看懂容器</a>
+      <a class="btn btn-ghost" href="#codec">🎞️ 看懂码流</a>
+      <a class="btn btn-ghost" href="#protocol">📡 看懂协议</a>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="n">6</div><div class="l">可解析的容器家族</div></div>
+      <div class="stat"><div class="n">3</div><div class="l">码流配置解析</div></div>
+      <div class="stat"><div class="n">5</div><div class="l">文本 / 二进制协议</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">上传到服务器的字节</div></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#intuition">浏览器为什么能本地解析</a>
+    <a href="#lab">分析台</a>
+    <a href="#container">容器解析原理</a>
+    <a href="#codec">码流解析原理</a>
+    <a href="#protocol">协议解析原理</a>
+    <a href="#limits">能力边界与隐私</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="intuition">
+  <h2>🧠 为什么浏览器能本地解析 <span class="tag tag-p">File API · ArrayBuffer · 零上传</span></h2>
+  <p class="lead">把它想成一个<strong>快递分拣中心</strong>：文件是刚送到的包裹，浏览器先拿到一张“面单”（文件对象），再剪开纸箱取出里面的字节（ArrayBuffer），最后按快递单上的格式规则逐层清点。整个过程在本地完成，包裹不需要再寄回总部（服务器）。</p>
+  <p>网页里的 <code>File</code> 对象只是指向本地磁盘的一个句柄。用户选择或拖入文件后，JavaScript 可以调用 <code>file.slice()</code> 和 <code>arrayBuffer()</code> 读取字节；读到的是一段 <code>Uint8Array</code>，之后所有解析都只是按固定规则做数组下标、移位和查表。没有 <code>fetch</code>、没有上传接口，也就没有“把视频发到云端”这一步。</p>
+  <div class="ana-flow">
+    <svg viewBox="0 0 900 190" role="img" aria-label="文件到可视化的数据流：文件、字节、结构、可视化">
+      <defs>
+        <marker id="ana-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+        </marker>
+      </defs>
+      <rect x="20" y="52" width="170" height="86" rx="12" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="105" y="86" text-anchor="middle" font-size="18" font-weight="700" fill="#5b21b6">📁 本地文件</text>
+      <text x="105" y="112" text-anchor="middle" font-size="12" fill="#64748b">拖入 / 选择 / slice</text>
+      <line x1="198" y1="95" x2="248" y2="95" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#ana-arrow)"/>
+      <rect x="255" y="52" width="170" height="86" rx="12" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="340" y="86" text-anchor="middle" font-size="18" font-weight="700" fill="#155e75">🔢 字节</text>
+      <text x="340" y="112" text-anchor="middle" font-size="12" fill="#64748b">Uint8Array / DataView</text>
+      <line x1="433" y1="95" x2="483" y2="95" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#ana-arrow)"/>
+      <rect x="490" y="52" width="170" height="86" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="575" y="86" text-anchor="middle" font-size="18" font-weight="700" fill="#047857">🧩 结构</text>
+      <text x="575" y="112" text-anchor="middle" font-size="12" fill="#64748b">box / 包 / 位域 / 字段</text>
+      <line x1="668" y1="95" x2="718" y2="95" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#ana-arrow)"/>
+      <rect x="725" y="52" width="155" height="86" rx="12" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="802" y="86" text-anchor="middle" font-size="18" font-weight="700" fill="#b45309">📊 可视化</text>
+      <text x="802" y="112" text-anchor="middle" font-size="12" fill="#64748b">树 / 表 / 折线 / hex</text>
+      <text x="450" y="172" text-anchor="middle" font-size="12" fill="#94a3b8">这条链路没有网络箭头：所有解析都在当前标签页内完成</text>
+    </svg>
+  </div>
+  <div class="callout callout-tip"><span class="ic">🔒</span><span><b>隐私承诺：</b>本页不向任何服务器发送文件内容。拖入文件、点击示例、粘贴报文都只触发本地 JavaScript。你可以打开开发者工具的 Network 面板验证：解析过程中没有新增请求。</span></div>
+  <p>为什么以前做不到？因为浏览器长期只能把文件整体读成字符串，且没有高效的二进制 API。如今 <code>ArrayBuffer</code>、<code>TypedArray</code>、<code>DataView</code> 都已是标配，几 MB 的文件在毫秒级就能扫完。真正的限制不是“能不能读”，而是“内存能放多大、格式有没有加密”。这些边界在<a href="#limits">最后一节</a>细说。</p>
+</section>
+
+<section id="lab">
+  <h2>🔬 分析台 <span class="tag tag-c">拖入即解析 · 不上传</span></h2>
+  <p class="lead">三个标签页对应三种拆解对象：<strong>容器</strong>看文件怎么装，<strong>码流</strong>看参数集怎么描述画面与声音，<strong>协议</strong>看网络报文怎么组织。没有文件也没关系——每个容器和协议都内置了结构真实的示例字节。</p>
+
+  <div class="ana" id="ana-app">
+    <div class="ana-tabs" role="tablist" aria-label="分析器标签页">
+      <button class="ana-tab on" data-tab="container" role="tab" aria-selected="true">📦 容器</button>
+      <button class="ana-tab" data-tab="codec" role="tab" aria-selected="false">🎞️ 码流</button>
+      <button class="ana-tab" data-tab="protocol" role="tab" aria-selected="false">📡 协议</button>
+      <span class="ana-privacy">🔒 文件不离开浏览器</span>
+    </div>
+
+    <div class="ana-pane on" id="ana-pane-container">
+      <div class="ana-tools">
+        <div class="ana-drop" id="ana-drop" role="button" tabindex="0" aria-label="拖入或点击选择音视频文件">
+          <div class="ana-drop-ico">📥</div>
+          <div class="ana-drop-title">把文件拖到这里，或点击选择</div>
+          <div class="ana-drop-sub">MP4 / MOV · MPEG-TS · FLV · MKV / WebM · WAV · AVI · Ogg · MP3</div>
+          <input type="file" id="ana-file" accept="video/*,audio/*,.mp4,.mov,.ts,.flv,.mkv,.webm,.wav,.avi,.ogg,.mp3" hidden>
+        </div>
+        <div class="ana-side">
+          <h4>内置示例</h4>
+          <div class="ana-samples" id="ana-container-samples">
+            <button class="btn-mini" data-sample="mp4">MP4（box 树）</button>
+            <button class="btn-mini" data-sample="ts">TS（PAT/PMT/PCR）</button>
+            <button class="btn-mini" data-sample="flv">FLV（tag / avcC）</button>
+            <button class="btn-mini" data-sample="mkv">MKV（EBML 树）</button>
+          </div>
+          <p class="small">示例由本页 JavaScript 现场合成，只包含必要结构，体量在几 KB 以内，但字段与真实文件同构。</p>
+          <button class="btn-mini" id="ana-reset">↺ 清空 / 重新选择</button>
+        </div>
+      </div>
+      <div class="ana-status" id="ana-status"><span class="ana-meta">还没有选择文件。拖入音视频文件，或点击右侧的内置示例。</span></div>
+      <div class="ana-result" id="ana-container-result"><div class="ana-empty">解析结果会显示在这里。</div></div>
+      <p class="small">大文件（超过 100 MB）会提示并只读取前 8 MB 做“前 8 MB 预览”。容器索引通常位于文件头部，因此 box 树、轨道信息仍然可见；但 mdat 里的媒体数据和文件尾部索引不会被读取。</p>
+    </div>
+
+    <div class="ana-pane" id="ana-pane-codec">
+      <p class="small" style="margin-top:0">粘贴十六进制字节。支持 Annex B（<code>00 00 01 67…</code>）、裸 SPS、完整的 avcC/hvcC 记录，或 AAC 的 AudioSpecificConfig。分隔符可以是空格、冒号或换行。</p>
+      <textarea class="ana-input" id="ana-codec-hex" spellcheck="false" placeholder="例如：00 00 00 01 67 42 00 1F F4 02 80 2D C8"></textarea>
+      <div class="ana-actions">
+        <button class="btn btn-pl" id="ana-btn-sps">解析 H.264 SPS</button>
+        <button class="btn btn-pl" id="ana-btn-asc">解析 AAC ASC</button>
+        <button class="btn btn-pl" id="ana-btn-hvc">解析 HEVC hvcC</button>
+        <button class="btn-mini" id="ana-codec-clear">清空</button>
+      </div>
+      <div class="ana-samples" id="ana-codec-samples">
+        <button class="btn-mini" data-csp="sps">示例：1280×720 SPS</button>
+        <button class="btn-mini" data-csp="avcc">示例：avcC 记录</button>
+        <button class="btn-mini" data-csp="asc">示例：AAC ASC 0x1210</button>
+        <button class="btn-mini" data-csp="hvc">示例：hvcC 记录</button>
+      </div>
+      <div class="ana-result" id="ana-codec-result"><div class="ana-empty">粘贴 SPS / ASC / hvcC 后点击上方按钮。</div></div>
+    </div>
+
+    <div class="ana-pane" id="ana-pane-protocol">
+      <p class="small" style="margin-top:0">十六进制会按 RTP/RTCP 解析；出现字母和换行的文本会按 SIP / RTSP / SDP 解析。RTP 的时钟频率由 SDP 决定，本页对动态 PT 只提示“需 SDP 确定”。</p>
+      <textarea class="ana-input" id="ana-proto-input" spellcheck="false" placeholder="粘贴 RTP/RTCP 十六进制，或 SIP/RTSP 文本（含 SDP body）"></textarea>
+      <div class="ana-actions">
+        <button class="btn btn-pl" id="ana-proto-parse">解析报文</button>
+        <button class="btn-mini" id="ana-proto-clear">清空</button>
+      </div>
+      <div class="ana-samples" id="ana-proto-samples">
+        <button class="btn-mini" data-proto="rtp">示例：RTP H.264</button>
+        <button class="btn-mini" data-proto="rtcp">示例：RTCP SR</button>
+        <button class="btn-mini" data-proto="sip">示例：SIP INVITE</button>
+        <button class="btn-mini" data-proto="rtsp">示例：RTSP PLAY</button>
+      </div>
+      <div class="ana-result" id="ana-proto-result"><div class="ana-empty">支持 RTP/RTCP 十六进制，以及 SIP/RTSP/SDP 文本。</div></div>
+    </div>
+  </div>
+
+  <div class="grid-3" style="margin-top:1.2rem">
+    <div class="card">
+      <h4>📦 容器页能做什么</h4>
+      <p class="small">识别 MP4/MOV、MPEG-TS、FLV、MKV/WebM、WAV/AVI、Ogg、MP3；MP4 递归 box 树并点击看 hex；TS 解析 PAT/PMT/PCR 与连续计数；FLV 读 onMetaData 与序列头；MKV 读 EBML 树与轨道。</p>
+    </div>
+    <div class="card">
+      <h4>🎞️ 码流页能做什么</h4>
+      <p class="small">H.264 SPS 全字段（含 Exp-Golomb、裁剪、VUI timing、显示宽高）；avcC 配置记录；AAC AudioSpecificConfig 的对象类型、采样率、声道与 SBR/PS 标注；HEVC hvcC 的 profile/level/数组。</p>
+    </div>
+    <div class="card">
+      <h4>📡 协议页能做什么</h4>
+      <p class="small">RTP 的 V/P/X/CC/M/PT/seq/timestamp/SSRC/CSRC/扩展与载荷偏移；RTCP SR/RR 的 NTP、包数、字节数与报告块；SIP/RTSP 起始行、头部表、body；SDP 按 m= 分节展示 rtpmap/fmtp/setup/y=。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">💡</span><span><b>怎么用：</b>先用内置示例确认页面工作正常，再拖入自己的文件。想看某个 box 的原始字节，直接在 box 树上点击它的名字；高亮色块对应右下角的字段图例。</span></div>
+</section>
+
+<section id="container">
+  <h2>📦 容器解析原理 <span class="tag tag-c">先装订，再阅读</span></h2>
+  <p class="lead">容器的任务像<strong>集装箱码头</strong>：它不生产货物，只负责把不同来源的货物（视频帧、音频帧、字幕）按时间顺序装进统一规格的箱子，并在箱门贴上清单。解析容器就是“读清单 → 找到每件货物 → 按时间轴摆好”。</p>
+
+  <h3>MP4：一层套一层的 box</h3>
+  <p>MP4（ISO BMFF）像一套<strong>乐高说明书</strong>：每个零件都写成“尺寸 + 类型 + 内容”，内容里还可以继续放零件。这个零件就叫 box（或 atom）。任何 box 的前 8 个字节永远是：</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>偏移</th><th>长度</th><th>示例字节</th><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td class="num">4</td><td class="num">00 00 00 20</td><td><code>size</code></td><td>整个 box 的字节数，含头部</td></tr>
+        <tr><td class="num">4</td><td class="num">4</td><td class="num">66 74 79 70</td><td><code>type</code></td><td>4 个 ASCII 字符，如 <code>ftyp</code>、<code>moov</code>、<code>avcC</code></td></tr>
+        <tr><td class="num">8</td><td class="num">size−8</td><td class="num">69 73 6F 6D …</td><td>payload</td><td>具体内容；容器型 box 的 payload 又是若干子 box</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>一个真实 MP4 的开头通常是 <code>ftyp</code>，它只有 32 字节，却回答了“这是哪种 MP4、兼容哪些品牌”：</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>偏移</th><th>字节</th><th>字段</th><th>值 / 解释</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0–3</td><td class="num">00 00 00 20</td><td>size</td><td>32 字节</td></tr>
+        <tr><td class="num">4–7</td><td class="num">66 74 79 70</td><td>type</td><td><code>ftyp</code></td></tr>
+        <tr><td class="num">8–11</td><td class="num">69 73 6F 6D</td><td>major_brand</td><td><code>isom</code>（ISO 基础品牌）</td></tr>
+        <tr><td class="num">12–15</td><td class="num">00 00 02 00</td><td>minor_version</td><td>0x00000200</td></tr>
+        <tr><td class="num">16–31</td><td class="num">69 73 6F 6D 69 73 6F 32 61 76 63 31 6D 70 34 31</td><td>compatible_brands</td><td><code>isom</code>、<code>iso2</code>、<code>avc1</code>、<code>mp41</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>阅读器只需要三条规则就能安全地走完整个文件：<strong>size 等于 1</strong> 时，真正的长度写在 type 后面的 8 字节 <code>largesize</code>；<strong>size 等于 0</strong> 时，这个 box 一直延伸到父容器的末尾；type 等于 <code>uuid</code> 时，type 后面还有 16 字节用户类型。任何 size 小于 8 且不为 0 的 box 都是畸形数据，必须立刻停在这一层——否则解析器会在原地打转，形成死循环。</p>
+  <p>MP4 的“目录”主要在 <code>moov</code> 里：<code>mvhd</code> 给整部片子的时间基与总时长；每个 <code>trak</code> 有 <code>tkhd</code>（轨道号、宽高，16.16 定点）、<code>mdhd</code>（媒体时间基）、<code>hdlr</code>（视频/音频），以及 <code>stbl</code> 里的索引：<code>stsd</code> 说明编码与配置（<code>avc1</code> → <code>avcC</code>），<code>stts</code> 给出每个样本的时长，<code>stsz</code> 给出样本大小，<code>stco</code>/<code>co64</code> 给出块偏移，<code>stss</code> 标出关键帧。平均帧率就是 <code>样本数 × 时间基 / 总 tick</code>。</p>
+  <p><code>stts</code> 的 <code>sample_delta</code> 是解码时间间隔，不是显示时间；遇到 B 帧时还要结合 <code>ctts</code> 才能还原 PTS。本页解析的是“容器骨架”，不做完整的 PTS/DTS 重排。</p>
+
+  <h3>MPEG-TS：188 字节一节的列车</h3>
+  <p>TS 像一列<strong>固定长度车厢</strong>：每节车厢正好 188 字节，车头一个 <code>0x47</code> 同步字节。无论里面装的是视频、音频、节目表还是空包，车厢尺寸不变，所以接收端丢了一节也能立刻找到下一节。</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字节</th><th>示例</th><th>位域</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td class="num">47</td><td>sync_byte (8)</td><td>固定 0x47，用于对齐</td></tr>
+        <tr><td class="num">1</td><td class="num">40</td><td>TEI(1) PUSI(1) priority(1) PID[12:8](5)</td><td><code>0x40</code> 表示 PUSI=1、PID 高位为 0</td></tr>
+        <tr><td class="num">2</td><td class="num">00</td><td>PID[7:0] (8)</td><td>PID=0，这是 PAT；PMT 常见 0x1000，视频 0x100，音频 0x101</td></tr>
+        <tr><td class="num">3</td><td class="num">30</td><td>scrambling(2) adaptation(2) CC(4)</td><td><code>0x30</code> = 未加扰、适配+载荷、连续计数 0</td></tr>
+        <tr><td class="num">4</td><td class="num">A6</td><td>adaptation_field_length</td><td>本包适配字段长度；AP 里可能带 PCR、随机接入点等</td></tr>
+        <tr><td class="num">5…</td><td class="num">10 00 00 …</td><td>flags / PCR / 填充</td><td>PCR flag 为 1 时，后 6 字节是 33 位 base + 9 位 extension</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>PID 0 的载荷里放 <strong>PAT</strong>（节目关联表），告诉你“1 号节目的 PMT 在 PID 0x1000”；PID 0x1000 的 <strong>PMT</strong> 再列出每个基本流的 <code>stream_type</code> 与 PID：<code>0x1B</code> 是 H.264，<code>0x24</code> 是 HEVC，<code>0x0F</code> 是 AAC，<code>0x03/0x04</code> 是 MPEG 音频，<code>0x02</code> 是 MPEG-2 视频。PAT/PMT 都是“表”，带 12 位 section_length 和 4 字节 MPEG-2 CRC32；CRC 不对，表就不能信。</p>
+  <p><strong>PCR</strong>（节目时钟参考）是接收端的节拍器：33 位以 90 kHz 计数，外加 9 位 27 MHz 扩展。它不直接参与音画同步，但解码器用它恢复系统时钟，再把 PTS 映射到墙钟。连续计数 <code>CC</code> 每位加一，丢包时会出现跳变；同一 PID 的 CC 不连续，往往就是网络丢包的第一个证据。</p>
+
+  <h3>FLV：一张张便利贴</h3>
+  <p>FLV 的结构像<strong>一叠便利贴</strong>：文件头写版本与偏移，之后每张标签（tag）独立记录类型、大小、时间戳和内容，末尾再贴一张“上一张的大小”，方便倒着检查。</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字段</th><th>长度</th><th>示例</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Signature</td><td class="num">3</td><td class="num">46 4C 56</td><td><code>FLV</code></td></tr>
+        <tr><td>Version / Flags</td><td class="num">1 + 1</td><td class="num">01 05</td><td>版本 1；0x05 表示同时有音频和视频</td></tr>
+        <tr><td>DataOffset</td><td class="num">4</td><td class="num">00 00 00 09</td><td>头长度，通常 9</td></tr>
+        <tr><td>PreviousTagSize0</td><td class="num">4</td><td class="num">00 00 00 00</td><td>第一个 tag 之前的占位</td></tr>
+        <tr><td>TagType</td><td class="num">1</td><td class="num">12</td><td>8 音频 / 9 视频 / 18 script</td></tr>
+        <tr><td>DataSize</td><td class="num">3</td><td class="num">00 00 A6</td><td>tag 内容长度</td></tr>
+        <tr><td>Timestamp</td><td class="num">3 + 1</td><td class="num">00 00 00 00</td><td>低 24 位 + 高 8 位扩展，单位毫秒</td></tr>
+        <tr><td>StreamID</td><td class="num">3</td><td class="num">00 00 00</td><td>通常为 0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>类型 18 的 script tag 里是 AMF0 编码的 <code>onMetaData</code> 对象，常见字段有 <code>width</code>、<code>height</code>、<code>framerate</code>、<code>duration</code>。类型 9 的视频 tag 若 codecId=7（AVC），第一个包通常是 AVC sequence header，后面跟完整的 <code>avcC</code>；类型 8 的音频 tag 若 soundFormat=10（AAC），第一个包是 AAC sequence header，后面跟 2 字节左右的 <code>ASC</code>。</p>
+
+  <h3>Matroska / WebM：可扩展的树</h3>
+  <p>EBML 像<strong>一棵可以随时加枝的目录树</strong>：每个元素由“ID + 长度 + 数据”组成。ID 和长度都用变长整数（vint）表示——开头连续 0 的个数决定这个整数占几字节，长度字段还要把最前面的标记位去掉。</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字节</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1A 45 DF A3</td><td>EBML 头元素的 ID（4 字节）</td></tr>
+        <tr><td class="num">A3</td><td>长度 vint：<code>0xA3</code> → 去掉最高标记位后是 0x23，即 35 字节</td></tr>
+        <tr><td class="num">42 86 81 01</td><td><code>EBMLVersion</code>：ID <code>0x4286</code>，长度 1，值 1</td></tr>
+        <tr><td class="num">42 82 88 6D 61 74 72 6F 73 6B 61</td><td><code>DocType</code> = “matroska”（8 字节 ASCII）</td></tr>
+        <tr><td class="num">18 53 80 67</td><td><code>Segment</code> 的 ID，下面挂 Info、Tracks、Cluster</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><code>Info</code> 里的 <code>TimestampScale</code> 给出“一个 tick 多少纳秒”（常见 1,000,000，即 1 ms），<code>Duration</code> 是浮点 tick 数，两者相乘再除以 1e6 就是时长毫秒。轨道在 <code>Tracks/TrackEntry</code> 中：<code>CodecID</code> 是字符串（如 <code>V_MPEG4/ISO/AVC</code>、<code>A_AAC</code>），<code>Video/PixelWidth</code> 与 <code>PixelHeight</code> 给分辨率，<code>Audio/SamplingFrequency</code> 与 <code>Channels</code> 给音频参数。<code>CodecPrivate</code> 往往就是 avcC 或 ASC。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span>四种容器的共同点是“先声明长度或索引，再放数据”，差别在于索引粒度与容错方式。MP4 假设文件完整可随机访问；TS 假设随时可能丢包，所以每个包自带同步与 PID；FLV 结构最简单；MKV 最灵活，但解析器必须严格防止 vint 长度为 0 或递归过深。</span></div>
+</section>
+
+<section id="codec">
+  <h2>🎞️ 码流解析原理 <span class="tag tag-p">位流是一份说明书</span></h2>
+  <p class="lead">容器告诉你“第几秒有哪一帧”，码流告诉你“这一帧怎么还原成画面”。SPS 像<strong>乐高说明书的第一页</strong>：它不拼积木，只声明“这套积木有多大、用什么颜色、最多能拼几层”。解析码流，就是把这页说明书上的缩写逐位翻译回人话。</p>
+
+  <h3>H.264 SPS 与 Exp-Golomb</h3>
+  <p>SPS 是 H.264 的序列参数集，通常藏在 NAL 单元里，NAL 头是 <code>0x67</code>（type 7）。SPS 的字段大多用 <code>ue(v)</code>（无符号指数哥伦布）编码：先数前导 0 的个数 <code>n</code>，再读 <code>n</code> 位，值等于 <code>2ⁿ − 1 + 读到的数</code>。所以：</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>码字</th><th>n</th><th>解码值</th><th>用途示例</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="num">0</td><td class="num">0</td><td>sps_id = 0、crop 偏移 = 0</td></tr>
+        <tr><td class="num">010</td><td class="num">1</td><td class="num">1</td><td>max_num_ref_frames = 1</td></tr>
+        <tr><td class="num">011</td><td class="num">1</td><td class="num">2</td><td>pic_order_cnt_type = 2</td></tr>
+        <tr><td class="num">00100</td><td class="num">2</td><td class="num">3</td><td>某些扩展字段</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>一段 1280×720、Baseline、level 3.1 的 SPS 原始字节（含 NAL 头）是：<code>67 42 00 1F F4 02 80 2D C8</code>。去掉 NAL 头后逐字段解码：</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字段</th><th>值</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td><code>profile_idc</code></td><td>66（0x42）</td><td>Baseline Profile</td></tr>
+        <tr><td><code>constraint_set flags</code></td><td>0</td><td>没有额外的约束位</td></tr>
+        <tr><td><code>level_idc</code></td><td>31</td><td>Level 3.1，约 1280×720@30 的常见档位</td></tr>
+        <tr><td><code>seq_parameter_set_id</code></td><td>0（ue）</td><td>第 0 号参数集</td></tr>
+        <tr><td><code>log2_max_frame_num_minus4</code></td><td>0（ue）→ 4</td><td>frame_num 用 4 位</td></tr>
+        <tr><td><code>pic_order_cnt_type</code></td><td>0（ue）</td><td>POC 使用 LSB 计数</td></tr>
+        <tr><td><code>log2_max_pic_order_cnt_lsb_minus4</code></td><td>0（ue）→ 4</td><td>POC LSB 用 4 位</td></tr>
+        <tr><td><code>max_num_ref_frames</code></td><td>1（ue）</td><td>最多 1 个参考帧</td></tr>
+        <tr><td><code>pic_width_in_mbs_minus1</code></td><td>79（ue）→ 80 宏块</td><td>80 × 16 = 1280 像素</td></tr>
+        <tr><td><code>pic_height_in_map_units_minus1</code></td><td>44（ue）→ 45 宏块</td><td>45 × 16 = 720 像素</td></tr>
+        <tr><td><code>frame_mbs_only_flag</code></td><td>1</td><td>逐行扫描</td></tr>
+        <tr><td><code>frame_cropping_flag</code></td><td>0</td><td>不做裁剪，显示宽高等于编码宽高</td></tr>
+        <tr><td><code>vui_parameters_present_flag</code></td><td>0</td><td>这段示例没有 VUI；真实文件常见 timing 信息</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>如果 VUI 的 <code>timing_info_present_flag</code> 为 1，会读到 32 位 <code>num_units_in_tick</code> 和 32 位 <code>time_scale</code>，逐行视频的帧率约为 <code>time_scale / (2 × num_units_in_tick)</code>。裁剪则要按色度格式换算：4:2:0 时，左/右偏移乘以 2，上/下偏移乘以 2（逐行时）。所以同一个“1920×1088 编码宏块”可能通过裁剪显示成 1920×1080。</p>
+
+  <p><strong>avcC</strong> 是 MP4/FLV 里存放 SPS/PPS 的配置记录。真实 24 字节示例：<code>01 42 00 1F FF E1 00 09 67 42 00 1F F4 02 80 2D C8 01 00 04 68 CE 3C 80</code>。开头 <code>01</code> 是版本，<code>42 00 1F</code> 是 profile/compat/level，<code>FF</code> 的低 2 位表示 NALU 长度字段为 4 字节，<code>E1</code> 的高 3 位清零、低 5 位为 1 组 SPS，随后是 2 字节长度和 SPS；PPS 同理。</p>
+
+  <h3>AAC AudioSpecificConfig</h3>
+  <p>AAC 的 ASC 像<strong>一张快递面单</strong>：只写三件关键事——什么档次的编码器、采样率多少、几个声道。它的开头是固定的位域：5 位 <code>audioObjectType</code>、4 位 <code>samplingFrequencyIndex</code>、4 位 <code>channelConfiguration</code>。</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字段</th><th>位宽</th><th>示例 0x12 0x10</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>audioObjectType</code></td><td class="num">5</td><td class="num">00010 = 2</td><td>AAC LC</td></tr>
+        <tr><td><code>samplingFrequencyIndex</code></td><td class="num">4</td><td class="num">0100 = 4</td><td>查表得 44100 Hz</td></tr>
+        <tr><td><code>channelConfiguration</code></td><td class="num">4</td><td class="num">0010 = 2</td><td>立体声（2 声道）</td></tr>
+        <tr><td>后续 GASpecificConfig</td><td class="num">—</td><td class="num">000…</td><td>frameLengthFlag、dependsOnCoreCoder、extensionFlag</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>采样率索引表为 <code>[96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]</code>；索引 15 表示后面跟 24 位显式采样率。AOT 为 5 或 29 时表示显式 SBR / PS，需要再读扩展采样率与核心 AOT；有些文件则在 GASpecificConfig 之后用 11 位同步字 <code>0x2B7</code> 声明后置 SBR。页面的解析器会尽量标注这些情况。</p>
+
+  <h3>HEVC hvcC：先读配置，再谈 SPS</h3>
+  <p>HEVC 的 <code>hvcC</code> 与 avcC 类似，但字段更长：1 字节版本、1 字节的 profile_space/tier/profile_idc、4 字节兼容性、6 字节约束标志、1 字节 level_idc，然后是并行度、色度格式、位深、平均帧率与 NAL 数组。页面只展开这些“配置层”字段，并统计 SPS/PPS 数组数量；HEVC SPS 内部的 <code>profile_tier_level</code>、<code>short_term_ref_pic_set</code> 语法要复杂得多，属于下一步的深水区。</p>
+</section>
+
+<section id="protocol">
+  <h2>📡 协议解析原理 <span class="tag tag-g">面单、回执与电报</span></h2>
+  <p class="lead">协议解决“怎么送”。RTP 像每件货物贴的<strong>快递面单</strong>：短、固定、每包都有；RTCP 像<strong>回执与对账单</strong>；SIP/RTSP 像<strong>电报</strong>：起始行说明意图，头部列出参数，空行之后是正文（通常是 SDP 合同）。</p>
+
+  <h3>RTP：12 字节起步的短头</h3>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字节</th><th>位域</th><th>示例</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td>V(2) P(1) X(1) CC(4)</td><td class="num">80</td><td>版本 2、无填充、无扩展、0 个 CSRC</td></tr>
+        <tr><td class="num">1</td><td>M(1) PT(7)</td><td class="num">60</td><td>M=0，PT=96（动态载荷类型，H.264）</td></tr>
+        <tr><td class="num">2–3</td><td>sequence number (16)</td><td class="num">12 34</td><td>每包加一，用于检测丢包与重排</td></tr>
+        <tr><td class="num">4–7</td><td>timestamp (32)</td><td class="num">00 00 0F A0</td><td>采样时钟计数；视频常见 90 kHz</td></tr>
+        <tr><td class="num">8–11</td><td>SSRC (32)</td><td class="num">11 22 33 44</td><td>同步源标识，区分同一会话的不同发送者</td></tr>
+        <tr><td class="num">12…</td><td>CSRC list (CC×4)</td><td class="num">—</td><td>混音贡献源；CC=0 时不存在</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>若 X=1，CSRC 之后还有 4 字节扩展头：16 位 profile 与 16 位 length（以 32 位字为单位），再跟扩展数据。载荷偏移 = 12 + CC×4 +（X ? 4 + length×4 : 0）。P=1 时末尾还有填充字节，最后一个字节给出填充长度。RTP 头不携带“这是 I 帧还是 P 帧”，那属于载荷格式（如 H.264 的 NAL 类型）或 SDP 的 <code>fmtp</code> 参数。</p>
+
+  <h3>RTCP：发送者报告与接收者报告</h3>
+  <p>RTCP 包也用 32 位对齐。共同头是：版本/填充/报告计数（1 字节）、PT（1 字节）、length（16 位，单位是 32 位字，值为“总字数 − 1”）、发送方 SSRC（4 字节）。PT=200 是 SR，201 是 RR，202 是 SDES，203 是 BYE，205/206 是反馈。</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>字段</th><th>长度</th><th>SR 中的含义</th></tr></thead>
+      <tbody>
+        <tr><td>NTP timestamp</td><td class="num">8</td><td>高 32 位是秒，低 32 位是小数秒；把 RTP 时钟对齐到墙钟</td></tr>
+        <tr><td>RTP timestamp</td><td class="num">4</td><td>与上面 NTP 同一瞬间对应的 RTP 时间</td></tr>
+        <tr><td>sender's packet count</td><td class="num">4</td><td>累计发送的 RTP 包数</td></tr>
+        <tr><td>sender's octet count</td><td class="num">4</td><td>累计发送的载荷字节数</td></tr>
+        <tr><td>report block</td><td class="num">24 × RC</td><td>SSRC、丢包率、累计丢包、最高序列号、抖动、LSR、DLSR</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>RR 没有发送者信息，直接从共同头进入报告块。丢包率字段是“丢失比例 × 256”，所以页面会除以 256 再转百分比；LSR/DLSR 用来计算往返时延，是排查“网络到底慢在哪”的关键。</p>
+
+  <h3>SIP / RTSP：文本电报</h3>
+  <p>两者都是“起始行 + 头部 + 空行 + body”。起始行要么是“方法 URI 版本”，要么是“版本 状态码 原因”。SIP 的方法包括 <code>REGISTER</code>、<code>INVITE</code>、<code>MESSAGE</code>；RTSP 的方法包括 <code>OPTIONS</code>、<code>DESCRIBE</code>、<code>SETUP</code>、<code>PLAY</code>。状态行 <code>SIP/2.0 200 OK</code> 与 <code>RTSP/1.0 200 OK</code> 一眼可分。</p>
+  <pre class="code"><span class="cm"># RTSP PLAY 请求（节选）</span>
+PLAY rtsp://192.168.1.10:554/live/track1 RTSP/1.0
+CSeq: 5
+Session: 12345678
+Range: npt=0.000-
+
+<span class="cm"># SIP INVITE 的 body 是一份 SDP 合同</span>
+v=0
+o=34020000001320000001 0 0 IN IP4 192.168.1.10
+s=Play
+c=IN IP4 192.168.1.10
+t=0 0
+y=0000000001
+m=video 6000 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=fmtp:96 packetization-mode=1; profile-level-id=42E01F
+a=setup:active
+a=control:track1</pre>
+  <p>SDP 按 <code>m=</code> 分节：每个 <code>m=</code> 声明媒体类型、端口、传输协议与格式列表；<code>a=rtpmap</code> 把载荷类型映射到编码名与时钟频率（如 <code>96 H264/90000</code>）；<code>a=fmtp</code> 给编码器参数（如 <code>packetization-mode=1</code>）；<code>a=setup</code> 说明 TCP 主动/被动；<code>a=control</code> 给 RTSP 的轨道 URL；<code>y=</code> 在 GB28181 中表示 SSRC。没有这些映射，RTP 头里的 PT=96 根本无法解释成 H.264。</p>
+
+  <div class="callout callout-i"><span class="ic">🧭</span><span>排障顺序建议：先看 RTP 的 seq/timestamp/SSRC 是否连续；再看 RTCP 的丢包率与抖动；最后回到 SDP，确认 PT、时钟频率、<code>fmtp</code> 参数是否与发送端一致。协议字段对不上，后面怎么调播放器都没用。</span></div>
+</section>
+
+<section id="limits">
+  <h2>🚧 能力边界与隐私 <span class="tag tag-a">知道什么做不到</span></h2>
+  <p class="lead">一个诚实的分析器，必须同时说清“能拆什么”和“拆不动什么”。下面是当前实现的能力边界。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>✅ 真正解析（读到字段级）</h4>
+      <ul class="small">
+        <li>MP4/MOV：递归 box 树、ftyp、mvhd、tkhd、mdhd、hdlr、stsd、stts、stsz、stco/co64、stss，以及 avcC/hvcC/esds 线索。</li>
+        <li>MPEG-TS：按 188 字节对齐扫描，PAT/PMT、stream_type、PCR、各 PID 包数、CC 错误、payload 字节。</li>
+        <li>FLV：头、tag 列表、onMetaData（AMF0 基础类型）、AVC/AAC sequence header。</li>
+        <li>Matroska/WebM：EBML ID/size 的 vint、master 元素树、TimestampScale、Duration、TrackEntry、CodecID、分辨率、采样率、声道。</li>
+        <li>WAV：fmt 块与 data 大小、时长；AVI：格式识别与顶层 chunk。</li>
+        <li>H.264 SPS（Exp-Golomb 全字段、裁剪、VUI timing）、avcC、AAC ASC、HEVC hvcC。</li>
+        <li>RTP/RTCP 头、SR/RR 报告块；SIP/RTSP 起始行与头部；SDP 的 m=/rtpmap/fmtp/setup/y=。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>🔍 只做识别（不深入）</h4>
+      <ul class="small">
+        <li>AVI 的 idx1/movi 索引与帧表；只列出顶层 chunk。</li>
+        <li>Ogg 的完整页表与 OpusHead/Vorbis 注释；MP3 的逐帧解析与 VBR 头；只读文件头字段。</li>
+        <li>HEVC SPS 的内部语法（profile_tier_level、参考图像集、RPS）；只读 hvcC 配置层。</li>
+        <li>分片 MP4（fMP4）：能找到 moof，但不重建完整样本索引；moov 缺失时会给出提示。</li>
+        <li>加密/DRM 内容：CENC 的 sinf/tenc 可以看见，但无法解密媒体样本。</li>
+        <li>HLS/DASH 清单、RTMP 握手、SRT 控制包：本页不处理，它们属于传输层/清单层。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>大文件与内存</h3>
+  <p>浏览器标签页的可用内存不是无限的。一个 1 GB 的视频如果整体读进 <code>Uint8Array</code>，仅原始字节就占 1 GB，再加上解析树与字符串，很容易触发标签页崩溃。因此：超过 100 MB 的文件会提示，并且<strong>只读取前 8 MB</strong> 做预览。这个策略对 MP4 很有效，因为 <code>ftyp</code> 和 <code>moov</code> 常在文件头部；但如果文件是“moov 在尾部”的非 faststart 布局，预览里可能只有 <code>mdat</code>，页面会明确提示索引缺失。</p>
+  <p>为什么不是“只读需要的部分”？浏览器可以用 <code>file.slice(start, end)</code> 精确读取任意区间，但通用分析的难点在于：在读到父 box 之前，你不知道子 box 在哪。递归解析本质上要顺着文件走，所以先做“头部预览”是通用性与实现复杂度的折中。</p>
+
+  <h3>CORS：为什么不能直接填一个 URL</h3>
+  <p>浏览器安全模型不允许网页随意读取别的域名下的响应。即使你用 <code>fetch('https://example.com/a.mp4')</code>，也必须对方服务器返回 <code>Access-Control-Allow-Origin</code> 等 CORS 头；否则响应对 JavaScript 不可见。更现实的是，很多媒体服务器只允许 Range 请求、要求鉴权，或根本不发 CORS 头。因此本页不提供“输入 URL 直接抓取”，而是坚持“拖入本地文件 / 粘贴字节”——这也顺带保证了隐私。</p>
+  <p>如果你确实需要分析远端文件，正确路径是：在服务端用 <code>curl</code>/<code>ffprobe</code> 抓取并导出前若干字节，或让服务端开启 CORS 并暴露 Range。浏览器端的“零上传”与“任意抓 URL”在安全模型上是冲突的，必须二选一。</p>
+
+  <div class="callout callout-r"><span class="ic">🔐</span><span><b>隐私边界：</b>本页没有后端、没有统计脚本、没有把文件名或字节写入 <code>localStorage</code>。拖入的文件只在当前内存中存在，刷新页面即消失。唯一的外部链接是页脚的 GitHub 仓库地址，与解析功能无关。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>术语</th><th>一句话解释</th><th>在哪个解析里出现</th></tr></thead>
+      <tbody>
+        <tr><td><b>box / atom</b></td><td>MP4 的基本结构单元：size + type + payload，可嵌套</td><td>MP4 box 树</td></tr>
+        <tr><td><b>ftyp</b></td><td>文件类型盒，声明主要品牌与兼容品牌</td><td>MP4 识别</td></tr>
+        <tr><td><b>moov / trak / stbl</b></td><td>电影目录、轨道、样本表；索引的核心层级</td><td>MP4 轨道与帧率</td></tr>
+        <tr><td><b>stsd / avcC</b></td><td>样本描述与 AVC 配置记录，SPS/PPS 放在 avcC 内</td><td>MP4 / FLV 码流提取</td></tr>
+        <tr><td><b>stts / stsz / stco</b></td><td>样本时长表、样本大小表、块偏移表</td><td>MP4 时长与帧率</td></tr>
+        <tr><td><b>PID / PAT / PMT</b></td><td>TS 包标识、节目关联表、节目映射表</td><td>TS 解析</td></tr>
+        <tr><td><b>PCR</b></td><td>节目时钟参考，33 位 90 kHz + 9 位扩展</td><td>TS 时间折线</td></tr>
+        <tr><td><b>CC</b></td><td>continuity counter，同一 PID 的包序号，每包加一</td><td>TS 丢包判断</td></tr>
+        <tr><td><b>tag / onMetaData</b></td><td>FLV 的独立数据块 / AMF0 编码的元数据对象</td><td>FLV 解析</td></tr>
+        <tr><td><b>EBML / vint</b></td><td>Matroska 的二进制标记语言 / 变长整数编码</td><td>MKV 元素树</td></tr>
+        <tr><td><b>SPS / PPS</b></td><td>序列参数集 / 图像参数集，解码器初始化所需</td><td>H.264 / HEVC</td></tr>
+        <tr><td><b>Exp-Golomb</b></td><td>用前导零个数表示范围的变长编码，H.264 大量使用</td><td>SPS 字段解码</td></tr>
+        <tr><td><b>ASC</b></td><td>AudioSpecificConfig，AAC 的初始化位域</td><td>AAC 解析</td></tr>
+        <tr><td><b>VUI</b></td><td>视频可用性信息，含 timing、宽高比、色彩描述</td><td>SPS 帧率</td></tr>
+        <tr><td><b>RTP / SSRC</b></td><td>实时传输协议 / 同步源标识</td><td>协议页 RTP</td></tr>
+        <tr><td><b>RTCP SR / RR</b></td><td>发送者报告 / 接收者报告，含 NTP、包数、丢包与抖动</td><td>协议页 RTCP</td></tr>
+        <tr><td><b>SDP</b></td><td>会话描述协议，用 m= 分媒体节，a= 给属性</td><td>SIP / RTSP body</td></tr>
+        <tr><td><b>CORS</b></td><td>跨源资源共享，决定网页能否读取别的域名响应</td><td>能力边界</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="cross">
+  <div class="ico">🔬</div>
+  <div class="bd">
+    <h4>把分析结果带回原理页</h4>
+    <p>分析器给出的是“这个文件里有什么”。想知道“为什么要这样设计”，再去容器、编解码、协议专题读一遍结构推导。</p>
+    <div class="btns">
+      <a class="btn btn-pl" href="container/">容器专题 →</a>
+      <a class="btn btn-pl" href="codec/">编解码专题 →</a>
+      <a class="btn btn-pl" href="protocol/">协议专题 →</a>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+</div>
+
+<footer><div class="wrap">liveinonetools · 音视频本体论 · <a href="https://github.com/yejinlei/liveinonetools">GitHub</a> · 标准、原理、代码与互动演示</div></footer>
+
+<script src="analyze.js" defer></script>
+</body>
+</html>

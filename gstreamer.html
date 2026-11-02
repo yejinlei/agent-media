@@ -25,6 +25,7 @@
     <a href="servers/">服务器</a>
     <a href="wasm.html">WASM</a>
     <a href="lab.html">实验室</a>
+    <a href="analyze.html">分析器</a>
     <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
   </div>
 </div></nav>
@@ -177,7 +178,7 @@
     <div class="node hi"><b>PAUSED</b><span>预滚（preroll）：协商 caps、填好第一帧、准备好时钟，但不推进时间</span></div><span class="ar">↓</span>
     <div class="node hi"><b>PLAYING</b><span>时钟开始走，sink 按时间戳消费数据</span></div>
   </div>
-  <p><b>PAUSED 是最容易被忽视、却最有用的一档。</strong>它让整条链“预热”：解码器解出第一帧，sink 拿到这帧但不显示；此时你可以截图、查询时长、做 seek，也可以确认协商是否成功。很多“点了播放却黑屏”的问题，其实卡在 PAUSED 的 preroll 没完成。</p>
+  <p><b>PAUSED 是最容易被忽视、却最有用的一档。</b>它让整条链“预热”：解码器解出第一帧，sink 拿到这帧但不显示；此时你可以截图、查询时长、做 seek，也可以确认协商是否成功。很多“点了播放却黑屏”的问题，其实卡在 PAUSED 的 preroll 没完成。</p>
 
   <h3>异步状态切换</h3>
   <p><code>gst_element_set_state()</code> 的返回值可能是 <code>GST_STATE_CHANGE_ASYNC</code>：元件表示“我在切，但还没切完”。正确做法是继续等：</p>
@@ -783,8 +784,8 @@ gst-inspect-1.0 | grep -E 'vah264|nvh264|qsvh264|vtenc|mpph264'</pre>
         <tr><td><b>Latency</b></td><td>为保证同步预留的缓冲</td><td>不等于编码延迟；是端到端延迟的一部分</td></tr>
         <tr><td><b>Request pad</b></td><td>主动申请的输出/输入口</td><td>tee、mixer、webrtcbin 都靠它扩展</td></tr>
         <tr><td><b>Ghost pad</b></td><td>把内部 pad 暴露到容器外</td><td>playbin 等复杂元件对外的统一接口</td></tr>
-        <tr><td><b>parse / demux / mux</td><td>整理码流 / 拆容器 / 装容器</td><td>“换封装”只走这三类，不解码</td></tr>
-        <tr><td><b>pay / depay</td><td>打成 RTP 包 / 从 RTP 还原</td><td>推流与播放方向的镜像</td></tr>
+        <tr><td><b>parse / demux / mux</b></td><td>整理码流 / 拆容器 / 装容器</td><td>“换封装”只走这三类，不解码</td></tr>
+        <tr><td><b>pay / depay</b></td><td>打成 RTP 包 / 从 RTP 还原</td><td>推流与播放方向的镜像</td></tr>
         <tr><td><b>DMABuf</b></td><td>设备间共享的内存缓冲</td><td>零拷贝的物理基础</td></tr>
         <tr><td><b>appsink / appsrc</b></td><td>把流水线接进应用 / 把应用数据送进流水线</td><td>AI 推理、自定义源、与业务代码的接口</td></tr>
         <tr><td><b>GES</b></td><td>GStreamer Editing Services，时间线式剪辑</td><td>把“非线编”能力做成高层 API</td></tr>
