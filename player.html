@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浏览器播流实战 · RTSP / RTMP → WHEP / HLS / FLV</title>
+<meta name="description" content="浏览器为什么打不开 RTSP 和 RTMP？用 MediaMTX 做网关，把摄像头流转换成 WHEP、HLS、HTTP-FLV；含可交互播放器、WHEP 协议细节、延迟对比与排错。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html">GB28181</a>
+    <a href="player.html" class="cur">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html">WASM</a>
+    <a href="lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>在浏览器里播流：<br><em>把 RTSP 翻译成 HTTP</em></h1>
+    <p>几乎所有“网页看监控”的需求，最后都会撞上同一堵墙：浏览器不支持 RTSP，也不支持 RTMP。不是浏览器“不想支持”，而是安全模型不允许网页随手打开任意 TCP 连接。这一页讲清楚这堵墙，并给出三条能走通的路——WHEP、HLS、HTTP-FLV。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#demo">▶ 打开播放器试一下</a>
+      <a class="btn btn-ghost" href="#whep">看懂 WHEP</a>
+      <a class="btn btn-ghost" href="#gateway">拿网关配方</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">WHEP</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HLS / LL-HLS</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HTTP-FLV</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MediaMTX</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">CORS / ICE</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#truth">浏览器到底能播什么</a>
+    <a href="#routes">四条可行路线</a>
+    <a href="#demo">动手播放</a>
+    <a href="#whep">WHEP 协议细节</a>
+    <a href="#hls">HLS 与低延迟</a>
+    <a href="#flv">HTTP-FLV</a>
+    <a href="#gateway">MediaMTX 网关配方</a>
+    <a href="#latency">延迟与画质对比</a>
+    <a href="#security">HTTPS、CORS 与自动播放</a>
+    <a href="#trouble">排错表</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="truth">
+  <h2>🧱 浏览器到底能播什么：先认清墙在哪</h2>
+  <p class="lead">把浏览器想成一个<strong>只接收快递柜取件码的人</strong>：它只肯按 HTTP(S) 的规矩去取东西，而且取到的必须是它认识的包裹格式。RTSP 是一套“我直接打个电话过去，你来我这儿取”的旧式协议，浏览器没有这部电话，也没有开这种电话的权限。</p>
+  <p>更技术一点：网页里的 JavaScript 没有<strong>任意 TCP/UDP socket</strong> 能力。它只能发 HTTP 请求、开 WebSocket、或者用 WebRTC。RTSP 走的是自己的 TCP 控制通道 + RTP 媒体通道，RTMP 走的是自定义 TCP 协议——两者都无法由 JS 直接建立。这就是“不能直连”的根本原因，而不是某个浏览器偷懒。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>地址 / 格式</th><th>浏览器能直接打开吗</th><th>原因</th><th>需要什么</th></tr></thead>
+      <tbody>
+        <tr><td><code>rtsp://…</code></td><td><span class="badge-no">不能</span></td><td>需要自定义 TCP 控制协议</td><td>网关 → WHEP / HLS / FLV</td></tr>
+        <tr><td><code>rtmp://…</code></td><td><span class="badge-no">不能</span></td><td>自定义 TCP 协议，且 Flash 已退场</td><td>网关 → HLS / FLV / WHEP</td></tr>
+        <tr><td><code>…/index.m3u8</code></td><td><span class="badge-ok">可以</span></td><td>就是 HTTP 分片下载</td><td>Safari 原生；其他浏览器用 hls.js</td></tr>
+        <tr><td><code>…/live.flv</code>（HTTP）</td><td><span class="badge-ok">借助库</span></td><td>HTTP 长连接 + FLV tag</td><td>mpegts.js（MSE）</td></tr>
+        <tr><td><code>…/whep</code></td><td><span class="badge-ok">可以</span></td><td>WebRTC 是浏览器内建能力</td><td>原生 RTCPeerConnection + fetch</td></tr>
+        <tr><td><code>…/video.mp4</code></td><td><span class="badge-ok">可以</span></td><td>标准 media 元素支持</td><td>注意 moov 位置（faststart）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别被“能播”骗了：</b>HLS 能播，不代表延迟能满足你。标准 HLS 的分片通常 6 秒一片，端到端延迟 15–30 秒很常见。要做“按门铃就看到人”，必须用 WebRTC 或 HTTP-FLV。</span></div>
+</section>
+
+<section id="routes">
+  <h2>🗺️ 四条可行路线：一张路由表看懂</h2>
+  <p>无论前端库叫什么名字，本质只有四种形态。把它们和“延迟 / 兼容性 / 成本”对应起来，选型就不会乱。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">摄像头<span>RTSP / GB28181 / RTMP</span></div><span class="ar">→</span>
+      <div class="node hi">媒体网关<span>解协议 + 转封装（必要时转码）</span></div><span class="ar">→</span>
+      <div class="node">WHEP<span>WebRTC，&lt;1s</span></div><span class="ar">/</span>
+      <div class="node">HLS<span>2–20s</span></div><span class="ar">/</span>
+      <div class="node">FLV<span>1–3s</span></div>
+    </div>
+    <figcaption>网关不是“可选优化”，而是浏览器播流的必经之路。</figcaption>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>① WHEP（WebRTC）——低延迟首选</h4>
+      <p class="small">用 HTTP 完成 WebRTC 的 SDP 交换，浏览器原生能力，不需要任何第三方库。延迟通常 200–800 ms，适合监控、门铃、远程操控。代价：需要网关、需要处理 ICE/NAT、对编码有要求（H.264/VP8 等）。</p>
+      <a class="btn-mini" href="#whep">看协议细节 →</a>
+    </div>
+    <div class="card">
+      <h4>② HLS——兼容性之王</h4>
+      <p class="small">服务器把流切成小分片，浏览器按 playlist 顺序下载。穿透性极好、能过几乎所有 CDN 和防火墙。代价：延迟大；标准 HLS 不适合实时互动。LL-HLS 能压到 2–4 秒，但要求服务端支持。</p>
+      <a class="btn-mini" href="#hls">看 HLS 细节 →</a>
+    </div>
+    <div class="card">
+      <h4>③ HTTP-FLV——折中方案</h4>
+      <p class="small">一个 HTTP 长连接，持续下发 FLV tag。延迟 1–3 秒，实现简单，国内 CDN 支持好。代价：不是所有浏览器/环境都稳定，且依赖 mpegts.js 这类 MSE 库；iOS Safari 的 MSE 支持要单独验证。</p>
+      <a class="btn-mini" href="#flv">看 FLV 细节 →</a>
+    </div>
+    <div class="card">
+      <h4>④ 直接把文件放上 HTTP</h4>
+      <p class="small">如果只是“播放一段录好的视频”，不需要网关。注意 MP4 的 <code>moov</code> 要前置（faststart），否则浏览器要下完整个文件才能开始播。</p>
+      <span class="badge-ok">最简单</span>
+    </div>
+  </div>
+
+  <pre class="code">// 前端选型伪代码：先看协议，再决定用哪个库
+if (url.startsWith('rtsp://') || url.startsWith('rtmp://')) {
+  // 浏览器无法直连 → 必须先经网关转成下面三种之一
+  throw new Error('请使用 WHEP / HLS / FLV 地址');
+}
+if (url.endsWith('.m3u8'))  →  Safari ? video.src : new Hls()
+if (url.endsWith('.flv'))   →  mpegts.createPlayer()
+if (url.endsWith('/whep'))  →  new RTCPeerConnection() + fetch POST</pre>
+</section>
+
+<section id="demo">
+  <h2>🧪 动手播放：粘贴一个地址试试</h2>
+  <p class="lead">下面的播放器会自动识别地址类型，并选择对应的技术路线。RTSP / RTMP 会被明确拦截并给出网关方案——这是有意为之，因为“假装能播”只会浪费你的排错时间。</p>
+
+  <div data-lazy-viz data-viz="stream" data-opts='{"url":"https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}'></div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>可以试的公开测试流</h4>
+      <p class="small">HLS：<code>https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8</code>（上方已预填，需联网）。它会走 hls.js 路线，日志里能看到清单解析过程。</p>
+    </div>
+    <div class="card">
+      <h4>WHEP 需要你自己的网关</h4>
+      <p class="small">把 <code>http://你的网关:8889/cam/whep</code> 粘进去。若网关在公网，注意必须 HTTPS（否则页面若是 https 会被混合内容拦截）。</p>
+    </div>
+    <div class="card">
+      <h4>日志就是证据</h4>
+      <p class="small">播放失败时，日志会区分“脚本加载失败 / HTTP 状态码 / SDP 协商 / 自动播放被拦”。先看日志，再看浏览器 Network 面板，比盲目换库有效。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么播放器默认静音？</b>浏览器的自动播放策略要求：没有用户交互时，只有静音视频能自动播放。这是产品问题，不是技术缺陷。要带声音，必须由用户点击触发播放。</span></div>
+</section>
+
+<section id="whep">
+  <h2>📡 WHEP：用 HTTP 完成 WebRTC 的“握手”</h2>
+  <p class="lead">WebRTC 本身不规定“怎么交换 SDP”。传统做法是自己写一个信令服务器（WebSocket 传来传去），很麻烦。WHEP（WebRTC-HTTP Egress Protocol）把这件事标准化成一次 HTTP 请求：<strong>POST 一份 SDP offer，服务器回一份 SDP answer</strong>。就这么简单。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"WHEP 收流：一次 POST 建立会话","actors":["浏览器","WHEP 服务"],"steps":[{"from":0,"to":1,"label":"POST /cam/whep · Content-Type: application/sdp（offer）","color":"#7c3aed"},{"from":1,"to":0,"label":"201 Created · Location: /cam/whep/abc123 · answer SDP","color":"#10b981"},{"from":0,"to":1,"label":"ICE 连通性检查（STUN Binding）","color":"#0891b2"},{"from":1,"to":0,"label":"DTLS 握手 → SRTP 媒体流","color":"#0891b2"},{"from":0,"to":1,"label":"DELETE /cam/whep/abc123（结束会话）","color":"#e11d48"}]}'></div>
+
+  <pre class="code">async function playWhep(url, video) {
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  // 只收不发
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+
+  const stream = new MediaStream();
+  video.srcObject = stream;
+  pc.ontrack = e =&gt; stream.addTrack(e.track);
+
+  // 1) 生成 offer
+  await pc.setLocalDescription(await pc.createOffer());
+
+  // 2) 等 ICE 候选收集完成（WHEP 常用非 trickle 模式）
+  await new Promise(res =&gt; {
+    if (pc.iceGatheringState === 'complete') return res();
+    pc.addEventListener('icegatheringstatechange', () =&gt; {
+      if (pc.iceGatheringState === 'complete') res();
+    });
+  });
+
+  // 3) 一次 POST 交换 SDP
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/sdp', Accept: 'application/sdp' },
+    body: pc.localDescription.sdp
+  });
+  if (!res.ok) throw new Error('WHEP ' + res.status);
+
+  // 4) 记住资源地址，用于结束会话
+  const resource = res.headers.get('Location');
+  await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+  await video.play();
+
+  return { pc, resource };
+}</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>为什么是 201 + Location</h4>
+      <p class="small">201 表示“资源已创建”。<code>Location</code> 指向这次会话；停止播放时对它发 DELETE，服务端才会释放转码/转发资源。只关 <code>pc</code> 不 DELETE，会留下僵尸会话。</p>
+    </div>
+    <div class="card">
+      <h4>Trickle ICE 要不要等</h4>
+      <p class="small">标准 WHEP 支持两种模式。等收集完成（非 trickle）实现最简单，代价是多等几百毫秒；trickle 模式要在建立后再发 PATCH，复杂度更高。</p>
+    </div>
+    <div class="card">
+      <h4>延迟为什么这么低</h4>
+      <p class="small">没有分片、没有 playlist、没有缓冲队列。RTP 包到浏览器就进 jitter buffer，通常只缓 100–300 ms。真正的大头是编码器 GOP 与网关的缓冲策略。</p>
+    </div>
+    <div class="card">
+      <h4>编码兼容性</h4>
+      <p class="small">浏览器 WebRTC 普遍支持 H.264、VP8、VP9、AV1；<strong>H.265 支持面很窄</strong>。国标摄像头若只出 H.265，网关需要转码，成本会明显上升。</p>
+    </div>
+  </div>
+</section>
+
+<section id="hls">
+  <h2>🍰 HLS：把直播切成一块块“小蛋糕”</h2>
+  <p>HLS 的思路非常朴素：把流切成固定时长的小分片（通常是 <code>.ts</code> 或 <code>.m4s</code>），再写一个播放列表 <code>.m3u8</code> 告诉浏览器“先下这个，再下那个”。浏览器只要会 HTTP，就能播。</p>
+
+  <pre class="code">#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:120
+#EXTINF:6.000,
+seg00120.ts
+#EXTINF:6.000,
+seg00121.ts
+#EXTINF:6.000,
+seg00122.ts
+#EXT-X-ENDLIST   ← 直播时没有这一行</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>概念</th><th>含义</th><th>影响</th></tr></thead>
+      <tbody>
+        <tr><td><code>EXT-X-TARGETDURATION</code></td><td>分片目标时长</td><td>越大越省请求，延迟也越大</td></tr>
+        <tr><td><code>EXT-X-MEDIA-SEQUENCE</code></td><td>当前窗口第一个分片序号</td><td>播放器据此判断“有没有落后”</td></tr>
+        <tr><td><code>EXT-X-PROGRAM-DATE-TIME</code></td><td>分片对应的绝对时间</td><td>做回放定位、时间校准</td></tr>
+        <tr><td><code>EXT-X-DISCONTINUITY</code></td><td>时间轴断裂</td><td>码率切换/广告插入后常见，处理不好会卡顿</td></tr>
+        <tr><td>LL-HLS 的 <code>PART</code></td><td>把分片再切成部分传输</td><td>延迟压到 2–4 秒，但服务端/客户端都要支持</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>为什么 HLS 天生慢</h3>
+  <p>延迟由三段叠加：<strong>分片时长</strong>（必须等一片写完）+ <strong>playlist 刷新间隔</strong>（浏览器才知道有新片）+ <strong>播放器安全缓冲</strong>（通常囤 2–3 片）。6 秒分片 × 3 片缓冲，30 秒延迟就出来了。想快，只能把每一段都缩短——这就是 LL-HLS 在做的事。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>选型口诀：</b>要“看得到”用 HLS，要“看得及时”用 WHEP。HLS 的优势是便宜、稳定、能上 CDN；劣势是它天然为“容忍延迟”的场景设计。</span></div>
+</section>
+
+<section id="flv">
+  <h2>📺 HTTP-FLV：一条不结束的 HTTP 响应</h2>
+  <p>HTTP-FLV 把 FLV 的 tag 直接写进一个 HTTP 响应体，连接不关闭，数据持续下发。浏览器通过 MSE（Media Source Extensions）把收到的 tag 喂给 <code>&lt;video&gt;</code>。它比 HLS 少了两层“切片 + 写 playlist”的等待，所以延迟更低。</p>
+
+  <pre class="code">// mpegts.js 的最小用法
+const player = mpegts.createPlayer({
+  type: 'flv',
+  url: 'https://example.com/live/cam.flv',
+  isLive: true,
+  hasAudio: true
+}, {
+  enableWorker: true,
+  lazyLoad: false,          // 直播别懒加载
+  liveBufferLatencyChasing: true  // 追帧，防止延迟越积越大
+});
+
+player.attachMediaElement(video);
+player.load();
+video.play();</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>为什么比 HLS 快</h4>
+      <p class="small">没有分片边界，不需要等“一片写完”；数据一到就能进 MSE 缓冲。少了 playlist 轮询，也就少了那几秒的发现延迟。</p>
+    </div>
+    <div class="card">
+      <h4>为什么不如 WHEP 稳</h4>
+      <p class="small">它仍然是 TCP。网络抖动时，TCP 的重传与拥塞控制会让延迟累积；WebRTC 则用 UDP + 丢帧策略，宁可丢一帧也不让延迟涨上去。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>iOS 的坑：</b>iPhone 上 MSE 的支持受限制（尤其非 Safari 内核的浏览器）。如果目标用户大量使用 iOS，优先评估 WHEP 或原生 HLS，别把宝押在 FLV 上。</span></div>
+</section>
+
+<section id="gateway">
+  <h2>🚪 MediaMTX 网关配方：RTSP 进，WHEP/HLS/FLV 出</h2>
+  <p class="lead">MediaMTX 是一个单文件媒体服务器：它能把 RTSP、RTMP、SRT 的流转成 WebRTC（WHEP）、HLS、HTTP-FLV 等。它<strong>不做 GB28181</strong>（不解析 SIP/PS），所以国标设备要先经国标平台/网关，再交给 MediaMTX 做“第二跳”。</p>
+
+  <pre class="code"># mediamtx.yml（最小可用示例）
+logLevel: info
+rtsp: yes
+rtmp: yes
+hls: yes
+webrtc: yes
+webrtcAddress: :8889
+hlsAddress: :8888
+
+paths:
+  cam:
+    # 主动去拉摄像头的 RTSP；也可以不写 source，等别人推流过来
+    source: rtsp://admin:password@192.168.1.64:554/Streaming/Channels/101
+    sourceOnDemand: yes          # 有人看才去拉，省带宽
+    rtspTransport: tcp           # 摄像头侧优先 TCP，减少丢包
+    overridePublisher: no</pre>
+
+  <pre class="code"># RTSP 8554 / RTMP 1935 / HLS 8888 / WebRTC-WHEP 8889
+# 8189/udp 是 WebRTC ICE 媒体端口，按实际配置调整
+docker run -d --name mediamtx \
+  -p 8554:8554 \
+  -p 1935:1935 \
+  -p 8888:8888 \
+  -p 8889:8889 \
+  -p 8189:8189/udp \
+  -v "$PWD/mediamtx.yml:/mediamtx.yml" \
+  bluenviron/mediamtx:latest</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>产物</th><th>浏览器地址</th><th>延迟量级</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>WHEP</td><td><code>http://host:8889/cam/whep</code></td><td>0.3–1 s</td><td>最常见组合：直接把这个地址交给上方播放器</td></tr>
+        <tr><td>HLS</td><td><code>http://host:8888/cam/index.m3u8</code></td><td>6–20 s</td><td>兼容最好；可通过配置降低分片时长</td></tr>
+        <tr><td>HTTP-FLV</td><td><code>http://host:8888/cam</code>（视版本/配置）</td><td>1–3 s</td><td>不同版本开关不同，以官方文档为准</td></tr>
+        <tr><td>RTSP</td><td><code>rtsp://host:8554/cam</code></td><td>—</td><td>给 VLC / FFmpeg / 后端服务用，浏览器仍不能直连</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>ICE 地址是最大坑：</b>如果浏览器和 MediaMTX 不在同一台机器，必须让服务端在 SDP 里给出<strong>浏览器可达的地址</strong>（公网 IP / 内网 IP）。否则 ICE 检查失败，表现为“POST 返回 201，但一直没有画面”。配置项通常叫 <code>webrtcAdditionalHosts</code> 或 <code>webrtcLocalIPs</code>。</span></div>
+</section>
+
+<section id="latency">
+  <h2>⏱️ 延迟与画质：把数字和原因对上</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方案</th><th>端到端延迟</th><th>延迟花在哪</th><th>画质/编码限制</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>WHEP / WebRTC</td><td class="num">0.3–1 s</td><td>编码 GOP + jitter buffer</td><td>H.264/VP8 为主，H.265 支持窄</td><td>监控、门铃、远程操控</td></tr>
+        <tr><td>HTTP-FLV</td><td class="num">1–3 s</td><td>TCP 缓冲、追帧策略</td><td>H.264 为主</td><td>国内直播、低成本实时</td></tr>
+        <tr><td>LL-HLS</td><td class="num">2–4 s</td><td>部分分片 + 刷新间隔</td><td>H.264 / H.265（看播放器）</td><td>要兼容又要不太慢</td></tr>
+        <tr><td>标准 HLS</td><td class="num">6–30 s</td><td>分片时长 × 缓冲片数</td><td>兼容性最好</td><td>公开直播、CDN 分发</td></tr>
+        <tr><td>RTSP 直连（VLC）</td><td class="num">0.2–1 s</td><td>解协议 + 解码</td><td>无浏览器限制</td><td>桌面客户端、内网工具</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">采集<span>~1 帧</span></div><span class="ar">+</span>
+      <div class="node">编码<span>GOP / lookahead</span></div><span class="ar">+</span>
+      <div class="node">网关缓冲<span>转封装 / 转码</span></div><span class="ar">+</span>
+      <div class="node">网络<span>RTT / 丢包</span></div><span class="ar">+</span>
+      <div class="node hi">播放器缓冲<span>jitter / 追帧</span></div>
+    </div>
+    <figcaption>端到端延迟是五段之和。只优化“协议”通常只能动到其中两段。</figcaption>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>想真正降延迟，按这个顺序改：</b>① 关闭编码器的 B 帧与 lookahead（<code>zerolatency</code>）；② 缩短 GOP 到 1 秒；③ 降低网关缓存；④ 选 WHEP 而不是 HLS；⑤ 最后才考虑换硬件。顺序错了，钱花了效果也不明显。</span></div>
+</section>
+
+<section id="security">
+  <h2>🔐 HTTPS、CORS 与自动播放：三个“非技术”的真问题</h2>
+  <div class="grid-3">
+    <div class="card">
+      <h4>混合内容</h4>
+      <p class="small">页面是 <code>https://</code> 时，浏览器会拦截 <code>http://</code> 的媒体与 WHEP 请求。网关也必须上 HTTPS（或放在同域反向代理后面），否则“本地能播、线上一片空白”。</p>
+    </div>
+    <div class="card">
+      <h4>CORS</h4>
+      <p class="small">WHEP 的 POST 带 <code>Content-Type: application/sdp</code>，属于“非简单请求”，会触发预检。服务端必须允许 <code>OPTIONS</code>、<code>POST</code>、<code>DELETE</code> 与该 Content-Type。最省事的办法是同域反代。</p>
+    </div>
+    <div class="card">
+      <h4>自动播放</h4>
+      <p class="small">没有用户手势时，只有静音视频能自动播放。产品上要么默认静音 + 显式“开启声音”按钮，要么让用户先点一下播放键。别和浏览器策略硬刚。</p>
+    </div>
+  </div>
+
+  <pre class="code"># 同域反向代理（Nginx 示例）：把网关藏到 /live/ 下，绕开 CORS
+location /live/ {
+  proxy_pass http://127.0.0.1:8889/;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  # WHEP 需要透传 DELETE / POST
+  proxy_set_header X-Forwarded-For $remote_addr;
+}</pre>
+</section>
+
+<section id="trouble">
+  <h2>🧯 排错表：症状 → 证据 → 处理</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>症状</th><th>先看哪里</th><th>常见原因</th><th>处理</th></tr></thead>
+      <tbody>
+        <tr><td>粘贴 RTSP 后毫无反应</td><td>控制台日志</td><td>浏览器不支持直连（预期行为）</td><td>改用网关产出的 WHEP/HLS/FLV 地址</td></tr>
+        <tr><td>WHEP POST 返回 404</td><td>Network 面板的请求 URL</td><td>路径少了 <code>/whep</code>，或 path 名不对</td><td>核对 <code>http://host:8889/&lt;path&gt;/whep</code></td></tr>
+        <tr><td>WHEP 返回 201 但黑屏</td><td>日志里的 ICE 状态</td><td>服务端给了不可达的 ICE 地址；NAT 未打洞</td><td>配置 additional hosts / TURN；同网段先验证</td></tr>
+        <tr><td>HLS 一直转圈</td><td>m3u8 是否能直接打开</td><td>跨域、播放列表 404、分片 403</td><td>逐个请求检查；给 CDN 配 CORS</td></tr>
+        <tr><td>HLS 能播但延迟 20 秒+</td><td>分片时长与缓冲</td><td>标准 HLS 的固有延迟</td><td>换 WHEP；或启用 LL-HLS</td></tr>
+        <tr><td>FLV 越播越慢</td><td>缓冲长度</td><td>TCP 拥塞导致堆积</td><td>开启追帧（latency chasing）；降码率</td></tr>
+        <tr><td>自动播放失败</td><td>控制台 NotAllowedError</td><td>浏览器策略</td><td>静音或等待用户点击</td></tr>
+        <tr><td>线上黑屏、本地正常</td><td>页面协议与请求协议</td><td>HTTPS 页面加载 HTTP 资源</td><td>网关上 HTTPS / 同域反代</td></tr>
+        <tr><td>声音有、画面无</td><td>SDP 的 m= 行与编码</td><td>H.265 不被 WebRTC 支持</td><td>网关转码为 H.264，或改走 HLS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>三段验证法：</b>① 用 VLC 打开网关产出的 RTSP，确认源没问题；② 用 <code>curl -v</code> 打 WHEP 端点，确认 HTTP 层通；③ 再回到浏览器看 ICE。把“网络 / 服务 / 浏览器”三层拆开，问题会自己浮出来。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>WHEP</td><td>用 HTTP POST 交换 SDP 的 WebRTC 收流协议</td><td>它只管“收流”，推流对应的是 WHIP</td></tr>
+        <tr><td>ICE</td><td>在多个候选地址里找出能通的路径</td><td>STUN 只是发现地址，TURN 才负责中继</td></tr>
+        <tr><td>SDP</td><td>描述媒体能力的文本</td><td>它是“菜单”，不是媒体数据</td></tr>
+        <tr><td>HLS</td><td>HTTP 分片 + m3u8 播放列表</td><td>分片时长直接决定延迟下限</td></tr>
+        <tr><td>LL-HLS</td><td>把分片再切小、边写边发的 HLS</td><td>需要服务端与播放器双端支持</td></tr>
+        <tr><td>MSE</td><td>浏览器把媒体数据喂给 video 的 API</td><td>iOS 支持受限，是 FLV 的硬伤</td></tr>
+        <tr><td>转封装</td><td>只换外壳，不重新编码</td><td>便宜、快，但解决不了编码不兼容</td></tr>
+        <tr><td>转码</td><td>解码再编码，换编码/分辨率/码率</td><td>贵、增加延迟，H.265→H.264 常用</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>网关参考：MediaMTX · ZLMediaKit · wvp-GB28181-pro</span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
+

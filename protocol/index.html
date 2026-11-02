@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>传输与信令协议 · RTP/RTCP、RTSP、RTMP、HLS/DASH、SRT、WebRTC</title>
+<meta name="description" content="用快递面单、客服回访、点菜下单这些生活比喻，讲透音视频传输与信令：RTP 序号与时间戳、RTCP NACK/PLI/REMB、RTSP 时序、RTMP chunk 与 FLV、HLS/DASH 切片、SRT 的延迟换稳定、WebRTC 的 ICE/SDP/DTLS-SRTP，附端口防火墙速查表。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/" class="cur">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>协议：同一路画面，<br><em>要换好几趟车</em></h1>
+    <p>摄像头不会直接把画面“扔”进浏览器。它先用 RTSP 谈好格式，用 RTP 把每一帧拆成带序号的包裹，再用 RTCP 报告丢没丢；服务器收到后，可能转成 RTMP 推给直播集群，切成 HLS 分片给 CDN，或用 WebRTC 塞进浏览器。每一种协议都是为某一种“路况”设计的，没有全能冠军。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#rtsp">🎬 看 RTSP 点播时序</a>
+      <a class="btn btn-ghost" href="#webrtc">🧊 看 WebRTC 怎么打洞</a>
+      <a class="btn btn-ghost" href="#ports">拿端口速查表</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">RTP / RTCP</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">RTSP</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">RTMP / FLV</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HLS / DASH</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">SRT</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">WebRTC</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">为什么协议不止一种</a>
+    <a href="#rtp">RTP：会编号的快递</a>
+    <a href="#rtcp">RTCP：客服回访与补发</a>
+    <a href="#rtsp">RTSP：点菜与上菜</a>
+    <a href="#rtmp">RTMP：分块装车</a>
+    <a href="#hls">HLS：把直播切片</a>
+    <a href="#dash">DASH：一份清单多种画质</a>
+    <a href="#srt">SRT：用延迟换稳定</a>
+    <a href="#webrtc">WebRTC：打洞与上锁</a>
+    <a href="#gb28181">GB28181 的位置</a>
+    <a href="#ports">端口与防火墙速查</a>
+    <a href="#compare">协议选型对比</a>
+    <a href="#debug">抓包与排错</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>🚚 为什么协议不止一种：三种路况，三套规矩</h2>
+  <p class="lead">把音视频传输想成寄东西：<strong>RTP</strong> 是带编号的快递面单，丢了哪一箱能立刻发现；<strong>RTSP</strong> 是你和仓库之间的点菜电话，只负责“我要哪一路、用什么包装”，不负责运货；<strong>RTMP</strong> 是把大件拆成标准托盘装车；<strong>HLS/DASH</strong> 是先把整场演出切成小段，再让观众按目录一段段取；<strong>SRT</strong> 是给快递加一个缓冲仓库，宁可晚一点也要齐；<strong>WebRTC</strong> 则是两个陌生人在没有中间商的情况下，先互相验身份、再拉一条加密专线。</p>
+  <p>它们要解决的矛盾其实只有三个：<strong>延迟</strong>、<strong>稳定</strong>、<strong>覆盖范围</strong>。局域网里可以任性，公网里必须妥协；浏览器只认 HTTP/WebRTC，摄像机只会 RTSP/GB28181；直播要扛并发，就得靠 CDN 和切片。理解了这个取舍，你看到任何新协议都不会慌。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">摄像头<span>RTSP / GB28181 / SRT</span></div><span class="ar">→</span>
+      <div class="node">接入服务器<span>收流、转封装、转码</span></div><span class="ar">→</span>
+      <div class="node hi">分发层<span>RTMP / HLS / DASH / WebRTC</span></div><span class="ar">→</span>
+      <div class="node">播放端<span>ffplay / 浏览器 / 机顶盒</span></div>
+    </div>
+    <figcaption>同一条画面在链路上会被“换车”多次：控制协议、传输协议、封装格式、分发协议各管一段。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>控制面与媒体面分开</h4>
+      <p class="small">RTSP、RTMP 的命令、SIP 的 INVITE 都属于“控制面”；真正的画面走 RTP、TCP 或 HTTP。排错时先问：是<strong>命令没谈成</strong>，还是<strong>媒体没到达</strong>？这两类问题的证据完全不同。</p>
+    </div>
+    <div class="card">
+      <h4>封装不等于传输</h4>
+      <p class="small">FLV、TS、fMP4 是“箱子”，RTMP、HLS、DASH 是“运输方式”。同一个 FLV 可以走 RTMP，也可以走 HTTP-FLV；同一个 fMP4 可以进 HLS，也可以进 DASH。别把容器名当协议名。</p>
+    </div>
+    <div class="card">
+      <h4>延迟是设计出来的</h4>
+      <p class="small">HLS 的 10 秒延迟不是“技术差”，而是切片、CDN 缓存、播放器缓冲共同换来的可扩展性。WebRTC 的 1 秒延迟也不是白来的：它放弃了 CDN 友好性，要求端到端连通。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>一句话记住分工：</b>RTP 负责“每一包是什么”，RTCP 负责“收得怎么样”，RTSP/RTMP 负责“开始与结束”，HLS/DASH 负责“怎么让很多人同时看”，SRT 负责“在不稳定的网络上稳住”，WebRTC 负责“在浏览器里低延迟地互通”。</span></div>
+</section>
+
+<section id="rtp">
+  <h2>📦 RTP：给每一帧发一张带编号的快递面单</h2>
+  <p class="lead">RTP（Real-time Transport Protocol，RFC 3550）不保证送达，也不保证顺序——它只保证<strong>你能知道丢了什么、该怎么拼回去</strong>。就像快递面单：箱号（序号）让你发现少了一箱，寄出时间（时间戳）让收件人知道哪箱先拆，寄件人编号（SSRC）让你在一堆包裹里认出“这是我买的”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>字段</th><th>位宽</th><th>生活化解释</th><th>工程上的坑</th></tr></thead>
+      <tbody>
+        <tr><td><code>V / P / X / CC</code></td><td class="num">2 / 1 / 1 / 4</td><td>面单的版本、是否加了填充、是否有扩展、附了几张副本</td><td>CC 大于 0 时头部会多出 CSRC 列表，解析偏移要跟着变</td></tr>
+        <tr><td><code>M</code>（Marker）</td><td class="num">1</td><td>“这一箱是这一批的最后一箱”</td><td>一帧被拆成多个 RTP 包时，只有最后一个包置 1；靠它判断帧边界</td></tr>
+        <tr><td><code>PT</code>（Payload Type）</td><td class="num">7</td><td>箱子里装的是什么型号的货</td><td>96–127 是动态类型，必须由 SDP 的 <code>a=rtpmap</code> 说明；96 可能是 H.264，也可能是 PS</td></tr>
+        <tr><td><code>Sequence Number</code></td><td class="num">16</td><td>箱号，从 0 数到 65535 再回绕</td><td>丢包看跳号；但重传（NACK 后）会让序号“倒退”，不能简单当丢包</td></tr>
+        <tr><td><code>Timestamp</code></td><td class="num">32</td><td>发货时刻，用来对齐播放节奏</td><td>视频通常是 90 kHz；同一帧的所有包时间戳必须相同，音频用采样率时钟</td></tr>
+        <tr><td><code>SSRC</code></td><td class="num">32</td><td>寄件人编号，区分同时收到的多路流</td><td>GB28181 要求它与 SDP 的 <code>y=</code> 一致；不一致会被平台直接丢包</td></tr>
+        <tr><td><code>CSRC</code></td><td class="num">0–15 × 32</td><td>这一箱经过哪些中转站（混音/混流来源）</td><td>普通点对点流通常没有；混流服务器才用</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTP 头 12 字节（H.264，PT=96，Marker=1）","bytes":"80 E0 03 E8 00 05 4A 2C 5A 3C 6F 12","fields":[{"name":"V / P / X / CC","start":0,"end":0,"bits":"2+1+1+4 bit","note":"0x80 表示 V=2、P=0、X=0、CC=0。版本几乎总是 2；X=1 时头部后面会跟扩展字段，解析时要跳过。"},{"name":"Marker + Payload Type","start":1,"end":1,"bits":"1+7 bit","note":"0xE0 拆开是 M=1、PT=0x60=96。96 属于动态类型，具体是 H.264 还是 H.265，要看 SDP 里的 a=rtpmap:96。"},{"name":"Sequence Number","start":2,"end":3,"bits":"16 bit","note":"0x03E8 = 1000。收流端用它检测丢包与乱序；16 位会回绕，比较时要处理回绕。"},{"name":"Timestamp","start":4,"end":7,"bits":"32 bit · 90 kHz","note":"0x00054A2C = 346668，约 3.85 秒（按 90 kHz 折算）。同一帧拆出的多个包，这个值必须完全一致。"},{"name":"SSRC","start":8,"end":11,"bits":"32 bit","note":"0x5A3C6F12，标识这一路同步源。多路流混在一起时，接收端先按 SSRC 分组，再按时间戳排序。"}],"hint":"悬停任意字节，看它在 RTP 头里扮演什么角色。真正的载荷从第 13 个字节开始（CC=0 且无扩展时）。"}'></div>
+
+  <h3>为什么 90 kHz 而不是 90000 Hz 的“秒”</h3>
+  <p>视频时间戳用 90 kHz 时钟，是因为它同时能被 24、25、30、50、60 fps 整除，帧间隔都是整数刻度：25 fps 一帧 3600 tick，30 fps 一帧 3000 tick。音频则直接用采样率（8 kHz、44.1 kHz、48 kHz），所以音视频同步不能直接比时间戳数字，必须按各自的时钟换算成秒，再用 RTCP 的 SR 做对齐。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>H.264 的三种打包方式</h4>
+      <p class="small">RFC 6184 定义了单 NAL 模式、<b>STAP-A</b>（把多个小 NAL 聚成一包）和 <b>FU-A</b>（把一个大的 IDR 切片分装）。看到 FU-A 的起始包丢了，整个大帧都拼不起来——这就是“只丢一个包却花屏两秒”的原因。</p>
+    </div>
+    <div class="card">
+      <h4>抖动缓冲不是越大越好</h4>
+      <p class="small">接收端用 jitter buffer 把早到的包压住、等晚到的包。缓冲越大越抗抖动，但延迟越高。WebRTC 会动态估算；HLS 干脆不用 RTP，交给 HTTP 缓存。调优时先量网络抖动，再定缓冲，不要凭感觉加。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别把“有 RTP”当成“能出画面”：</b>RTP 只证明包到了。还要确认 PT 与 SDP 匹配、SSRC 没被过滤、时间戳连续、并且收到了完整的关键帧。缺任何一条，播放器都可能停在黑屏。</span></div>
+</section>
+
+<section id="rtcp">
+  <h2>☎️ RTCP：客服回访，不送画面只送反馈</h2>
+  <p class="lead">如果 RTP 是快递，RTCP 就是客服回访电话：“这一批收到 98 箱、丢了 2 箱、第 37 箱请补发；画面已经花了，麻烦立刻重发一个关键帧；我这边带宽只剩 3 Mbps，别再往上顶了。”它不搬货，只让发送方知道<strong>收货质量</strong>，从而调整节奏、重传或降码率。</p>
+
+  <p>RTCP 与 RTP 通常成对出现：RTP 用偶数端口，RTCP 用相邻的奇数端口（这是 RFC 3550 的经典约定）。WebRTC 为了省端口，普遍启用 <code>a=rtcp-mux</code>，把两者塞进同一个五元组；此时不能再按“奇数端口”找 RTCP。RTCP 的会话带宽一般只占 5% 左右，发送间隔会自动拉长，别指望它像 RTP 一样密集。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>报文 / 反馈</th><th>类型</th><th>它在说什么</th><th>收到后怎么做</th></tr></thead>
+      <tbody>
+        <tr><td><b>SR</b>（Sender Report）</td><td class="num">PT 200</td><td>“我发了多少包、多少字节，现在是几点（NTP + RTP 时间）”</td><td>接收端用它做音视频同步与时钟校准</td></tr>
+        <tr><td><b>RR</b>（Receiver Report）</td><td class="num">PT 201</td><td>“我收了多少、丢包率多少、抖动多大”</td><td>发送端据此调整码率、GOP 或重传策略</td></tr>
+        <tr><td><b>SDES</b> / <b>BYE</b></td><td class="num">PT 202 / 203</td><td>CNAME 等身份信息 / “我要挂断了”</td><td>多流关联、会话结束清理</td></tr>
+        <tr><td><b>NACK</b>（Generic NACK）</td><td class="num">RTPFB 205 · FMT 1</td><td>“序号 1003、1004 没收到，请重发”</td><td>发送端从缓存里补发；补不回来就等下一个关键帧</td></tr>
+        <tr><td><b>PLI</b>（Picture Loss Indication）</td><td class="num">PSFB 206 · FMT 1</td><td>“我画面烂了，给我一个完整帧”</td><td>发送端尽快编码/发送 IDR；比逐个补包更划算</td></tr>
+        <tr><td><b>FIR</b>（Full Intra Request）</td><td class="num">PSFB 206 · FMT 4</td><td>“请发一个独立可解码帧”（更正式的全帧请求）</td><td>常用于会议切画面、SFU 切换主讲</td></tr>
+        <tr><td><b>REMB</b></td><td class="num">PSFB 206 · FMT 15</td><td>“我这边可用带宽大约 2.5 Mbps”</td><td>发送端降码率；REMB 是草案实现，兼容性依赖浏览器</td></tr>
+        <tr><td><b>TWCC</b></td><td class="num">RTPFB 205 · FMT 15</td><td>逐包报告到达时间，让发送端精确估算排队延迟</td><td>配合 GCC 算法做码率自适应；见 RFC 8888</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>“补包”与“补帧”的取舍</h4>
+      <p class="small">丢一两个包，NACK 重传最便宜；一个关键帧被拆成几十个包、丢了中间一片，重传成本高且延迟大，不如直接 PLI 请求新的 IDR。浏览器通常两种都会发，具体策略由接收端决定。</p>
+    </div>
+    <div class="card">
+      <h4>REMB 与 TWCC 不是一回事</h4>
+      <p class="small">REMB 是接收端直接说“我能收多少”；TWCC 是接收端把每个包的到达时间回传，让发送端自己算。前者简单，后者更准但反馈量大。工程上不要同时迷信两者，选一条主策略。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>排错提示：</b>“一直花屏但网络看起来不丢包”，先看有没有 PLI/FIR 发出、发送端有没有响应。只看 RTP 序号是不够的，反馈报文可能被防火墙挡在反方向——RTCP 也需要<strong>双向</strong>放行。</span></div>
+</section>
+
+<section id="rtsp">
+  <h2>🍽️ RTSP：先看菜单，再下单，最后上菜</h2>
+  <p class="lead">RTSP（Real-Time Streaming Protocol）像在餐厅点菜：<strong>DESCRIBE</strong> 是看菜单（这路流有哪些轨道、什么编码、地址在哪），<strong>SETUP</strong> 是告诉服务员“用哪张桌子、哪个端口上菜”，<strong>PLAY</strong> 才是真正下单开做。它只负责“点菜和撤单”，菜（媒体）由 RTP 另外端上来——这就是所谓的<strong>带外控制</strong>。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"RTSP 点播：DESCRIBE → SETUP → PLAY","actors":["播放器 ffplay","RTSP 服务器","摄像头"],"steps":[{"from":0,"to":1,"label":"OPTIONS 查询支持的方法","detail":"返回的 Public 头会列出 DESCRIBE、SETUP、PLAY、TEARDOWN 等；CSeq 从 1 开始递增。"},{"from":1,"to":0,"label":"200 OK + Public","detail":"确认对方是标准 RTSP 服务器，而不是某个私有 HTTP 接口。"},{"from":0,"to":1,"label":"DESCRIBE（Accept: application/sdp）","detail":"请求媒体描述。海康常见 URL 是 rtsp://host:554/Streaming/Channels/101。"},{"from":1,"to":0,"label":"200 OK + SDP","detail":"SDP 里 m=video 0 RTP/AVP 96，a=rtpmap:96 H264/90000，a=control:trackID=0。"},{"from":0,"to":1,"label":"SETUP（Transport 指定端口）","detail":"TCP 复用写 interleaved=0-1；UDP 写 client_port=8000-8001，服务器回 server_port。"},{"from":1,"to":0,"label":"200 OK + Session","detail":"Session: 12345678;timeout=60。后续 PLAY、PAUSE、TEARDOWN 都必须带这个会话号。"},{"from":0,"to":1,"label":"PLAY（Range: npt=0.000-）","detail":"npt 是正常播放时间；实时流从 0 开始，回放可以指定起止时间。"},{"from":1,"to":0,"label":"200 OK + RTP-Info","detail":"RTP-Info 给出 url、seq、rtptime，播放器据此初始化抖动缓冲与时间轴。"},{"from":2,"to":1,"label":"摄像头输出 H.264 码流","detail":"编码器按 GOP 输出 IDR 与 P 帧。RTSP 不切片、不转码，只负责把流取出来。"},{"from":1,"to":0,"label":"RTP 媒体（TCP 通道 0 / RTCP 1）","detail":"TCP 复用时 RTP 与 RTCP 都走同一条连接，穿防火墙最省事；UDP 则各走各的端口。"},{"from":0,"to":1,"label":"TEARDOWN 结束会话","detail":"也可用 OPTIONS 或 GET_PARAMETER 做保活，避免 Session 超时被服务器回收。"}]}'></div>
+
+  <pre class="code">OPTIONS rtsp://192.168.1.64:554/Streaming/Channels/101 RTSP/1.0
+CSeq: 1
+User-Agent: ffplay
+
+RTSP/1.0 200 OK
+CSeq: 1
+Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER
+
+DESCRIBE rtsp://192.168.1.64:554/Streaming/Channels/101 RTSP/1.0
+CSeq: 2
+Accept: application/sdp
+
+RTSP/1.0 200 OK
+CSeq: 2
+Content-Type: application/sdp
+Content-Base: rtsp://192.168.1.64:554/Streaming/Channels/101/
+Content-Length: 512
+
+v=0
+o=- 0 0 IN IP4 192.168.1.64
+s=Media Presentation
+c=IN IP4 0.0.0.0
+t=0 0
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=control:trackID=0</pre>
+  <p class="small">注意 <code>m=video 0</code> 里的 0 不是端口，而是“端口在 SETUP 里再谈”的占位符。真正的端口、传输方式（UDP 还是 TCP 复用）由 SETUP 的 <code>Transport</code> 头决定。</p>
+
+  <pre class="code">SETUP rtsp://192.168.1.64:554/Streaming/Channels/101/trackID=0 RTSP/1.0
+CSeq: 3
+Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+
+RTSP/1.0 200 OK
+CSeq: 3
+Session: 12345678;timeout=60
+Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+
+PLAY rtsp://192.168.1.64:554/Streaming/Channels/101 RTSP/1.0
+CSeq: 4
+Session: 12345678
+Range: npt=0.000-
+
+RTSP/1.0 200 OK
+CSeq: 4
+Session: 12345678
+RTP-Info: url=rtsp://192.168.1.64:554/Streaming/Channels/101/trackID=0;seq=1000;rtptime=346668</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>UDP 还是 TCP 复用</h4>
+      <p class="small"><code>Transport: RTP/AVP;unicast;client_port=8000-8001</code> 是 UDP，速度快但要放行一整段 UDP 端口；<code>RTP/AVP/TCP;interleaved=0-1</code> 把 RTP/RTCP 塞进 RTSP 的 TCP 连接，只要 554 通就能看，代价是 TCP 重传带来的延迟抖动。</p>
+    </div>
+    <div class="card">
+      <h4>常用方法与状态码</h4>
+      <p class="small">DESCRIBE / SETUP / PLAY / PAUSE / TEARDOWN / OPTIONS / GET_PARAMETER / SET_PARAMETER。401 是鉴权失败，404 多是 URL 或 trackID 写错，454 是 Session 不存在（常因过期或服务器重启），455 是方法在当前状态不可用。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>RTSP 的“延迟”经常不是协议本身：</b>默认播放器会缓冲几秒；编码器 GOP 太长会让首帧等待更久；TCP 复用遇到丢包会阻塞整条连接。先分别验证“首帧时间、缓冲深度、丢包重传”，再决定改哪一层。</span></div>
+</section>
+
+<section id="rtmp">
+  <h2>🚛 RTMP：把大件拆成标准托盘再装车</h2>
+  <p class="lead">RTMP（Real-Time Messaging Protocol）原本是 Flash 时代的直播协议，现在主要活在“推流”这一段。它的核心动作是<strong>分块（chunk）</strong>：一个很大的视频帧不能整块塞进网络，就切成固定大小的小块，每块带一个“这是第几号托盘、属于哪一车”的小标签。FLV 则是它最常见的“货物清单”格式。</p>
+
+  <p>RTMP 跑在 TCP 1935 上，先握手再谈命令：客户端发 <code>C0/C1/C2</code>，服务器回 <code>S0/S1/S2</code>，双方确认版本与随机数后才开始发消息。握手不是加密，也不是鉴权；它只建立一条“咱俩能按同一套节奏说话”的连接。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>Chunk 的结构</h4>
+      <pre class="code">Basic Header: 1–3 字节
+  fmt (2 bit) + chunk stream id
+Message Header: 11 / 7 / 3 / 0 字节
+  timestamp      3 字节（0xFFFFFF 时扩展 4 字节）
+  message length 3 字节
+  message type   1 字节
+  stream id      4 字节（小端）
+Payload: 默认 128 字节一块，可协商变大</pre>
+      <p class="small">fmt 越小，复用得越多：类型 0 带完整头，类型 1 只改长度与类型，类型 3 连时间戳都沿用上一块。分块大小协商后，太小的块会让头部开销变大，太大的块又会增加单包延迟。</p>
+    </div>
+    <div class="card">
+      <h4>AMF 命令与 FLV 的关系</h4>
+      <pre class="code">connect → releaseStream → FCPublish
+→ createStream → publish
+play → onStatus NetStream.Play.Start
+
+FLV tag 类型：
+  8  = audio
+  9  = video
+  18 = script（onMetaData）</pre>
+      <p class="small">FLV 是文件/流容器，RTMP 是传输协议。推流时常见组合是 <code>-f flv rtmp://...</code>；第一个视频 tag 通常带 AVCDecoderConfigurationRecord（SPS/PPS），播放器靠它初始化解码器。</p>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>环节</th><th>真实字段 / 命令</th><th>为什么重要</th></tr></thead>
+      <tbody>
+        <tr><td>握手</td><td class="num">C0 版本=3；C1/S1 各 1536 字节</td><td>版本不匹配或实现不完整时，服务器会直接断开</td></tr>
+        <tr><td>连接</td><td><code>connect</code> + <code>tcUrl</code> + <code>app</code></td><td>app 写错（如 <code>live</code> 写成 <code>livestream</code>）会 404 或直接拒流</td></tr>
+        <tr><td>建流</td><td><code>createStream</code> → stream id</td><td>后续 publish/play 都用这个 id 定位流</td></tr>
+        <tr><td>推流</td><td><code>publish</code> + 流名</td><td>流名是鉴权与路由的常见抓手（如 <code>live/stream?key=...</code>）</td></tr>
+        <tr><td>拉流</td><td><code>play</code> + 流名</td><td>HTTP-FLV 常映射到同一个流名，便于复用</td></tr>
+        <tr><td>时间戳</td><td class="num">3 字节，回绕约 4.66 小时</td><td>长时间推流要处理回绕，否则播放器会“时间倒流”</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>HTTP-FLV</strong> 是把同样的 FLV 数据挂在一个长 HTTP 响应上，浏览器用 MSE 加 flv.js 就能播。它比 HLS 延迟低，但没有原生支持，且每个客户端都占一条长连接；大并发时仍然要 CDN 或边缘节点。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>一句话区分：</b>RTMP 负责“把 FLV 推上去”，HTTP-FLV 负责“把 FLV 拉下来”，HLS 负责“把同样的内容切成很多小文件让 CDN 分发”。三者经常同时存在于一个直播间，只是各服务不同观众。</span></div>
+</section>
+
+<section id="hls">
+  <h2>🎞️ HLS：把一场直播切成很多小集</h2>
+  <p class="lead">HLS（HTTP Live Streaming，RFC 8216）的思路极其朴素：既然 HTTP 服务器最便宜、CDN 最成熟，那就把直播切成一段段几秒钟的小文件，再用一个 <code>.m3u8</code> 清单告诉播放器“先取哪段、后取哪段”。这就像追剧：你不需要一条不断的长线，只要拿到“本集目录”，一集一集下载即可。</p>
+
+  <pre class="code">#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:120
+#EXTINF:4.000,
+seg120.ts
+#EXTINF:4.000,
+seg121.ts
+#EXTINF:4.000,
+seg122.ts
+#EXT-X-ENDLIST</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>标签</th><th>作用</th><th>常见坑</th></tr></thead>
+      <tbody>
+        <tr><td><code>#EXT-X-TARGETDURATION</code></td><td>所有分片时长的上限（整数秒）</td><td>实际 #EXTINF 超过它，部分播放器会拒绝播放</td></tr>
+        <tr><td><code>#EXT-X-MEDIA-SEQUENCE</code></td><td>清单里第一个分片的序号</td><td>直播滚动窗口靠它递增，播放器据此判断新旧</td></tr>
+        <tr><td><code>#EXTINF</code></td><td>下一段的时长（可带小数）</td><td>切片必须从关键帧开始，否则拼接处会花屏</td></tr>
+        <tr><td><code>#EXT-X-ENDLIST</code></td><td>点播结束标记</td><td>直播清单不要写；写了播放器会认为已完结</td></tr>
+        <tr><td><code>#EXT-X-KEY</code></td><td>AES-128 / SAMPLE-AES 等加密信息</td><td>密钥 URL 跨域、鉴权失败会导致整段黑屏</td></tr>
+        <tr><td><code>#EXT-X-MAP</code></td><td>fMP4 的初始化分片（init.mp4）</td><td>缺它就无法建立解码器；CMAF/fMP4 场景必查</td></tr>
+        <tr><td><code>#EXT-X-DISCONTINUITY</code></td><td>时间轴或编码参数发生跳变</td><td>广告插入、切码率后漏写会导致音画不同步</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>延迟是怎么“攒”出来的</h3>
+  <p>一次典型的 HLS 延迟 = 采集与编码延迟 + 一个分片的时长 + 播放器至少缓存 2–3 个分片 + CDN 回源与网络时间。分片 6 秒、缓存 3 片，轻松就到 20 秒。想压低延迟，要么缩短分片（代价是请求数暴增），要么上 <strong>LL-HLS</strong>（低延迟 HLS）：用部分分片、阻塞式清单刷新和预加载提示，把延迟压到几秒，但它对 CDN 与播放器的支持要求更高，具体以 8216bis 草案与各厂商实现为准。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>TS 还是 fMP4</h4>
+      <p class="small">TS 兼容老设备，工具链成熟；fMP4（CMAF）更省空间、启动更快，还能与 DASH 共用同一份切片。HEVC/AV1 基本都走 fMP4。</p>
+    </div>
+    <div class="card">
+      <h4>为什么切片要对齐 GOP</h4>
+      <p class="small">播放器切到新分片时必须从关键帧开始解码。若编码器 GOP 是 2 秒而切片是 4 秒，边界刚好；如果是 3 秒 GOP 配 4 秒切片，边界就会切在 P 帧上。</p>
+    </div>
+    <div class="card">
+      <h4>多码率就是多份清单</h4>
+      <p class="small">主清单（master playlist）列出 360p/720p/1080p 各自的子清单与 BANDWIDTH，播放器根据带宽切换。切片时间轴必须对齐，否则切换会卡顿。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>工程口诀：</b>GOP 等于切片时长、切片从 IDR 开始、清单用相对路径、所有码率共用同一时间轴。做到这四点，HLS 的“莫名卡顿”会少一大半。</span></div>
+</section>
+
+<section id="dash">
+  <h2>📋 DASH：一份 MPD 清单，描述所有画质</h2>
+  <p class="lead">DASH（MPEG-DASH，ISO/IEC 23009-1）和 HLS 是同一个思路的“标准化版本”：也用 HTTP 下载分片，但它用一份 XML 格式的 <strong>MPD</strong>（Media Presentation Description）描述“有哪些 Period、哪些画质、每段切片怎么命名”。HLS 的清单是逐行的文本，DASH 的清单是结构化的树。</p>
+
+  <pre class="code">&lt;MPD type="dynamic" minimumUpdatePeriod="PT2S"
+     availabilityStartTime="2026-11-02T00:00:00Z"
+     timeShiftBufferDepth="PT30S"&gt;
+  &lt;Period id="p0" start="PT0S"&gt;
+    &lt;AdaptationSet mimeType="video/mp4" segmentAlignment="true"&gt;
+      &lt;Representation id="v720" bandwidth="2500000"
+                    codecs="avc1.64001f" width="1280" height="720"&gt;
+        &lt;SegmentTemplate timescale="1000" duration="2000"
+          initialization="v720/init.mp4"
+          media="v720/$Number%05d$.m4s"/&gt;
+      &lt;/Representation&gt;
+    &lt;/AdaptationSet&gt;
+  &lt;/Period&gt;
+&lt;/MPD&gt;</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>概念</th><th>含义</th><th>实战提醒</th></tr></thead>
+      <tbody>
+        <tr><td><code>Period</code></td><td>一段连续的时间区间，可插入广告或切换内容</td><td>Period 切换点若编码参数变化，要重新初始化解码器</td></tr>
+        <tr><td><code>AdaptationSet</code></td><td>同一类媒体的集合（视频/音频/字幕）</td><td>视频与音频通常分开，播放器要自己对齐时间轴</td></tr>
+        <tr><td><code>Representation</code></td><td>一个具体码率/分辨率的版本</td><td>bandwidth 是选码率的重要依据，但实际码率会波动</td></tr>
+        <tr><td><code>SegmentTemplate</code></td><td>用模板批量生成分片 URL</td><td><code>$Number$</code>、<code>$Time$</code>、<code>$RepresentationID$</code> 写法由服务器决定</td></tr>
+        <tr><td><code>type=static/dynamic</code></td><td>点播 / 直播</td><td>直播用 dynamic，并配合 <code>minimumUpdatePeriod</code> 刷新清单</td></tr>
+        <tr><td><code>UTCTiming</code></td><td>告诉播放器去哪儿对时</td><td>服务器时钟漂移会导致直播“追帧”或“卡在开头”</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>DASH 的强项</h4>
+      <p class="small">一份清单表达多 Period、多码率、多语言、DRM（CENC）；切片可与 HLS 共用 CMAF 文件，实现“一份存储、两套清单”。大型点播平台偏爱它，因为描述能力强、扩展性好。</p>
+    </div>
+    <div class="card">
+      <h4>DASH 的弱项</h4>
+      <p class="small">XML 比 m3u8 重，客户端实现复杂度更高；浏览器原生支持远不如 HLS（Safari 尤其偏 HLS），通常要 dash.js 或 hls.js 这类 MSE 库补齐。</p>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>HLS</th><th>DASH</th></tr></thead>
+      <tbody>
+        <tr><td>清单格式</td><td>UTF-8 文本 m3u8</td><td>XML MPD</td></tr>
+        <tr><td>分片容器</td><td>TS 或 fMP4</td><td>主要 fMP4（也支持其他）</td></tr>
+        <tr><td>浏览器原生</td><td>Safari/iOS 原生；其他靠 hls.js</td><td>基本靠 dash.js；Safari 支持有限</td></tr>
+        <tr><td>低延迟方案</td><td>LL-HLS（部分分片 + 阻塞刷新）</td><td>LL-DASH（chunked 传输 + 短分片）</td></tr>
+        <tr><td>典型延迟</td><td>6–30 秒（取决于配置）</td><td>4–20 秒（取决于配置）</td></tr>
+        <tr><td>DRM</td><td>FairPlay / Widevine（通过 EXT-X-KEY 等）</td><td>CENC + 多种 DRM 系统</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>选型不是“谁更先进”：</b>面向苹果生态、要走最成熟的 CDN，选 HLS；要做多 Period、多 DRM、与自有播放器深度集成，选 DASH；两者都做，就用 CMAF 共用切片，维护成本最低。</span></div>
+</section>
+
+<section id="srt">
+  <h2>🛡️ SRT：宁可晚到，也要整箱到齐</h2>
+  <p class="lead">公网丢包、抖动、带宽忽高忽低，UDP 直传会花屏，TCP 又会因为重传把延迟越拖越长。SRT（Secure Reliable Transport）的做法是：在 UDP 之上加一个<strong>可调的缓冲池</strong>，用 ARQ（自动重传请求）补丢包，用 AES 加密防偷看。它不追求“最快”，而是让你用<strong>可控的延迟</strong>换<strong>稳定的画面</strong>——像给快递加一个中转仓，晚一点，但箱子不会缺。</p>
+
+  <p>SRT 由 Haivision 发起、SRT Alliance 维护，协议规范以公开的 Internet-Draft 与实现文档为准，<strong>不是 IETF 的正式 RFC 标准</strong>。它最常见的载体是 MPEG-TS，因此和广电、演播室、远程回传的场景特别合拍。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数 / 模式</th><th>含义</th><th>怎么用</th></tr></thead>
+      <tbody>
+        <tr><td><code>mode=caller</code></td><td>主动去连对方（发起方）</td><td>推流端常用；需要知道对方公网地址与端口</td></tr>
+        <tr><td><code>mode=listener</code></td><td>监听等待对方来连</td><td>接收端常用；防火墙只需放行一个 UDP 端口</td></tr>
+        <tr><td><code>mode=rendezvous</code></td><td>双方同时向对方发起，适合都在 NAT 后</td><td>配置更复杂，成功与否依赖 NAT 行为</td></tr>
+        <tr><td><code>latency</code></td><td>接收缓冲目标（毫秒级）</td><td>越大越抗抖动，但端到端延迟越高；常用 200–800 ms，默认值以版本为准</td></tr>
+        <tr><td><code>passphrase</code> / <code>pbkeylen</code></td><td>AES 加密口令与密钥长度</td><td>两端必须一致；口令错会直接连接失败</td></tr>
+        <tr><td><code>streamid</code></td><td>业务标识，供接收端路由</td><td>一个监听端口接多路流时靠它区分</td></tr>
+        <tr><td><code>maxbw</code></td><td>带宽上限</td><td>防止一条流把整条上行吃满</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 接收端：监听 9000，缓冲 200 ms
+ffmpeg -f mpegts -i "srt://0.0.0.0:9000?mode=listener&amp;latency=200" \
+  -c copy out.ts
+
+# 发送端：主动连接，限制带宽
+ffmpeg -f mpegts -i input.ts \
+  -c copy -f mpegts "srt://10.0.0.8:9000?mode=caller&amp;latency=200&amp;maxbw=20000000"
+
+# 只做转发、不转码
+srt-live-transmit "srt://:9000?mode=listener" "srt://10.0.0.9:9000?mode=caller"</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>SRT 的“延迟”是预算，不是固定值</h4>
+      <p class="small">它把一段时间内的包先收进缓冲，等齐了再交给解码器。网络抖动 100 ms、你设 200 ms，通常够用；跨洲链路抖动 400 ms，就得设更大。设太小会频繁触发重传与丢帧，设太大则观众明显感到“慢半拍”。</p>
+    </div>
+    <div class="card">
+      <h4>什么时候不该用 SRT</h4>
+      <p class="small">观众是浏览器、要过 CDN、要按需伸缩并发——这些场景 SRT 都不合适（浏览器不原生支持，CDN 也不按 SRT 分发）。它更适合“点对点回传/贡献”这一段，到了机房再转 HLS/WebRTC。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要把 SRT 当“万能加速器”：</b>它不能突破物理带宽，也不能修复源头编码问题。上行只有 5 Mbps，却推 8 Mbps 的 4K，SRT 只会用延迟和丢帧来“消化”这个不可能，最终画面照样烂。</span></div>
+</section>
+
+<section id="webrtc">
+  <h2>🧊 WebRTC：先交换名片，再验指纹，最后拉专线</h2>
+  <p class="lead">WebRTC 的目标是“浏览器之间直接、低延迟、加密地传音视频”。它把最难的三件事拆开：<strong>SDP</strong> 谈“我会什么格式”，<strong>ICE</strong> 找“我们之间哪条路能通”，<strong>DTLS-SRTP</strong> 负责“把这条路加上锁”。三者缺一不可，而且信令（怎么把 SDP 和 candidate 传给对方）反而没有统一标准。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"WebRTC 建立连接：SDP 谈判 → ICE → DTLS-SRTP","actors":["浏览器 A","信令 / SFU","浏览器 B"],"steps":[{"from":0,"to":1,"label":"Offer SDP（含 m= 与 ice-ufrag）","detail":"SDP 里声明支持的编码、a=rtcp-mux、a=group:BUNDLE、a=fingerprint 与 a=setup:actpass。"},{"from":1,"to":2,"label":"转发 Offer","detail":"信令服务器只负责搬运，不参与媒体；可以用 WebSocket、SIP，或 WHIP/WHEP 这类 HTTP 信令。"},{"from":2,"to":1,"label":"Answer SDP（选定编码与角色）","detail":"B 选定实际使用的 payload、确定 DTLS 角色（active/passive），并把答案回传。"},{"from":1,"to":0,"label":"转发 Answer","detail":"双方此时知道对方支持什么，但还不知道网络路径怎么走。"},{"from":0,"to":2,"label":"ICE Candidate（host / srflx / relay）","detail":"每个 candidate 是 ip:port:type。host 是本地网卡，srflx 是 STUN 反射地址，relay 是 TURN 中继。"},{"from":2,"to":0,"label":"ICE Candidate（反向）","detail":"双方收集完候选后做连通性检查；优先直连，失败才走 TURN 中继。"},{"from":0,"to":2,"label":"STUN Binding 连通性检查","detail":"用 a=ice-ufrag 与 a=ice-pwd 做认证；选出优先级最高且双向可达的一对地址。"},{"from":0,"to":2,"label":"DTLS 握手（证书指纹校验）","detail":"用 SDP 里的 a=fingerprint 校验对方证书，防止中间人；随后导出 SRTP 密钥。"},{"from":0,"to":2,"label":"SRTP 媒体流（音视频）","detail":"RTP 包被 SRTP 加密；丢包用 NACK/PLI 反馈，带宽用 TWCC/REMB 自适应。"},{"from":0,"to":1,"label":"关闭：BYE / DTLS close","detail":"结束会话，释放 ICE 与 TURN 资源；SFU 场景还要通知其他参与者。"}]}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>环节</th><th>关键字段 / 协议</th><th>排错抓手</th></tr></thead>
+      <tbody>
+        <tr><td>媒体协商</td><td>SDP（RFC 8866）、offer/answer（RFC 3264）</td><td>看 m= 行与 a=rtpmap；两端没有共同编码时，SDP 会协商失败</td></tr>
+        <tr><td>网络穿越</td><td>ICE（RFC 8445）、STUN（RFC 8489）、TURN（RFC 8656）</td><td>看 candidate 类型；只有 relay 说明直连失败，TURN 带宽成了瓶颈</td></tr>
+        <tr><td>加密</td><td>DTLS 1.2（RFC 6347）、DTLS-SRTP（RFC 5764）、SRTP（RFC 3711）</td><td>证书指纹不匹配会握手失败；自签证书也要两端指纹一致</td></tr>
+        <tr><td>复用</td><td>BUNDLE（RFC 8843）、<code>a=rtcp-mux</code></td><td>音视频共用一个五元组，少开端口；老实现可能不支持</td></tr>
+        <tr><td>反馈</td><td>NACK、PLI、REMB、TWCC（RFC 8888）</td><td>花屏看 PLI；码率不降看 REMB/TWCC 是否到达发送端</td></tr>
+        <tr><td>端口</td><td class="num">STUN/TURN 3478；TURN TLS 5349；媒体 UDP 动态高位端口</td><td>企业网常只放行 443，需部署 TURN over TLS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>为什么 WebRTC 的延迟能这么低</h3>
+  <p>它没有 HLS 那种“切片—缓存—再取”的链路，RTP 包几乎实时进入抖动缓冲；编码器通常开启低延迟模式（不做多帧前瞻、B 帧更少）；再加上端到端反馈（TWCC/REMB）快速调码率，整体可以做到几百毫秒。代价是：它依赖双方网络可达，规模化要靠 SFU 集群，CDN 不能直接帮它分发。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>host</h4>
+      <p class="small">本机网卡地址。同一局域网内最优先，速度最快，但跨 NAT 就无效。</p>
+    </div>
+    <div class="card">
+      <h4>srflx</h4>
+      <p class="small">通过 STUN 服务器看到的“公网映射地址”。能穿透部分 NAT，但不保证双向可用。</p>
+    </div>
+    <div class="card">
+      <h4>relay</h4>
+      <p class="small">TURN 中继地址。最稳但最贵：所有媒体都绕服务器走，带宽与延迟都由它承担。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“WebRTC 连不上”先分三层：</b>① SDP 有没有共同编码；② ICE 有没有一对候选双向通过；③ DTLS 指纹与证书是否匹配。只盯着“浏览器控制台报错”通常看不出是哪一层，必须看 <code>chrome://webrtc-internals</code> 的候选与统计。</span></div>
+</section>
+
+<section id="gb28181">
+  <h2>🇨🇳 GB28181 在这张地图上的位置</h2>
+  <p>GB28181 不是又一个传输协议，而是把<strong> SIP 信令 + SDP 协商 + PS over RTP 媒体</strong>固定成一套组合，专门解决安防设备的联网与互操作。它和本页其他协议的关系是：借用了 RTP/RTCP 的传输能力，但用自己的 SIP 流程替代 RTSP 的点播流程，用自己的 PS 封装替代 H.264 over RTP 的常规打包。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>信令：SIP</h4>
+      <p class="small">REGISTER 注册、MESSAGE 心跳与 Catalog、INVITE 点播、INFO 控制。默认 5060，UDP/TCP 都可能用到。</p>
+    </div>
+    <div class="card">
+      <h4>媒体：PS over RTP</h4>
+      <p class="small">SDP 里写 <code>a=rtpmap:96 PS/90000</code> 与 <code>y=SSRC</code>；RTP 载荷是 MPEG-2 Program Stream，不是普通 H.264 打包。</p>
+    </div>
+    <div class="card">
+      <h4>落地：网关</h4>
+      <p class="small">浏览器不认 SIP 与 PS，工程上几乎总要再加一层流媒体网关，转成 WebRTC/HLS/FLV。</p>
+    </div>
+  </div>
+
+  <p class="small">想深入注册鉴权、Catalog、INVITE 与 TCP 主动/被动，直接看 <a href="../gb28181.html"><strong>GB28181 专题页</strong></a>。本页只把它当作“协议家族中的一员”，不再重复展开。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>别混用名词：</b>GB28181 里的“点播”是 SIP INVITE，不是 RTSP PLAY；它的“控制”是 SIP INFO 里的 MANSCDP XML，不是 RTSP 的 PAUSE。抓包时如果只过滤 RTSP，永远看不到国标的信令。</span></div>
+</section>
+
+<section id="ports">
+  <h2>🔌 端口与防火墙速查：先放行，再谈优化</h2>
+  <p class="lead">协议排错里，至少有三分之一死在这张表上：该开的 UDP 没开、开了 TCP 却以为 RTP 也会走 TCP、NAT 把长时间没流量的端口回收了。下面这些是<strong>常见默认值</strong>，实际以你的服务器配置为准——尤其是媒体端口段，每个项目都不一样。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>协议 / 用途</th><th>默认端口</th><th>传输</th><th>放行要点</th></tr></thead>
+      <tbody>
+        <tr><td>RTSP 控制</td><td class="num">554（备选 8554）</td><td>TCP</td><td>只开 554 不够；若用 UDP 媒体，还要开 RTP/RTCP 端口对</td></tr>
+        <tr><td>RTP / RTCP</td><td class="num">偶数 / 相邻奇数（动态）</td><td>UDP</td><td>通常是一整段（如 10000–20000）；双向放行，别只开入站</td></tr>
+        <tr><td>RTMP</td><td class="num">1935</td><td>TCP</td><td>RTMPS 常走 443；推流与拉流可能不是同一台机器</td></tr>
+        <tr><td>HTTP-FLV / HLS / DASH</td><td class="num">80 / 443</td><td>TCP</td><td>CDN 回源也要放行；HLS 是大量小请求，注意连接数</td></tr>
+        <tr><td>SRT</td><td class="num">9000（可自定义）</td><td>UDP</td><td>只需一个端口；listener 端要能被公网访问</td></tr>
+        <tr><td>WebRTC / STUN</td><td class="num">3478</td><td>UDP / TCP</td><td>STUN 只帮忙发现地址；企业网常封 UDP，需备 TLS</td></tr>
+        <tr><td>TURN</td><td class="num">3478；TLS 5349；中继端口段可配</td><td>UDP / TCP / TLS</td><td>中继端口段必须整段放行，否则只有部分用户能通</td></tr>
+        <tr><td>WebRTC 媒体</td><td class="num">动态高位端口（常见 49152–65535）</td><td>UDP</td><td>浏览器随机选端口；服务端要允许出站与回包</td></tr>
+        <tr><td>SIP（GB28181）</td><td class="num">5060；TLS 5061</td><td>UDP / TCP</td><td>UDP 与 TCP 都建议开；国标设备两种都可能用</td></tr>
+        <tr><td>GB28181 媒体</td><td class="num">常见 30000–30500（以平台配置为准）</td><td>UDP / TCP</td><td>整段放行；TCP 主动/被动还要看谁发起连接</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>四条防火墙铁律</h4>
+      <p class="small">① 媒体多为 UDP，必须<strong>双向</strong>放行；② NAT 会回收长时间无流量的映射，保活不能省；③ 不要只开控制端口就期待媒体能过；④ 跨网闸/安全域时，先确认策略是否允许长连接与 UDP。</p>
+    </div>
+    <div class="card">
+      <h4>怎么快速判断“是不是防火墙”</h4>
+      <p class="small">在同网段用 <code>ffplay</code> 能播、跨网段不能播，基本就是策略问题；抓包看到 SYN 发出但没有 SYN-ACK，或 UDP 只有出没有进，也都是典型证据。先用 <code>nc</code> / <code>telnet</code> 验 TCP，再用抓包验 UDP。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>部署顺序：</b>先在同一网段跑通最小链路（不经过防火墙），再逐跳加防火墙与 NAT，每加一跳验证一次。这样出问题时，你永远知道是哪一跳引入的。</span></div>
+</section>
+
+<section id="compare">
+  <h2>⚖️ 协议选型：延迟、稳定、覆盖的三角</h2>
+  <p>没有“最好的协议”，只有“最适合这段链路的路况”。下面把常见组合放在一张表里：延迟是量级，不是精确承诺；实际值取决于分片、缓冲、GOP、网络与实现。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>协议</th><th>典型延迟</th><th>传输</th><th>浏览器原生</th><th>最适合</th><th>主要代价</th></tr></thead>
+      <tbody>
+        <tr><td><b>RTSP + RTP</b></td><td>0.5–3 秒</td><td>TCP / UDP</td><td>否</td><td>摄像头取流、局域网监看、录像机</td><td>公网穿透差；每路一个会话；浏览器需网关</td></tr>
+        <tr><td><b>RTMP</b></td><td>1–5 秒</td><td>TCP 1935</td><td>否（需 Flash 时代方案）</td><td>主播推流、直播源接入</td><td>基于 TCP，弱网恢复一般；移动端推流支持有限</td></tr>
+        <tr><td><b>HTTP-FLV</b></td><td>1–4 秒</td><td>HTTP 长连接</td><td>需 MSE + flv.js</td><td>国内低延迟 Web 直播</td><td>长连接占资源；不如 HLS 好做 CDN 缓存</td></tr>
+        <tr><td><b>HLS</b></td><td>6–30 秒</td><td>HTTP</td><td>是（Safari/iOS 原生）</td><td>大并发直播、点播、OTT</td><td>延迟高；切片与 GOP 必须对齐</td></tr>
+        <tr><td><b>DASH</b></td><td>4–20 秒</td><td>HTTP</td><td>需 dash.js</td><td>多码率点播、多 DRM、复杂清单</td><td>客户端复杂；苹果生态支持弱</td></tr>
+        <tr><td><b>SRT</b></td><td>0.2–2 秒（可调）</td><td>UDP</td><td>否</td><td>公网回传、演播室贡献、远程制作</td><td>要调缓冲；不适合直接面向海量观众</td></tr>
+        <tr><td><b>WebRTC</b></td><td>0.2–1 秒</td><td>UDP（ICE）</td><td>是</td><td>视频会议、在线课堂、低延迟监控</td><td>需要信令与 TURN；规模化要 SFU；CDN 不友好</td></tr>
+        <tr><td><b>GB28181</b></td><td>0.5–3 秒</td><td>SIP + RTP</td><td>否</td><td>安防联网、国标平台、跨级联</td><td>协议组合重；设备差异大；浏览器需网关</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>只给内部看</h4>
+      <p class="small">局域网、几十路、要求低延迟：RTSP 直连或 GB28181 接入 + WebRTC 网关。别为了“统一”硬上 HLS，延迟会让你天天被问“为什么慢十秒”。</p>
+    </div>
+    <div class="card">
+      <h4>要给很多人看</h4>
+      <p class="small">上千并发、允许几秒到几十秒延迟：HLS/DASH + CDN。把切片做短一点、开启 LL-HLS，可以显著改善体验，但要先确认 CDN 支持。</p>
+    </div>
+    <div class="card">
+      <h4>要双向、要互动</h4>
+      <p class="small">连麦、会议、远程控制：WebRTC。接受它“需要信令、需要 TURN、需要 SFU”的现实，别指望它像 HTTP 一样随便扩。</p>
+    </div>
+  </div>
+</section>
+
+<section id="debug">
+  <h2>🔬 抓包与排错：把“看不到”拆成六层</h2>
+  <p>有效的排错不是猜，而是按层取证：<strong>信令成没成 → 媒体到没到 → 包序对不对 → 载荷能不能解 → 播放器有没有关键帧 → 时间轴是否对齐</strong>。每一层都有对应的工具与过滤器。</p>
+
+  <div class="tabs">
+    <button class="tab on" data-t="cmd">常用命令</button>
+    <button class="tab" data-t="filter">Wireshark 过滤器</button>
+    <button class="tab" data-t="symptom">症状与原因</button>
+  </div>
+  <div class="tab-pnl on" data-p="cmd">
+    <pre class="code"># 1) RTSP 直接播，先确认最小链路
+ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay \
+  rtsp://user:pass@192.168.1.64/Streaming/Channels/101
+
+# 2) 只取流信息，不播放
+ffprobe -v error -show_streams -show_format \
+  rtsp://user:pass@192.168.1.64/Streaming/Channels/101
+
+# 3) RTMP 拉流落盘（验证推流是否真的到服务器）
+ffmpeg -i rtmp://127.0.0.1/live/stream -c copy -f flv out.flv
+
+# 4) HLS 清单与分片检查
+ffprobe -show_streams https://example.com/live/index.m3u8
+curl -s https://example.com/live/index.m3u8 | head -40
+
+# 5) SRT 接收
+ffmpeg -f mpegts -i "srt://0.0.0.0:9000?mode=listener&amp;latency=200" \
+  -c copy out.ts</pre>
+    <p class="small"><b>建议：</b>一次只改一个变量。先用 <code>ffprobe</code> 确认“流本身存在且能解析”，再换播放器、换网络、换协议。否则你会在播放器 UI 上浪费一整天。</p>
+  </div>
+  <div class="tab-pnl" data-p="filter">
+    <pre class="code">rtsp                                  # RTSP 控制
+rtp                                   # RTP 媒体
+rtcp                                  # RTCP 反馈
+rtp.ssrc == 0x5a3c6f12                # 按 SSRC 过滤多路流
+rtp.seq == 1003                       # 定位某个丢包序号
+rtmpt                                 # RTMP over TCP
+stun                                  # ICE 连通性检查
+dtls                                  # DTLS 握手
+srtp                                  # 加密后的媒体
+http                                  # HLS / DASH / HTTP-FLV
+
+# 只看 RTCP 反馈类型（如 PLI）
+rtcp.pt == 206</pre>
+    <p class="small">SRT 的解析不一定内置在 Wireshark 里，必要时按 UDP 端口观察，或使用 SRT 自带统计（发送/接收端日志里的 lost、retrans、drop 计数）。加密后的 SRTP 只能看包长与节奏，不能直接看内容。</p>
+  </div>
+  <div class="tab-pnl" data-p="symptom">
+    <div class="scroll-x">
+      <table class="cmp">
+        <thead><tr><th>症状</th><th>大概率原因</th><th>怎么验证</th></tr></thead>
+        <tbody>
+          <tr><td>DESCRIBE 401</td><td>账号密码错、Digest 未按服务器要求</td><td>用 VLC/ffplay 分别试；看 WWW-Authenticate 的 realm 与 nonce</td></tr>
+          <tr><td>SETUP 454</td><td>Session 过期、服务器重启、URL 的 trackID 不对</td><td>回看 DESCRIBE 的 SDP 里 a=control 的真实值</td></tr>
+          <tr><td>PLAY 成功但黑屏</td><td>RTP 没到、端口被挡、SSRC 不匹配、没有 IDR</td><td>两侧抓包；按 rtp.ssrc 过滤；看首个关键帧</td></tr>
+          <tr><td>RTMP 推流 404</td><td>app 或流名不对、鉴权 key 错</td><td>对比服务器配置与推流 URL；看服务器访问日志</td></tr>
+          <tr><td>HLS 一直转圈</td><td>清单 404、分片跨域、EXT-X-MAP 缺失、GOP 未对齐</td><td>curl 清单与第一个分片；检查 m3u8 标签与 CORS</td></tr>
+          <tr><td>SRT 连不上</td><td>模式写反、端口未放行、passphrase 不一致</td><td>先用不加密的 listener/caller 最小组合验证</td></tr>
+          <tr><td>WebRTC 只有 relay</td><td>对称 NAT、UDP 被封、STUN 不可达</td><td>看 chrome://webrtc-internals 的 candidate 与 selected pair</td></tr>
+          <tr><td>WebRTC 花屏</td><td>丢包、NACK/PLI 未生效、抖动缓冲太小</td><td>看 inbound stats 的 nackCount、pliCount、jitterBufferDelay</td></tr>
+          <tr><td>音画不同步</td><td>时间戳基准不同、RTCP SR 丢失、切片时间轴错位</td><td>对比 RTP 时间戳与 RTCP SR 的 NTP/RTP 映射</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>最小验证链：</b>同机回环 → 同网段 → 跨网段 → 公网。每跨一步只加一个变量（防火墙、NAT、CDN、转码）。能把问题钉在某一跳，比读十篇协议文档更快。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>最容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>RTP</td><td>实时传输协议，负责给媒体分包并编号</td><td>它不保证送达，也不负责建立会话</td></tr>
+        <tr><td>RTCP</td><td>RTP 的伴生控制协议，回传质量与反馈</td><td>不传画面；NACK/PLI 都在这里</td></tr>
+        <tr><td>SSRC</td><td>RTP 流的同步源标识</td><td>同一路流的所有包必须一致；GB28181 要与 SDP 的 y= 对齐</td></tr>
+        <tr><td>NACK</td><td>请求重传指定序号的包</td><td>它补的是“包”，不是“帧”</td></tr>
+        <tr><td>PLI / FIR</td><td>请求发送方尽快给一个完整关键帧</td><td>PLI 更轻量；FIR 更正式，常用于切画面</td></tr>
+        <tr><td>RTSP</td><td>带外控制协议，负责 DESCRIBE/SETUP/PLAY</td><td>不是媒体传输协议；媒体仍走 RTP</td></tr>
+        <tr><td>RTMP</td><td>基于 TCP 的推流协议，核心是 chunk 分块</td><td>不是容器；FLV 才是容器</td></tr>
+        <tr><td>HLS</td><td>基于 HTTP 的分片直播，清单是 m3u8</td><td>延迟高是设计取舍，不一定是故障</td></tr>
+        <tr><td>DASH</td><td>基于 HTTP 的分片直播，清单是 MPD XML</td><td>与 HLS 不是互斥；可共用 CMAF 切片</td></tr>
+        <tr><td>SRT</td><td>UDP 上的可靠传输，用缓冲与 ARQ 换稳定</td><td>不是正式 RFC；浏览器不原生支持</td></tr>
+        <tr><td>ICE</td><td>收集候选地址并选出可用路径</td><td>它不负责加密；加密是 DTLS-SRTP</td></tr>
+        <tr><td>DTLS-SRTP</td><td>用 DTLS 握手导出密钥，再加密 RTP</td><td>不是“先 TLS 再 SRTP”两层独立协议</td></tr>
+        <tr><td>GB28181</td><td>国标安防联网规范，SIP + SDP + PS over RTP</td><td>不是编码标准，也不是一个可直接播放的 URL</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cross">
+    <div class="ico">🧭</div>
+    <div class="bd">
+      <h4>下一步：把协议放回具体设备与平台</h4>
+      <p>协议只是地图。想知道国标摄像头怎么注册、怎么做目录、怎么点播，去看 GB28181 专题；想知道这些流在服务器上怎么转、怎么分发，去看服务器与播放器专题。</p>
+      <div class="btns">
+        <a class="btn btn-pl" href="../gb28181.html">GB28181 专题</a>
+        <a class="btn btn-pl" href="../player.html">播放器专题</a>
+        <a class="btn btn-pl" href="../hwaccel/">硬件加速</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>参考：RFC 3550 / 2326 / 8216 / 8445 / 8888 · Adobe RTMP 规范</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

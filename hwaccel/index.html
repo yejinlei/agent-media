@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>硬件加速与零拷贝 · VAAPI、NVENC、QSV、VideoToolbox、D3D11VA、AMF、Rockchip MPP</title>
+<meta name="description" content="用后厨专岗与传送带的比喻讲透音视频硬件加速：VAAPI、NVENC/NVDEC、QSV、VideoToolbox、D3D11VA/Media Foundation、AMF、Rockchip MPP 的平台与命令，解码编码链路、memory:DMABuf、hwdownload/hwupload 的真实代价，以及显存、并发与画质取舍。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/" class="cur">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>硬件加速：把搬箱子的活<br><em>交给专用传送带</em></h1>
+    <p>CPU 是全能厨师，什么都能做；GPU 里的解码器、编码器、缩放器则是后厨专岗——只做一件事，但快得多、省电得多。硬件加速不是“画质变好”，而是把重复劳动从通用核搬到固定电路。真正难的不是打开开关，而是让帧<strong>一直留在显存里</strong>，别在 CPU 和 GPU 之间来回搬。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#zerocopy">🚚 看零拷贝传送带</a>
+      <a class="btn btn-ghost" href="#ffmpeg">拿 FFmpeg 命令</a>
+      <a class="btn btn-ghost" href="#pitfalls">避开参数陷阱</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">VAAPI</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">NVENC / NVDEC</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">QSV</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">VideoToolbox</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">D3D11VA / MF</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">AMF</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">Rockchip MPP</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">硬件加速到底加速什么</a>
+    <a href="#chain">解码与编码链路</a>
+    <a href="#backends">七大后端全景</a>
+    <a href="#vaapi">VAAPI：Linux 的公共插座</a>
+    <a href="#nvidia">NVENC / NVDEC：独立编码单元</a>
+    <a href="#intel">QSV：核显的快速通道</a>
+    <a href="#apple">VideoToolbox：苹果的统一内存</a>
+    <a href="#windows">D3D11VA / MF / AMF</a>
+    <a href="#rockchip">Rockchip MPP：嵌入式 VPU</a>
+    <a href="#zerocopy">零拷贝与 DMABuf</a>
+    <a href="#ffmpeg">FFmpeg 硬件命令</a>
+    <a href="#gstreamer">GStreamer 硬件命令</a>
+    <a href="#compare">显存、并发与画质</a>
+    <a href="#pitfalls">常见参数陷阱</a>
+    <a href="#debug">验证与监控</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>🍳 硬件加速：不是更快的 CPU，而是更专的工位</h2>
+  <p class="lead">软件编码像一位全能厨师：切菜、炒菜、摆盘全包，什么都能做，但一次只能做一份。硬件编码像把“切配”交给一台专用切片机：它只会切片，但一秒能切几百份，而且几乎不占厨师的手。视频解码/编码正是这种“重复、规则、量大”的活，天生适合固定功能电路。</p>
+  <p>但专用工位也有代价：<strong>它能做的菜式有限</strong>。硬件编码器的参考帧结构、B 帧、码控模式、psychovisual 优化都比 x264/x265 少；同一码率下，硬件编码的画质不一定更好，甚至可能更差。它真正省下的是 <strong>CPU 占用、功耗和整机成本</strong>，让你能把一台机器从“2 路 1080p”做到“16 路 1080p”。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">解复用<span>demux：拆容器</span></div><span class="ar">→</span>
+      <div class="node">解码<span>decode：还原 YUV</span></div><span class="ar">→</span>
+      <div class="node hi">缩放 / 转格式<span>scale：NV12、P010</span></div><span class="ar">→</span>
+      <div class="node">编码<span>encode：压回码流</span></div><span class="ar">→</span>
+      <div class="node hi">复用 / 分发<span>mux + network</span></div>
+    </div>
+    <figcaption>硬件加速可以发生在解码、缩放、编码任意一段；真正的性能分水岭，是有没有把中间帧搬回系统内存。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>先找瓶颈，再上硬件</h4>
+      <p class="small">用 <code>top</code> 看 CPU：如果 <code>ffmpeg</code> 单核跑满、<code>sy</code> 很高，可能在拷贝；如果 GPU 利用率低但帧率上不去，可能是解码/上传/下载在等。盲目换编码器，常常只是把瓶颈从 CPU 挪到 PCIe。</p>
+    </div>
+    <div class="card">
+      <h4>硬件编码的画质前提</h4>
+      <p class="small">同码率下，硬件编码通常不如 x264 <code>slow</code>/x265 <code>medium</code>；但在高码率、低延迟、多路场景，它的性价比极高。直播/监控优先吞吐，归档优先画质，这是两条不同的路线。</p>
+    </div>
+    <div class="card">
+      <h4>“支持硬件”不等于“已启用”</h4>
+      <p class="small">驱动、权限（<code>render</code> 组）、FFmpeg 编译选项、容器内设备映射、像素格式协商，任何一环缺失都会静默回退到软件。必须用日志和 <code>ffmpeg -hwaccels</code> 验证。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>先纠正一个常见误解：</b>“用了 NVENC，画质就会更好”是错的。硬件编码器的目标是<strong>在给定功耗与吞吐下足够好</strong>，不是“最强压缩”。要极致画质，仍然要用软件编码的慢速 preset；要极致路数与低功耗，才轮到硬件。</span></div>
+</section>
+
+<section id="chain">
+  <h2>🔗 解码与编码链路：每一段都可能偷偷拷贝</h2>
+  <p>一条典型的转码链路是：<strong>demux → parse → decode → scale/convert → encode → mux</strong>。硬件加速的本质，是让 decode 与 encode 的输出/输入都是“设备表面（surface）”，中间不经过 <code>AVFrame</code> 的系统内存拷贝。只要中间插入一个只认 CPU 内存的滤镜（比如 <code>drawtext</code>、<code>subtitles</code>、<code>overlay</code>），整条链路就会被迫 <code>hwdownload</code>，零拷贝立刻破功。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>阶段</th><th>软件路径</th><th>硬件路径</th><th>典型症状</th></tr></thead>
+      <tbody>
+        <tr><td>解复用</td><td>libavformat 读 MP4/TS</td><td>同样在 CPU；硬件不参与</td><td>磁盘/网络 IO 慢，GPU 一直闲着</td></tr>
+        <tr><td>解码</td><td>libavcodec（H.264/HEVC）</td><td>NVDEC / VAAPI / QSV / VT / D3D11VA</td><td>解码帧格式是 <code>AV_PIX_FMT_CUDA</code> 等，不是 <code>yuv420p</code></td></tr>
+        <tr><td>缩放/转格式</td><td>swscale（CPU，吃内存带宽）</td><td><code>scale_cuda</code>、<code>scale_vaapi</code>、<code>scale_qsv</code>、<code>vpp_qsv</code></td><td>写了 <code>format=nv12</code> 却忘了设备限定，触发下载</td></tr>
+        <tr><td>编码</td><td>x264 / x265 / libsvtav1</td><td>h264_nvenc、h264_vaapi、h264_qsv、hevc_videotoolbox…</td><td>编码器期望 NV12/P010，输入却是 RGB 或 10-bit 不匹配</td></tr>
+        <tr><td>复用/分发</td><td>mp4/ts/flv muxer</td><td>CPU；只处理码流，不碰像素</td><td>mux 不是瓶颈，别在这里找性能</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>像素格式是第一道门槛</h3>
+  <p>硬件编码器几乎都吃 <strong>NV12</strong>（8-bit 4:2:0，Y 平面 + 交织的 UV）或 <strong>P010</strong>（10-bit）。解码器输出的可能是 <code>AV_PIX_FMT_CUDA</code>、<code>VAAPI</code>、<code>QSV</code>、<code>VIDEOTOOLBOX</code>、<code>D3D11</code> 这类“设备像素格式”，它们不是内存里的 YUV 数组，而是显存表面的句柄。FFmpeg 用 <code>AVHWFramesContext</code>（<code>hw_frames_ctx</code>）描述这组表面的格式、尺寸与池化策略，编码器必须接受同一个 context，才能做到零拷贝。</p>
+
+  <div data-lazy-viz data-viz="gop" data-opts='{"gop":12,"bframes":2,"fps":25,"frames":24}'></div>
+
+  <p class="small">硬件编码器对 B 帧的支持因格式与代际而异：有的只支持 P 帧，有的支持 B 帧但会牺牲低延迟。上表可以帮你直观看到 GOP 与 B 帧如何影响“首帧等待”和“编码延迟”——GOP 越长，随机访问越慢；B 帧越多，编码器需要缓存更多未来帧。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>零拷贝的判定标准：</b>看 FFmpeg 日志里有没有 <code>auto_scale_0</code> / <code>hwdownload</code>，看滤镜图里是否出现 <code>format</code> 转 <code>yuv420p</code>，看编码器输入 pix_fmt 是否仍为设备格式。只要出现一次下载，PCIe 带宽就会成为新的天花板。</span></div>
+</section>
+
+<section id="backends">
+  <h2>🗺️ 七大后端全景：先认平台，再认名字</h2>
+  <p>硬件加速不是一套 API，而是每个厂商各自的一套：Intel/AMD 在 Linux 上共同支持 VAAPI，NVIDIA 有自己的 NVENC/NVDEC，Intel 还有 QSV，苹果是 VideoToolbox，Windows 有 D3D11VA 与 Media Foundation，AMD 在 Windows 上还有 AMF，瑞芯微则有 MPP。名字记不住没关系，先记住<strong>它们在哪个平台、负责解码还是编码</strong>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>后端</th><th>主要平台</th><th>解码</th><th>编码</th><th>零拷贝载体</th><th>一句话定位</th></tr></thead>
+      <tbody>
+        <tr><td><b>VAAPI</b></td><td>Linux（Intel / AMD）</td><td>是</td><td>是</td><td>VA surface / DMABuf</td><td>Linux 上最通用的硬件接口，靠 libva 统一</td></tr>
+        <tr><td><b>NVENC / NVDEC</b></td><td>Linux / Windows（NVIDIA）</td><td>NVDEC</td><td>NVENC</td><td>CUDA device memory</td><td>独立编解码单元，多路能力强，但受驱动与 session 限制</td></tr>
+        <tr><td><b>QSV</b></td><td>Windows / Linux（Intel 核显）</td><td>是</td><td>是</td><td>QSV surface / D3D11 / VAAPI</td><td>低功耗快速通道，oneVPL 统一调度</td></tr>
+        <tr><td><b>VideoToolbox</b></td><td>macOS / iOS</td><td>是</td><td>是</td><td>CVPixelBuffer / IOSurface</td><td>苹果平台的标准答案，统一内存省一次拷贝</td></tr>
+        <tr><td><b>D3D11VA</b></td><td>Windows</td><td>是</td><td>否（只管解码）</td><td>D3D11 texture array</td><td>Windows 上最通用的硬解路径</td></tr>
+        <tr><td><b>Media Foundation</b></td><td>Windows</td><td>是（MFT）</td><td>是（MFT）</td><td>DXGI surface / IMFMediaBuffer</td><td>系统级媒体框架，编码器可能是硬件也可能是软件</td></tr>
+        <tr><td><b>AMF</b></td><td>Windows（AMD）</td><td>是（视版本）</td><td>是</td><td>D3D11 / OpenCL 互操作</td><td>AMD 的 Advancing Media Framework，Linux 侧通常改用 VAAPI</td></tr>
+        <tr><td><b>Rockchip MPP</b></td><td>Linux（RK3588 / RK3568 等）</td><td>是</td><td>是</td><td>DMABuf / DMA heap</td><td>嵌入式 VPU 的官方媒体处理平台</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>“解码器”和“编码器”是两套硬件</h4>
+      <p class="small">NVDEC 与 NVENC 是独立单元，可以同时工作；Intel 的媒体引擎也分解码与编码。GPU 利用率高不代表编码单元忙，反过来也一样——监控时要看专门的 enc/dec 计数器。</p>
+    </div>
+    <div class="card">
+      <h4>API 之上还有一层</h4>
+      <p class="small">FFmpeg 的 <code>h264_vaapi</code>、GStreamer 的 <code>vah264enc</code>、Intel 的 oneVPL 都是“封装层”。同一个硬件可能有多条调用路径，性能与可用参数并不完全等价。</p>
+    </div>
+    <div class="card">
+      <h4>容器里最容易漏设备</h4>
+      <p class="small">Docker 需要 <code>--device /dev/dri</code>（VAAPI/QSV）或 NVIDIA Container Toolkit（NVENC）。设备没映射时，FFmpeg 可能不报错，直接回退软件，让你误以为“硬件不过如此”。</p>
+    </div>
+  </div>
+</section>
+
+<section id="vaapi">
+  <h2>🔌 VAAPI：Linux 上的“公共插座”</h2>
+  <p class="lead">VAAPI（Video Acceleration API）像墙上的公共插座：Intel 和 AMD 的显卡都把自己的媒体引擎接到这个标准上，应用只要插同一种插头（libva），就不用为每家写一套代码。它不规定硬件怎么做，只规定“怎么申请表面、怎么提交解码/编码任务、怎么同步”。</p>
+
+  <p>Linux 上先确认设备和驱动：Intel 常见 <code>iHD</code> 驱动（较新核显）或 <code>i965</code>（老平台）；AMD 走 Mesa 的 <code>radeonsi</code>。设备节点通常是 <code>/dev/dri/renderD128</code>，用户需要在 <code>render</code> 组里，否则会报权限错误。</p>
+
+  <pre class="code"># 查看驱动、版本与支持的 profile/entrypoint
+vainfo --display drm --device /dev/dri/renderD128
+
+# 解码 → 缩放 → 编码，全程留在 VAAPI 表面
+ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+  -hwaccel_output_format vaapi -i in.mp4 \
+  -vf 'scale_vaapi=format=nv12' \
+  -c:v h264_vaapi -rc_mode CQP -global_quality 23 out.mp4
+
+# 输入是软件帧时，需要显式上传到 VAAPI 表面
+ffmpeg -vaapi_device /dev/dri/renderD128 -i in.mp4 \
+  -vf 'format=nv12,hwupload' \
+  -c:v h264_vaapi -global_quality 23 out.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>写法</th><th>发生了什么</th><th>代价 / 适用</th></tr></thead>
+      <tbody>
+        <tr><td><code>-hwaccel_output_format vaapi</code></td><td>解码输出直接是 VAAPI 表面，不下载</td><td>零拷贝的前提；后续滤镜必须是 VAAPI 版本</td></tr>
+        <tr><td><code>scale_vaapi=format=nv12</code></td><td>在 GPU 上缩放并转成编码器要的 NV12</td><td>正确做法；10-bit 则用 <code>p010</code></td></tr>
+        <tr><td><code>format=nv12,hwupload</code></td><td>先在 CPU 内存转格式，再上传到显存</td><td>软件输入时才用；每帧一次上传</td></tr>
+        <tr><td><code>hwdownload,format=nv12</code></td><td>把表面搬回系统内存</td><td>需要 CPU 滤镜/算法时被迫使用，PCIe 开销明显</td></tr>
+        <tr><td><code>-global_quality</code></td><td>VAAPI 的质量旋钮（配合 <code>-rc_mode</code>）</td><td>不同驱动的支持模式不同；先查 <code>ffmpeg -h encoder=h264_vaapi</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>最常见的 VAAPI 报错：</b>“Impossible to convert between the formats”。八成是滤镜图里既写了设备输出、又写了普通 <code>format=nv12</code>，FFmpeg 只好尝试下载再转换。把 <code>format</code> 改成 <code>scale_vaapi=format=nv12</code>，或明确加 <code>hwdownload</code>，不要让它猜。</span></div>
+</section>
+
+<section id="nvidia">
+  <h2>🎛️ NVENC / NVDEC：显卡上的独立车间</h2>
+  <p class="lead">NVIDIA 把解码和编码做成了两个独立车间：NVDEC 负责拆包还原画面，NVENC 负责压回码流，它们和 CUDA 计算单元是分开的。这就是为什么一张卡可以一边跑推理、一边压十几路视频——只要显存和 session 限制撑得住。</p>
+
+  <p>FFmpeg 里，<code>-hwaccel cuda -hwaccel_output_format cuda</code> 让解码结果留在显存；<code>scale_cuda</code> 在显存里缩放；<code>h264_nvenc</code>/<code>hevc_nvenc</code>/<code>av1_nvenc</code> 直接吃这些表面。注意 AV1 编码只在较新代际的 GPU 上提供，具体支持矩阵以 NVIDIA 官方文档为准。</p>
+
+  <pre class="code"># 查看本机支持的硬件加速与编码器参数
+ffmpeg -hwaccels
+ffmpeg -h encoder=h264_nvenc
+
+# 解码 + 缩放 + 编码，帧留在显存
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 \
+  -vf 'scale_cuda=format=yuv420p' \
+  -c:v h264_nvenc -preset p5 -tune hq -rc vbr -cq 23 -b:v 0 \
+  -spatial_aq 1 -temporal_aq 1 -bf 3 -g 50 out.mp4</pre>
+
+  <p>NVENC 的 <code>preset</code> 现在常用 <b>p1–p7</b>：p1 最快、p7 最慢但画质最好；旧的 <code>fast</code>/<code>medium</code>/<code>slow</code> 仍可能被接受，但映射关系由版本决定。<code>-tune hq</code> 偏画质，<code>-tune ll</code>/<code>ull</code> 偏低延迟（会牺牲压缩效率）。<code>-rc vbr</code> 配 <code>-cq</code> 才是“按质量”而不是“按码率”。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>并发 session 限制</h4>
+      <p class="small">消费级 GeForce 历史上对同时编码路数有限制，专业卡/数据中心卡通常不限制。NVIDIA 在部分驱动版本放宽过限制，但具体数字随驱动与产品线变化，<strong>以官方文档和实测为准</strong>。部署前先跑满目标路数压测，别等上线才发现第 9 路起不来。</p>
+    </div>
+    <div class="card">
+      <h4>显存怎么算</h4>
+      <p class="small">每一路都要解码表面、参考帧、编码输入表面与队列。1080p 单路占用不大，4K 会成倍增长；多路并发时先看 <code>nvidia-smi</code> 的显存，再谈路数。显存不足时会出现“编码器初始化失败”而不是优雅降级。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>低延迟场景：</b><code>-tune ll</code> 或 <code>-tune ull</code> 会减少前瞻与 B 帧，让编码更“来一帧出一帧”。代价是同码率画质下降、码率波动更大。直播连麦优先低延迟，归档转码优先画质，别用同一套参数打天下。</span></div>
+</section>
+
+<section id="intel">
+  <h2>⚡ QSV：核显里的快速通道</h2>
+  <p class="lead">QSV（Intel Quick Sync Video）是 Intel 核显的媒体引擎，像办公楼里的专用货梯：不参与通用计算，只负责把货快速上下楼。它功耗低、发热小，特别适合 NUC、笔记本、边缘盒子做多路轻量转码。现代接入层通常通过 oneVPL 统一调度，底层可以是 VAAPI，也可以是 Windows 的 D3D11。</p>
+
+  <pre class="code"># 解码 → 缩放 → 编码，全部在 QSV 表面
+ffmpeg -hwaccel qsv -hwaccel_output_format qsv -i in.mp4 \
+  -vf 'scale_qsv=format=nv12' \
+  -c:v h264_qsv -preset veryfast -global_quality 23 \
+  -look_ahead 1 -async_depth 4 out.mp4
+
+# 查看 QSV 编码器可用选项
+ffmpeg -h encoder=h264_qsv</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数</th><th>作用</th><th>注意</th></tr></thead>
+      <tbody>
+        <tr><td><code>-hwaccel qsv</code></td><td>用 QSV 解码</td><td>需要驱动与 oneVPL 运行时；容器内要映射 <code>/dev/dri</code></td></tr>
+        <tr><td><code>-hwaccel_output_format qsv</code></td><td>解码结果留在 QSV 表面</td><td>后续滤镜必须用 <code>*_qsv</code> 版本</td></tr>
+        <tr><td><code>scale_qsv</code> / <code>vpp_qsv</code></td><td>缩放、去隔行、色彩转换</td><td>不同平台支持的处理项不同，先查文档</td></tr>
+        <tr><td><code>-global_quality</code></td><td>质量优先的码控旋钮</td><td>与 <code>-b:v</code> 的优先级随模式变化，别同时乱写</td></tr>
+        <tr><td><code>-look_ahead</code></td><td>前瞻，提升码率分配</td><td><code>low_power</code> 模式下可能不可用</td></tr>
+        <tr><td><code>-async_depth</code></td><td>并行深度，提高吞吐</td><td>越大越吃显存/内存，低延迟场景要收敛</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>low_power 模式的取舍：</b>它省电、启动快，但可能不支持前瞻、B 帧或部分码控模式。需要画质时关掉它；需要低功耗边缘部署时再打开。具体能力以 Intel 的 oneVPL/Media SDK 文档与实测为准。</span></div>
+</section>
+
+<section id="apple">
+  <h2>🍎 VideoToolbox：苹果的统一内存优势</h2>
+  <p class="lead">在 Apple Silicon 上，CPU 与 GPU 共享同一块统一内存，VideoToolbox 的输出是 <code>CVPixelBuffer</code>（底层是 IOSurface），编码器可以直接消费，不需要像独显那样跨 PCIe 搬一次。这就是 Mac 上“剪 4K 很顺”的底层原因之一。</p>
+
+  <pre class="code"># 硬件解码 + HEVC 硬件编码
+ffmpeg -hwaccel videotoolbox -i in.mp4 \
+  -c:v hevc_videotoolbox -b:v 4M -g 50 -realtime 1 out.mp4
+
+# 确认编码器是否真的走了硬件
+ffmpeg -h encoder=hevc_videotoolbox</pre>
+
+  <p>VideoToolbox 的码控选项相对少，很多场景以目标码率为主；<code>-allow_sw 1</code> 允许在硬件不支持时回退软件，调试性能时可以先关掉它，避免“看起来成功、其实全在 CPU”。<code>-realtime 1</code> 适合直播/录屏，会减少前瞻换取更低延迟。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>优势</h4>
+      <p class="small">统一内存让“解码→处理→编码”的拷贝成本很低；功耗极佳，笔记本续航友好；HEVC 硬件编码在 Apple Silicon 上成熟。配合 <code>IOSurface</code>，自家应用可以做到真正的零拷贝。</p>
+    </div>
+    <div class="card">
+      <h4>限制</h4>
+      <p class="small">参数空间小，想做精细的 psychovisual 调优不如 x265；部分旧机型只支持 H.264；跨平台部署时，VideoToolbox 只覆盖苹果生态，服务端仍要准备别的后端。</p>
+    </div>
+  </div>
+</section>
+
+<section id="windows">
+  <h2>🪟 D3D11VA / Media Foundation / AMF：Windows 的三条路</h2>
+  <p class="lead">Windows 上的硬件视频有三套常见入口：<strong>D3D11VA</strong> 负责解码，把画面放进 D3D11 纹理数组；<strong>Media Foundation</strong> 用 MFT（Media Foundation Transform）封装解码与编码，具体走硬件还是软件由系统选择；<strong>AMF</strong> 是 AMD 自己的编码框架，主要在 Windows 上使用。</p>
+
+  <pre class="code"># D3D11VA 硬解（输出留在 D3D11 纹理中）
+ffmpeg -hwaccel d3d11va -hwaccel_output_format d3d11 -i in.mp4 \
+  -c:v h264_mf -b:v 4M out.mp4
+
+# Media Foundation 编码（是否硬件由系统 MFT 决定）
+ffmpeg -i in.mp4 -c:v h264_mf -b:v 4M out.mp4
+
+# AMD AMF 编码
+ffmpeg -i in.mp4 -c:v h264_amf -quality quality -rc cbr -b:v 4M \
+  -usage transcoding out.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>组件</th><th>职责</th><th>零拷贝条件</th><th>常见坑</th></tr></thead>
+      <tbody>
+        <tr><td>D3D11VA</td><td>DXVA2 的现代替代，硬解 H.264/HEVC/AV1（视硬件）</td><td>输出 <code>AV_PIX_FMT_D3D11</code>，后续用 D3D11 滤镜</td><td>纹理数组的切片索引、<code>hwdownload</code> 的格式转换</td></tr>
+        <tr><td>Media Foundation</td><td>系统媒体管线，MFT 可硬可软</td><td>MFT 接受 DXGI 表面时可零拷贝</td><td>“成功”可能是软件 MFT；参数随厂商实现变化</td></tr>
+        <tr><td>AMF</td><td>AMD 编码（H.264/HEVC/AV1，视代际）</td><td>D3D11 互操作</td><td>Linux 上通常不用 AMF，改走 VAAPI；quality 预设映射因版本而异</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">Windows 的硬件路径碎片化最严重：同一份命令在不同显卡、不同驱动、不同 FFmpeg 构建上可能落到不同 MFT。排查时先看 <code>ffmpeg -v verbose</code> 里实际选择的 decoder/encoder，再用任务管理器的 GPU 引擎（Video Decode / Video Encode）确认硬件真的在动。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>Media Foundation 的“坑王”属性：</b>它可能悄悄选择软件 MFT，也可能因为分辨率/格式不支持而回退。不要用“命令没报错”当作“硬件已启用”，一定要看日志与 GPU 计数器。</span></div>
+</section>
+
+<section id="rockchip">
+  <h2>🧩 Rockchip MPP：嵌入式板的 VPU 工具箱</h2>
+  <p class="lead">瑞芯微的 RK3588、RK3568 这类 SoC 把视频编解码放进 VPU，通过 MPP（Media Process Platform）暴露给应用。它像一块“板载的专业转码卡”：功耗几瓦，能同时处理多路 1080p，非常适合摄像头、边缘盒子、车载与国产化设备。代价是工具链不如 x86 成熟，很多细节要看 Rockchip SDK 文档。</p>
+
+  <p>MPP 的典型特征是大量使用 <strong>DMABuf</strong> 与 DMA heap：采集（V4L2）、解码、缩放、编码之间传递的是文件描述符，而不是内存指针。这样 CPU 完全不碰像素，VPU 与 ISP/GPU 之间直接交接。要零拷贝，就必须让整条 GStreamer/FFmpeg 链路都协商到 <code>memory:DMABuf</code>。</p>
+
+  <pre class="code"># GStreamer：采集 → 硬件编码 → RTP 发送（元素名以 gst-rockchip 为准）
+gst-launch-1.0 v4l2src device=/dev/video0 io-mode=dmabuf ! \
+  video/x-raw,format=NV12,width=1920,height=1080,framerate=30/1 ! \
+  mpph264enc ! h264parse ! rtph264pay config-interval=1 ! \
+  udpsink host=192.168.1.10 port=5004
+
+# FFmpeg 的 rkmpp 支持通常来自 Rockchip 维护的分支/补丁
+ffmpeg -c:v h264_rkmpp -i in.mp4 -c:v h264_rkmpp -b:v 4M out.mp4</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>常见约束</h4>
+      <p class="small">NV12 的宽高常有对齐要求（例如 16 像素），分辨率不对齐会报 “invalid frame size”；DMABuf 需要正确的 plane 布局与 stride；容器/权限要能访问 <code>/dev/mpp_service</code> 与 <code>/dev/dma_heap</code>。具体对齐规则以 SoC 与 MPP 版本文档为准。</p>
+    </div>
+    <div class="card">
+      <h4>怎么验证</h4>
+      <p class="small">用 MPP 自带的 <code>mpi_dec_test</code>/<code>mpi_enc_test</code> 先跑通硬件，再接入 GStreamer 或 FFmpeg；用 <code>gst-inspect-1.0 mpph264enc</code> 看元素是否存在；用 <code>GST_DEBUG=3</code> 看协商失败在哪一步。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要把 x86 的参数直接搬过来：</b>Rockchip 的编码器对 GOP、码控、B 帧的支持与 NVENC/QSV 不同；有些 preset 根本不存在。先在板子上用最小流水线跑通，再逐步加缩放、叠加、多路，别一上来就套用“通用优化参数”。</span></div>
+</section>
+
+<section id="zerocopy">
+  <h2>🚚 零拷贝：别让货离开传送带</h2>
+  <p class="lead">传统链路像这样：解码器把画面写进显存 → 为了做缩放/加字幕，搬回系统内存 → CPU 处理 → 再搬回显存给编码器。货每上下一次传送带，就要过一次 PCIe。零拷贝的思路是：<strong>让货一直留在传送带上</strong>，解码、缩放、编码都在显存里完成，CPU 只传“货架号”（表面句柄），不搬货。</p>
+
+  <div data-lazy-viz data-viz="zerocopy" data-opts='{}'></div>
+
+  <h3>memory:DMABuf 是什么</h3>
+  <p>DMABuf 是 Linux 内核里的“缓冲区共享机制”：驱动 A 分配一块内存，把文件描述符（fd）交给驱动 B，B 直接映射使用，不需要复制。GStreamer 用 caps <code>video/x-raw(memory:DMABuf)</code> 表达“这帧是 DMABuf”；V4L2 用 <code>io-mode=dmabuf</code> 让摄像头直接把帧写进共享缓冲；MPP/VAAPI 再把同一个 fd 交给编码器。整个过程中，CPU 只参与协商，不参与搬运。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>操作</th><th>实际发生了什么</th><th>代价</th><th>怎么避免</th></tr></thead>
+      <tbody>
+        <tr><td><code>hwdownload</code></td><td>把设备表面拷贝到系统内存（通常一次 PCIe DMA 或映射）</td><td>1080p 单帧约 3 MB，30 fps 就是 ~90 MB/s；4K 翻四倍</td><td>不要在中途插入只认 CPU 内存的滤镜</td></tr>
+        <tr><td><code>hwupload</code></td><td>把系统内存里的帧上传成设备表面</td><td>与下载对称，且可能多一次格式转换</td><td>让解码输出直接是设备格式，或全程用设备滤镜</td></tr>
+        <tr><td><code>format=nv12</code></td><td>若上游是硬件表面，FFmpeg 往往先下载再转格式</td><td>隐式下载，日志里才看得见</td><td>改用 <code>scale_cuda=format=nv12</code> / <code>scale_vaapi</code></td></tr>
+        <tr><td><code>drawtext</code> / <code>subtitles</code></td><td>CPU 滤镜，必须拿到可读像素</td><td>强制下载 + 上传，链路断裂</td><td>用 GPU 叠加，或把字幕烧录放到编码前单独处理</td></tr>
+        <tr><td>多路缩放</td><td>每路都要表面与队列</td><td>显存上涨，可能触发同步等待</td><td>限制并发、复用表面池、降低队列深度</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>“零拷贝”不等于“零开销”</h4>
+      <p class="small">即使不拷贝，仍有格式协商、表面分配、fence 同步、队列调度。多路 4K 时，显存带宽与编码单元数量才是瓶颈。零拷贝解决的是“无谓的来回搬”，不是“所有成本归零”。</p>
+    </div>
+    <div class="card">
+      <h4>什么时候必须下载</h4>
+      <p class="small">做人脸识别、OpenCV 处理、CPU 字幕、复杂叠加，或编码器不支持当前设备格式时，下载无法避免。此时要接受一次拷贝，并尽量把它放在链路末端，避免“下载→处理→上传→再下载”。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>算一笔账：</b>1080p YUV420 单帧约 3.1 MB。30 fps 下，一次下载加一次上传就是约 186 MB/s 的额外内存/PCIe 流量；4K 30 fps 则约 746 MB/s。多路并发时，这就是为什么“明明 GPU 利用率不高，却只能跑几路”的真正原因。</span></div>
+</section>
+
+<section id="ffmpeg">
+  <h2>🛠️ FFmpeg 硬件命令：先选设备，再选编码器</h2>
+  <p>FFmpeg 的硬件用法有一条固定套路：<strong>用 <code>-hwaccel</code> 指定解码后端，用 <code>-hwaccel_output_format</code> 决定帧留在哪里，用 <code>-vf</code> 里的设备滤镜做缩放，最后用对应的硬件编码器。</strong>任何一步不匹配，FFmpeg 就会自动插入下载/上传，性能瞬间回到解放前。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>后端</th><th>解码参数</th><th>编码器名</th><th>设备滤镜</th></tr></thead>
+      <tbody>
+        <tr><td>VAAPI</td><td><code>-hwaccel vaapi -hwaccel_device /dev/dri/renderD128</code></td><td><code>h264_vaapi</code> / <code>hevc_vaapi</code> / <code>av1_vaapi</code></td><td><code>scale_vaapi</code></td></tr>
+        <tr><td>NVIDIA</td><td><code>-hwaccel cuda -hwaccel_output_format cuda</code></td><td><code>h264_nvenc</code> / <code>hevc_nvenc</code> / <code>av1_nvenc</code></td><td><code>scale_cuda</code></td></tr>
+        <tr><td>QSV</td><td><code>-hwaccel qsv -hwaccel_output_format qsv</code></td><td><code>h264_qsv</code> / <code>hevc_qsv</code> / <code>av1_qsv</code></td><td><code>scale_qsv</code> / <code>vpp_qsv</code></td></tr>
+        <tr><td>VideoToolbox</td><td><code>-hwaccel videotoolbox</code></td><td><code>h264_videotoolbox</code> / <code>hevc_videotoolbox</code></td><td>视版本而定，常用 <code>scale_vt</code></td></tr>
+        <tr><td>D3D11VA</td><td><code>-hwaccel d3d11va -hwaccel_output_format d3d11</code></td><td>配合 <code>h264_mf</code> / <code>hevc_mf</code></td><td>视版本而定，常用 <code>scale_d3d11</code></td></tr>
+        <tr><td>Rockchip</td><td>Rockchip FFmpeg 分支的 <code>-hwaccel rkmpp</code></td><td><code>h264_rkmpp</code> / <code>hevc_rkmpp</code></td><td>通常靠 MPP 内部缩放或 <code>scale_rkrga</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 统一检查：本机到底有哪些 hwaccel
+ffmpeg -hwaccels
+ffmpeg -h encoder=h264_nvenc
+
+# 指定设备（多卡时尤其重要）
+ffmpeg -init_hw_device vaapi=va:/dev/dri/renderD128 \
+  -filter_hw_device va -i in.mp4 -vf 'scale_vaapi=format=nv12' \
+  -c:v h264_vaapi out.mp4
+
+# 解码器需要更多参考帧时，显式给表面池加余量
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+  -extra_hw_frames 8 -i in.mp4 -c:v h264_nvenc out.mp4</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>别用 <code>-c:v copy</code> 来验证硬件</h4>
+      <p class="small"><code>-c copy</code> 只搬码流，根本不经过解码器与编码器，自然看不到硬件。验证硬件必须真的解码再编码，并看日志里的 <code>Using hardware accelerator</code> 与编码器初始化信息。</p>
+    </div>
+    <div class="card">
+      <h4>先跑单路，再压多路</h4>
+      <p class="small">单路成功不代表多路能行：session 限制、显存、表面池、队列深度、PCIe 带宽都可能在第二路暴露。用 <code>-stream_loop -1</code> 或真实并发压测，逐路加，记录 CPU/GPU/显存/帧率。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>性能验证的黄金标准：</b>同一条命令、同一份输入，对比“硬件全链路”与“软件全链路”的 CPU 占用、GPU 利用率、单路延迟、可并发路数。只看“命令跑通了”远远不够——很多所谓硬件加速，实际是硬件解码 + 软件编码。</span></div>
+</section>
+
+<section id="gstreamer">
+  <h2>🎛️ GStreamer 硬件命令：用 caps 谈好“帧住哪儿”</h2>
+  <p>GStreamer 的硬件链路靠 <strong>caps 协商</strong>：上游说“我能给 <code>video/x-raw(memory:DMABuf),format=NV12</code>”，下游说“我只要这个”，双方握手成功才零拷贝；只要有一方要普通 <code>video/x-raw</code>，GStreamer 就会插入下载/转换元素。因此排错时先看协商，不要先怀疑驱动。</p>
+
+  <pre class="code"># VAAPI：解码 → 编码
+gst-launch-1.0 -v filesrc location=in.mp4 ! qtdemux ! h264parse ! \
+  vah264dec ! vah264enc ! h264parse ! mp4mux ! filesink location=out.mp4
+
+# NVIDIA：解码 → 编码
+gst-launch-1.0 filesrc location=in.mp4 ! qtdemux ! h264parse ! \
+  nvh264dec ! nvh264enc ! h264parse ! mp4mux ! filesink location=out.mp4
+
+# Intel QSV：解码 → 编码
+gst-launch-1.0 filesrc location=in.mp4 ! qtdemux ! h264parse ! \
+  qsvh264dec ! qsvh264enc ! h264parse ! mp4mux ! filesink location=out.mp4
+
+# 查看元素是否存在、支持哪些 caps
+gst-inspect-1.0 vah264enc
+gst-inspect-1.0 nvh264enc
+gst-inspect-1.0 qsvh264enc</pre>
+
+  <h3>DMABuf 采集链路</h3>
+  <pre class="code"># V4L2 采集 + DMABuf + GPU 显示（避免 CPU 映射）
+gst-launch-1.0 v4l2src device=/dev/video0 io-mode=dmabuf ! \
+  'video/x-raw(memory:DMABuf),format=NV12,width=1920,height=1080,framerate=30/1' ! \
+  glupload ! glcolorconvert ! glimagesink
+
+# Rockchip：采集 → MPP 编码 → RTP
+gst-launch-1.0 v4l2src device=/dev/video0 io-mode=dmabuf ! \
+  video/x-raw,format=NV12,width=1920,height=1080,framerate=30/1 ! \
+  mpph264enc ! h264parse ! rtph264pay config-interval=1 ! \
+  udpsink host=192.168.1.10 port=5004</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>现象</th><th>含义</th><th>处理</th></tr></thead>
+      <tbody>
+        <tr><td>协商失败，pipeline 卡在 PAUSED</td><td>上下游 caps 不兼容（格式/内存类型/分辨率）</td><td><code>GST_DEBUG=3</code> 看协商日志；用 <code>gst-inspect</code> 查支持的 caps</td></tr>
+        <tr><td>自动插入了 <code>videoconvert</code></td><td>有一方只接受普通内存，触发下载/转换</td><td>换成支持 DMABuf/GL 的元素，或接受一次拷贝</td></tr>
+        <tr><td><code>video/x-raw(memory:DMABuf)</code> 协商成功</td><td>帧以 fd 传递，CPU 不映射</td><td>这是零拷贝的必要条件，不是充分条件</td></tr>
+        <tr><td>编码器报 “not negotiated”</td><td>编码器只吃 NV12/P010，上游却是 RGB</td><td>用 <code>videoconvert</code> 或 <code>glcolorconvert</code> 显式转换</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>一行诊断：</b><code>GST_DEBUG=3 gst-launch-1.0 ...</code>，重点搜 “not-negotiated” 与 “missing element”。前者是 caps 问题，后者是插件没装；两者都不该靠猜。</span></div>
+</section>
+
+<section id="compare">
+  <h2>📊 显存、并发与画质：没有全能的硬件</h2>
+  <p>下表是经验性对比，不是跑分承诺。同一后端在不同代际、不同驱动、不同码控参数下差异很大；上线前必须用<strong>自己的素材、自己的码率、自己的并发数</strong>实测。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>后端</th><th>显存 / 内存占用</th><th>并发路数</th><th>画质与码控</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td><b>NVENC</b></td><td>独显显存：表面 + 参考帧 + 队列，4K 明显高于 1080p</td><td>受编码单元、显存与 session 限制；专业卡通常更宽</td><td>Turing 之后画质明显提升；低码率仍可能不如 x264 slow；p1–p7 可调</td><td>多路转码、直播、GPU 服务器</td></tr>
+        <tr><td><b>NVDEC</b></td><td>只占解码表面；并发看显存与解码单元</td><td>解码路数通常高于编码</td><td>不涉及画质，只负责还原</td><td>硬解、解码后交给其他单元</td></tr>
+        <tr><td><b>QSV</b></td><td>核显共享系统内存（部分平台有专用显存）</td><td>受媒体引擎与内存带宽限制，适合中低路数</td><td>日常画质够用；极低码率弱于软件慢速 preset；low_power 功能受限</td><td>边缘盒子、NUC、低功耗多路</td></tr>
+        <tr><td><b>VAAPI</b></td><td>取决于 Intel/AMD 设备，共享或独立显存</td><td>受 GPU 媒体引擎与驱动影响</td><td>驱动差异大；Intel 与 AMD 的画质/码控不完全相同</td><td>Linux 通用部署、国产化平台</td></tr>
+        <tr><td><b>VideoToolbox</b></td><td>Apple Silicon 统一内存，拷贝成本低</td><td>受媒体引擎数量限制；桌面机型更强</td><td>HEVC 画质好，但可调参数少；以码率控制为主</td><td>macOS/iOS 客户端、剪辑、录屏</td></tr>
+        <tr><td><b>D3D11VA / MF</b></td><td>Windows 显存；MFT 可能额外缓冲</td><td>受 GPU 与 MFT 实现影响</td><td>取决于实际选中的 MFT；可能是硬件也可能是软件</td><td>Windows 服务、桌面应用</td></tr>
+        <tr><td><b>AMF</b></td><td>AMD 显存；互操作可能多一次转换</td><td>受编码单元与驱动限制</td><td>代际差异明显；quality/usage 预设影响大</td><td>Windows + AMD 显卡</td></tr>
+        <tr><td><b>Rockchip MPP</b></td><td>共享 DDR；DMABuf 省内存，但表面池要规划</td><td>嵌入式 VPU 路数有限，4K 更紧</td><td>工具链与参数空间较小；高码率下够用</td><td>摄像头、边缘盒子、车载</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>还有一个常被忽略的维度：<strong>解码能力不等于编码能力</strong>。一张卡可能能解 8K AV1，却只能编 4K H.264；也可能解码路数很多，但编码 session 被驱动限制。做容量规划时，解码、缩放、编码要分别算。</p>
+
+  <div data-lazy-viz data-viz="quant" data-opts='{"qp":26,"preset":"edge"}'></div>
+
+  <p class="small">上面这个量化演示能帮你建立“QP 与画质/码率”的直觉。硬件编码器同样有这个旋钮，只是名字不同：NVENC 是 <code>-cq</code>，VAAPI/QSV 常见 <code>-global_quality</code>，AMF 是 <code>-qp_i/-qp_p</code> 或质量预设。名字不同，本质都是“让编码器在码率与失真之间选一个点”。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>画质对比的正确做法：</b>固定码率、固定 GOP、固定分辨率，用同一段含运动/暗场/细节的素材，比较 VMAF/SSIM 与主观观感。只对比“文件大小”或“看起来还行”，很容易被码控模式误导。</span></div>
+</section>
+
+<section id="pitfalls">
+  <h2>🕳️ 常见参数陷阱：硬件加速的“静默失败”</h2>
+  <p>硬件加速最浪费时间的，不是报错，而是<strong>不报错</strong>：它悄悄回退软件、悄悄下载再上传、悄悄忽略了你的质量参数。下面这些坑，几乎每个部署都会踩一遍。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>NVENC：preset 与码控</h4>
+      <p class="small"><code>-preset p1</code> 最快、<code>p7</code> 最慢最好；旧名字可能被接受但映射不一定符合预期。<code>-cq</code> 只有配合 <code>-rc vbr</code>（并通常配 <code>-b:v 0</code>）才是恒定质量；只写 <code>-cq</code> 很可能被忽略。<code>-tune ll</code> 降延迟但降画质。</p>
+    </div>
+    <div class="card">
+      <h4>VAAPI：格式协商</h4>
+      <p class="small">解码输出已是 VAAPI 表面时，再写 <code>format=nv12</code> 会强制下载；应写 <code>scale_vaapi=format=nv12</code>。10-bit 要 <code>p010</code>。软件输入才用 <code>format=nv12,hwupload</code>，并且要先 <code>-vaapi_device</code>。</p>
+    </div>
+    <div class="card">
+      <h4>QSV：low_power 的隐形限制</h4>
+      <p class="small"><code>-low_power 1</code> 省电，但可能关闭 lookahead、B 帧或部分码控；需要画质时不要开。`-async_depth` 增大吞吐也增大延迟与内存，低延迟场景要调小。</p>
+    </div>
+    <div class="card">
+      <h4>VideoToolbox：别被 allow_sw 骗了</h4>
+      <p class="small"><code>-allow_sw 1</code> 允许硬件不支持时回退软件，表面上永远成功。做性能验证时先设为 0，确认硬件路径；正式部署再按需打开容错。</p>
+    </div>
+    <div class="card">
+      <h4>通用：B 帧与延迟</h4>
+      <p class="small">不是所有硬件/格式都支持 B 帧；支持也不代表适合低延迟。B 帧需要缓存未来帧，直播连麦常直接 <code>-bf 0</code>。GOP 过长会让首帧等待变长，切片/秒开场景要把 <code>-g</code> 调到与关键帧间隔一致。</p>
+    </div>
+    <div class="card">
+      <h4>通用：隐式下载</h4>
+      <p class="small">只要滤镜图里出现 <code>hwdownload</code>、<code>format</code> 转普通 yuv420p，或编码器输入不是设备格式，零拷贝就断了。用 <code>-v verbose</code> 看自动插入的 scale/format 滤镜，别假设“没写就没有”。</p>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>症状</th><th>根因</th><th>验证 / 修复</th></tr></thead>
+      <tbody>
+        <tr><td>CPU 仍然很高，GPU 几乎不动</td><td>硬件未启用或静默回退软件</td><td>看 <code>ffmpeg -v verbose</code> 的 encoder 初始化；确认设备权限与驱动</td></tr>
+        <tr><td>GPU 解码忙、编码不忙</td><td>只硬解，编码仍是 x264/x265</td><td>检查输出编码器名；看 CPU 是否有单核跑满</td></tr>
+        <tr><td>4K 多路时帧率骤降</td><td>PCIe/内存带宽、显存或表面池不足</td><td>减少 <code>hwdownload</code>；限制并发；看显存与 DMA 带宽</td></tr>
+        <tr><td>编码器初始化失败</td><td>分辨率/格式/10-bit 不支持，或 session 达上限</td><td>查厂商支持矩阵；降到 8-bit/NV12；减少并发</td></tr>
+        <tr><td>画面偏色/发绿</td><td>色彩范围（limited/full）或格式转换错误</td><td>检查 <code>color_range</code>、<code>colorspace</code>；避免多余的 RGB 往返</td></tr>
+        <tr><td>码率怎么调都不变</td><td>码控模式没生效（如 CQ 未配 VBR）</td><td>用 <code>ffmpeg -h encoder=...</code> 确认参数；看实际输出码率</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>部署前的三问：</b>① 我的帧到底在哪儿（系统内存还是设备表面）？② 编码器真正吃的是什么格式？③ 这条命令在目标机器上是硬件还是软件？三问答不出来，就先别谈“优化”。</span></div>
+</section>
+
+<section id="debug">
+  <h2>🔬 验证与监控：让“硬件在工作”有证据</h2>
+  <p>验证硬件加速不能靠感觉，要靠四类证据：<strong>能力列表</strong>（支持哪些 hwaccel/编码器）、<strong>运行日志</strong>（实际选了谁）、<strong>设备计数器</strong>（enc/dec 引擎是否在动）、<strong>端到端指标</strong>（帧率、延迟、CPU、显存）。</p>
+
+  <div class="tabs">
+    <button class="tab on" data-t="d1">Linux / 通用</button>
+    <button class="tab" data-t="d2">NVIDIA / Intel / AMD</button>
+    <button class="tab" data-t="d3">GStreamer / Windows</button>
+  </div>
+  <div class="tab-pnl on" data-p="d1">
+    <pre class="code"># FFmpeg 支持哪些硬件加速
+ffmpeg -hwaccels
+
+# 某个编码器到底有哪些参数
+ffmpeg -h encoder=h264_vaapi
+ffmpeg -h encoder=h264_nvenc
+ffmpeg -h encoder=hevc_videotoolbox
+
+# 运行时看实际选择（重点搜 hwaccel / Using hardware）
+ffmpeg -v verbose -i in.mp4 -c:v h264_vaapi out.mp4 2&gt;&amp;1 | \
+  grep -E 'hwaccel|Hardware|pix_fmt|auto_scale'
+
+# 看输入/输出的像素格式
+ffprobe -v error -show_entries stream=codec_name,pix_fmt,width,height -of default=nw=1 in.mp4</pre>
+    <p class="small">容器部署时额外检查：<code>--device /dev/dri</code>、NVIDIA Container Toolkit、<code>render</code> 组权限、<code>/dev/dma_heap</code> 是否可见。设备不在容器里，日志会非常“干净”，因为根本没用上。</p>
+  </div>
+  <div class="tab-pnl" data-p="d2">
+    <pre class="code"># VAAPI：驱动、profile、entrypoint
+vainfo --display drm --device /dev/dri/renderD128
+
+# NVIDIA：显存、进程、编解码利用率
+nvidia-smi
+nvidia-smi dmon
+
+# Intel：GPU 引擎利用率（需 intel-gpu-tools）
+intel_gpu_top
+
+# AMD：GPU 活动（需 radeontop）
+radeontop
+
+# 驱动/内核报错
+dmesg | grep -iE 'amdgpu|i915|nvidia|mpp|vpu'</pre>
+    <p class="small"><code>nvidia-smi dmon</code> 在新版驱动上会给出 enc/dec 等列；不同版本字段不同，以本机输出为准。<code>intel_gpu_top</code> 常需要 root 或合适的 perf 权限。</p>
+  </div>
+  <div class="tab-pnl" data-p="d3">
+    <pre class="code"># GStreamer：元素是否存在、caps 是否支持 DMABuf
+gst-inspect-1.0 vah264enc
+gst-inspect-1.0 nvh264enc
+gst-inspect-1.0 qsvh264enc
+gst-inspect-1.0 mpph264enc
+
+# 协商失败时打开日志
+GST_DEBUG=3 gst-launch-1.0 ... 2&gt;&amp;1 | grep -iE 'not-negotiated|missing'
+
+# Windows：任务管理器 → 性能 → GPU
+# 看 Video Decode / Video Encode 引擎是否有占用；
+# 也可用 GPU-Z、PresentMon 等工具交叉验证。</pre>
+    <p class="small">Windows 上“命令成功但 GPU 不动”很常见，因为 Media Foundation 可能选了软件 MFT。任务管理器的引擎计数器是最直接的证据。</p>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>指标</th><th>正常表现</th><th>异常含义</th></tr></thead>
+      <tbody>
+        <tr><td>CPU 占用</td><td>硬件全链路时明显低于软件编码</td><td>仍很高：可能在软件编码，或在做下载/上传/色彩转换</td></tr>
+        <tr><td>GPU enc/dec 引擎</td><td>随路数与帧率上升</td><td>解码动、编码不动：编码仍是软件；两者都不动：根本没启用</td></tr>
+        <tr><td>显存</td><td>随分辨率、路数、队列增长</td><td>接近上限会导致初始化失败或帧率骤降</td></tr>
+        <tr><td>单路延迟</td><td>与 GOP、B 帧、队列深度相关</td><td>异常升高：队列堆积、下载/上传、TCP 重传</td></tr>
+        <tr><td>输出码率</td><td>接近目标码率，随内容波动</td><td>远高于目标：码控未生效；远低于：质量参数过于激进</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>压测方法：</b>固定输入、逐路增加，记录“第 N 路开始掉帧/报错”的拐点，并同时采集 CPU、GPU enc/dec、显存、PCIe 与网络。拐点通常比平均值更能说明瓶颈在哪里。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>最容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>VAAPI</td><td>Linux 上统一的视频加速 API（libva）</td><td>它是接口，不是某一家硬件的名字</td></tr>
+        <tr><td>oneVPL</td><td>Intel 的新一代媒体开发库</td><td>底层可能走 VAAPI 或 D3D11，不等于“只有 Intel 能用”</td></tr>
+        <tr><td>NVENC / NVDEC</td><td>NVIDIA 的硬件编码 / 解码单元</td><td>与 CUDA 核心是分开的；GPU 忙不代表编码忙</td></tr>
+        <tr><td>QSV</td><td>Intel Quick Sync Video，核显媒体引擎</td><td>低功耗模式会牺牲部分编码功能</td></tr>
+        <tr><td>VideoToolbox</td><td>苹果的硬件编解码框架</td><td>仅在 Apple 平台可用；参数空间较小</td></tr>
+        <tr><td>D3D11VA</td><td>Windows 上基于 D3D11 的硬解接口</td><td>它只负责解码，不负责编码</td></tr>
+        <tr><td>MFT</td><td>Media Foundation Transform，媒体处理组件</td><td>可能是硬件，也可能是软件；必须看日志确认</td></tr>
+        <tr><td>AMF</td><td>AMD 的媒体框架</td><td>Windows 常用；Linux 通常走 VAAPI</td></tr>
+        <tr><td>MPP</td><td>Rockchip 的媒体处理平台</td><td>依赖 Rockchip 的 SDK/内核与 DMABuf</td></tr>
+        <tr><td>DMABuf</td><td>Linux 内核的跨设备缓冲共享机制（fd 传递）</td><td>它不是“某种像素格式”，而是内存传递方式</td></tr>
+        <tr><td>IOSurface</td><td>苹果的跨进程/跨设备共享表面</td><td>与 CVPixelBuffer 相关，但不是同一个概念</td></tr>
+        <tr><td>NV12 / P010</td><td>8-bit / 10-bit 的 4:2:0 半平面格式</td><td>硬件编码器最常见的输入；格式不匹配就回退转换</td></tr>
+        <tr><td>hw_frames_ctx</td><td>FFmpeg 描述硬件表面池的上下文</td><td>它是“池的说明书”，不是某一帧数据</td></tr>
+        <tr><td>hwdownload / hwupload</td><td>设备表面与系统内存之间的双向拷贝</td><td>零拷贝链路里应尽量避免；出现即意味着 PCIe 开销</td></tr>
+        <tr><td>session 限制</td><td>驱动允许同时编码的会话数上限</td><td>消费级与专业卡不同；以厂商文档与实测为准</td></tr>
+        <tr><td>preset</td><td>编码速度/画质档位</td><td>NVENC 的 p1–p7 与 x264 的 ultrafast–veryslow 不是一一对应</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cross">
+    <div class="ico">🧭</div>
+    <div class="bd">
+      <h4>下一步：把硬件放回整条链路</h4>
+      <p>知道怎么开硬件只是第一步。接下来要看协议怎么把流送进来、容器怎么封装、编码参数怎么影响画质与码率。硬件是发动机，协议与封装才是道路。</p>
+      <div class="btns">
+        <a class="btn btn-pl" href="../protocol/">传输与信令协议</a>
+        <a class="btn btn-pl" href="../codec/">编解码专题</a>
+        <a class="btn btn-pl" href="../ffmpeg/">FFmpeg 专题</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>参考：libva / FFmpeg / GStreamer / oneVPL / NVIDIA / Apple / Rockchip 官方文档</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

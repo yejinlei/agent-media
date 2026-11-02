@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GB28181 深入浅出 · SIP 信令、PS 封装与国标视频联网</title>
+<meta name="description" content="用“全国统一的快递面单”理解 GB/T 28181：SIP 注册与心跳、MANSCDP 目录查询、INVITE 点播、SDP 中的 SSRC、PS over RTP、TCP 主动/被动、录像回放与级联，附抓包排错与代码。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html" class="cur">GB28181</a>
+    <a href="player.html">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html">WASM</a>
+    <a href="lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>GB28181：让全国摄像头<br><em>说同一种语言</em></h1>
+    <p>它不是某个编解码标准，而是一份“联网说明书”：用 SIP 打招呼、用 SDP 谈格式、用 PS over RTP 送画面。理解了这三件事，你就能看懂任何一台国标摄像头的注册、点播、回放与级联，也能在抓包文件里找到画面为什么不来。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#register">📇 看注册全过程</a>
+      <a class="btn btn-ghost" href="#invite">🎬 看一次点播</a>
+      <a class="btn btn-ghost" href="#debug">拿排错清单</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">GB/T 28181</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">SIP / SDP</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MANSCDP XML</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">PS over RTP</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">TCP 主动 / 被动</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">为什么需要国标</a>
+    <a href="#actors">角色与 20 位编号</a>
+    <a href="#register">注册与鉴权</a>
+    <a href="#keepalive">心跳与状态</a>
+    <a href="#catalog">目录查询</a>
+    <a href="#invite">点播：INVITE 与 SDP</a>
+    <a href="#ps">PS over RTP</a>
+    <a href="#transport">UDP 与 TCP 两种传法</a>
+    <a href="#playback">录像回放与下载</a>
+    <a href="#cascade">级联与跨域</a>
+    <a href="#gateway">网关与工程落地</a>
+    <a href="#debug">抓包与排错</a>
+    <a href="#code">最小代码示例</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>📦 为什么需要国标：把“方言”变成“普通话”</h2>
+  <p class="lead">十多年前，安防行业是典型的“方言现场”：海康用一套私有 SDK，大华用另一套，宇视再一套；同一个省里，不同厂商的平台甚至无法互相看到对方的摄像头。GB/T 28181《公共安全视频监控联网系统信息传输、交换、控制技术要求》做的事情，就是给所有设备发一张<strong>统一样式的快递面单</strong>：地址怎么写、包裹怎么打包、签收怎么确认，全部写死。</p>
+  <p>它不规定“画面用 H.264 还是 H.265”，也不规定“码率多少”——这些留给设备自己协商。它只规定三件事：<strong>怎么找到对方（SIP）</strong>、<strong>怎么描述媒体（SDP）</strong>、<strong>怎么把画面送过去（PS over RTP）</strong>。记住这三件事，后面所有名词都能挂上去。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">SIP<span>信令：注册 / 点播 / 控制</span></div><span class="ar">+</span>
+      <div class="node">SDP<span>谈判：地址、端口、编码、SSRC</span></div><span class="ar">+</span>
+      <div class="node hi">PS / RTP<span>媒体：打包、分片、传输</span></div>
+    </div>
+    <figcaption>三件套各管一段：SIP 管“和谁说、说什么”，SDP 管“用什么格式说”，PS/RTP 管“画面本身怎么走”。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>标准版本怎么看</h4>
+      <p class="small"><b>GB/T 28181-2011</b> 打底，<b>2016</b> 版补齐了 TCP 传输、H.265、语音对讲等；<b>2022</b> 版进一步规范了安全、级联与扩展。设备铭牌或说明书上通常会写“支持 GB/T 28181-2016”。版本差异主要影响是否支持 H.265、TCP 被动、以及一些 XML 字段。</p>
+    </div>
+    <div class="card">
+      <h4>它属于“应用层规范”</h4>
+      <p class="small">底下完全复用成熟标准：SIP 来自 RFC 3261，SDP 来自 RFC 4566，RTP 来自 RFC 3550，PS 复用 MPEG-2 System（ISO/IEC 13818-1）。国标的价值在于<strong>把这些积木拼成一个固定组合</strong>，让不同厂商能互操作。</p>
+    </div>
+    <div class="card">
+      <h4>最常见的落地形态</h4>
+      <p class="small">摄像头 / NVR 作为“设备”注册到“国标平台”；平台再向上级平台级联。浏览器看不到 RTSP，也看不到 SIP——所以工程上几乎总要再加一个流媒体网关，把 PS 流转成 WebRTC / HLS / FLV。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>先纠正一个常见误解：</b>“GB28181”不是“一种视频编码”，也不是“一个可以直接用 VLC 打开的地址”。它是一套<strong>信令 + 私有封装组合</strong>。你拿到的往往只是 SIP 服务器地址、设备 ID、平台域名和密码，真正的播放地址要经过一次 INVITE 协商才诞生。</span></div>
+</section>
+
+<section id="actors">
+  <h2>🏢 四个角色，一串 20 位身份证</h2>
+  <p>国标网络里，所有实体都有一个 20 位 ID。它不是随机数，而是“行政区划 + 行业 + 类型 + 网络 + 序号”拼出来的身份证。理解了编号规则，你就能从 ID 一眼看出对方是平台还是摄像头、属于哪个地市。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>角色</th><th>典型实体</th><th>职责</th><th>在信令里的身份</th></tr></thead>
+      <tbody>
+        <tr><td><b>SIP 服务器</b></td><td>国标平台的信令模块</td><td>接收注册、转发/处理 INVITE、维持在线状态</td><td>REGISTER 的接收方，INVITE 的发起方</td></tr>
+        <tr><td><b>设备（Device）</b></td><td>IPC、NVR、解码器、下级平台</td><td>上报目录、送媒体流、响应控制</td><td>20 位 DeviceID，通常以 13x / 11x 开头</td></tr>
+        <tr><td><b>通道（Channel）</b></td><td>NVR 下挂的每一路摄像头</td><td>真正可点播的“一路画面”</td><td>NVR 的 ID + 通道号，Catalog 里逐条上报</td></tr>
+        <tr><td><b>客户端</b></td><td>Web 播放器、电视墙、上级平台</td><td>发起点播/控制，或接收级联目录</td><td>有时也拥有独立 ID，作为 SIP 用户</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>20 位 ID 是怎么拼出来的</h3>
+  <div class="diagram">
+    <svg viewBox="0 0 760 150" style="width:100%;height:auto" role="img" aria-label="GB28181 20 位编码结构">
+      <rect x="20" y="34" width="288" height="52" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="164" y="57" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">中心编码 · 8 位</text>
+      <text x="164" y="75" text-anchor="middle" font-size="9.5" fill="#64748b">行政区划（6）+ 行业（2）</text>
+      <rect x="316" y="34" width="108" height="52" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="370" y="57" text-anchor="middle" font-size="12" font-weight="700" fill="#155e75">类型 · 3 位</text>
+      <text x="370" y="75" text-anchor="middle" font-size="9.5" fill="#64748b">平台 / 设备 / 分组</text>
+      <rect x="432" y="34" width="72" height="52" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="468" y="57" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">网络 · 1</text>
+      <text x="468" y="75" text-anchor="middle" font-size="9.5" fill="#64748b">网络标识</text>
+      <rect x="512" y="34" width="216" height="52" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="620" y="57" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">序号 · 6 位</text>
+      <text x="620" y="75" text-anchor="middle" font-size="9.5" fill="#64748b">同一类型内唯一</text>
+      <text x="20" y="112" font-size="10" fill="#94a3b8">示例：34020000 · 00 · 132 · 0 · 000001 → 34020000001320000001</text>
+      <text x="20" y="132" font-size="10" fill="#94a3b8">含义：340200（芜湖市）+ 行业 00 + 类型 132（摄像机）+ 网络 0 + 序号 1</text>
+    </svg>
+  </div>
+  <p class="small">类型编码里，<b>200</b> 常见于平台/服务器，<b>13x</b> 常见于摄像机，<b>215 / 216</b> 用于业务分组与虚拟组织。不同厂商和地市会有自己的分配习惯，<strong>不要靠猜编号来判断设备类型，最终以 Catalog 上报为准</strong>。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>为什么 ID 这么重要？</b>SIP 的 From / To / Call-ID、XML 里的 DeviceID、SDP 里的 y=SSRC、目录里的 ParentID，全都围着这串数字转。现场对不上号，八成是 ID 抄错了一位，或者把“设备 ID”和“通道 ID”混用了。</span></div>
+</section>
+
+<section id="register">
+  <h2>📇 注册：门卫登记，还要盖一个动态章</h2>
+  <p class="lead">设备上电后的第一件事不是推流，而是“报到”。注册就像进大楼登记：先报上姓名（DeviceID），门卫说“请出示盖章的介绍信”（401 + WWW-Authenticate），设备用账号密码算出一个摘要（Authorization），门卫核对无误后发通行证（200 OK），并注明“这张证 3600 秒后过期”。</p>
+  <p>关键点：<strong>第一次 REGISTER 一定是被拒绝的</strong>。这不是故障，而是 Digest 鉴权的标准流程——服务器先给随机数（nonce），客户端才能算出不可重放的 response。抓包里看到 401 不要慌，看第二次 REGISTER 有没有带 Authorization。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"GB28181 注册与上线（含鉴权）","actors":["设备 IPC","SIP 平台"],"steps":[{"from":0,"to":1,"label":"REGISTER（无鉴权，先敲门）","color":"#7c3aed"},{"from":1,"to":0,"label":"401 Unauthorized + nonce","color":"#e11d48"},{"from":0,"to":1,"label":"REGISTER + Authorization（MD5 摘要）","color":"#7c3aed"},{"from":1,"to":0,"label":"200 OK（Expires=3600）","color":"#10b981"},{"from":0,"to":1,"label":"MESSAGE Keepalive（每 60s）","color":"#0891b2"},{"from":1,"to":0,"label":"200 OK（保活确认）","color":"#10b981"},{"from":1,"to":0,"label":"MESSAGE Catalog 查询","color":"#f59e0b"},{"from":0,"to":1,"label":"MESSAGE Catalog 应答（通道列表）","color":"#f59e0b"}]}'></div>
+
+  <div class="tabs">
+    <button class="tab on" data-t="req1">第一次 REGISTER</button>
+    <button class="tab" data-t="req2">401 挑战</button>
+    <button class="tab" data-t="req3">带摘要的 REGISTER</button>
+    <button class="tab" data-t="req4">200 OK</button>
+  </div>
+  <div class="tab-pnl on" data-p="req1">
+    <pre class="code">REGISTER sip:34020000002000000001@3402000000 SIP/2.0
+Via: SIP/2.0/UDP 192.168.1.64:5060;rport;branch=z9hG4bK123456
+From: &lt;sip:34020000001320000001@3402000000&gt;;tag=abc123
+To: &lt;sip:34020000001320000001@3402000000&gt;
+Call-ID: 0a1b2c3d4e5f@192.168.1.64
+CSeq: 1 REGISTER
+Contact: &lt;sip:34020000001320000001@192.168.1.64:5060&gt;
+Max-Forwards: 70
+Expires: 3600
+User-Agent: IPC v1.0
+Content-Length: 0</pre>
+    <p class="small">注意 <code>To</code> 里是设备自己的 ID，<code>Contact</code> 里带真实 IP 和端口——平台之后就用它来找设备。<code>CSeq</code> 每发一条新请求就加一，重复请求（重传）才保持同一个值。</p>
+  </div>
+  <div class="tab-pnl" data-p="req2">
+    <pre class="code">SIP/2.0 401 Unauthorized
+WWW-Authenticate: Digest realm="3402000000",
+  nonce="a3f5c9e2b1d4", algorithm=MD5, qop="auth"</pre>
+    <p class="small"><code>realm</code> 通常是 SIP 域名，<code>nonce</code> 是一次性随机数。服务器用它防止“录播”攻击：同一个 response 不能用第二次。</p>
+  </div>
+  <div class="tab-pnl" data-p="req3">
+    <pre class="code">REGISTER sip:34020000002000000001@3402000000 SIP/2.0
+CSeq: 2 REGISTER
+Authorization: Digest username="34020000001320000001",
+  realm="3402000000", nonce="a3f5c9e2b1d4",
+  uri="sip:34020000002000000001@3402000000",
+  response="9c1f0b7a6d3e5f...", algorithm=MD5, qop=auth,
+  nc=00000001, cnonce="8f2a1c"
+Expires: 3600</pre>
+    <p class="small">摘要的计算对象是“用户名:realm:密码”再做一次 MD5，然后与 nonce、uri、method 等再算一次。下一节的代码示例会把它写出来。</p>
+  </div>
+  <div class="tab-pnl" data-p="req4">
+    <pre class="code">SIP/2.0 200 OK
+CSeq: 2 REGISTER
+Expires: 3600
+Date: 2026-11-02T10:00:00
+Contact: &lt;sip:34020000001320000001@192.168.1.64:5060&gt;;expires=3600</pre>
+    <p class="small">200 里回带的 <code>Expires</code> 才是平台认可的租期。设备应在到期前（通常是 1/2 或 2/3 处）重新注册，而不是等到最后一秒。</p>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>排错口诀：</b>“注册成功”不等于“在线”。平台判在线靠的是<strong>心跳</strong>，不是注册。注册只证明“我知道你在哪”，心跳才证明“你还活着”。</span></div>
+</section>
+
+<section id="keepalive">
+  <h2>💓 心跳、目录、状态：都装在 MESSAGE 里</h2>
+  <p>SIP 只负责“送信”，真正的内容是贴在信里的 XML——这套 XML 在国标里叫 <strong>MANSCDP</strong>（监控报警联网系统控制描述协议）。可以把 SIP MESSAGE 想成一个信封，XML 是信纸；<code>CmdType</code> 决定这封信是“报平安”、“交名单”还是“查状态”。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>心跳 Keepalive</h4>
+      <pre class="code">&lt;Notify&gt;
+  &lt;CmdType&gt;Keepalive&lt;/CmdType&gt;
+  &lt;SN&gt;101&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;Status&gt;OK&lt;/Status&gt;
+&lt;/Notify&gt;</pre>
+      <p class="small">默认 60 秒一次。平台通常“连续 3 个周期收不到”就判离线。<b>SN</b> 是请求序号，用于把应答和请求对上；心跳的应答是一条空的 200 OK，不带 XML。</p>
+    </div>
+    <div class="card">
+      <h4>设备信息 DeviceInfo</h4>
+      <pre class="code">&lt;Response&gt;
+  &lt;CmdType&gt;DeviceInfo&lt;/CmdType&gt;
+  &lt;SN&gt;102&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;DeviceName&gt;大门口&lt;/DeviceName&gt;
+  &lt;Manufacturer&gt;Hikvision&lt;/Manufacturer&gt;
+  &lt;Model&gt;DS-2CD3T&lt;/Model&gt;
+  &lt;Firmware&gt;V5.6&lt;/Firmware&gt;
+  &lt;Channel&gt;1&lt;/Channel&gt;
+&lt;/Response&gt;</pre>
+      <p class="small">常用来确认“这台设备到底是谁”。有的平台在 Catalog 之前会先查一次 DeviceInfo。</p>
+    </div>
+  </div>
+
+  <p>发送方式：<code>MESSAGE sip:平台ID@平台域 SIP/2.0</code>，并带上 <code>Content-Type: Application/MANSCDP+xml</code>。如果 Content-Type 写错，很多平台会直接丢弃——这是“心跳明明发了却显示离线”的高频原因。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>时钟与 SN 的坑：</b>部分设备重启后 SN 从 1 重新开始，平台侧如果按“SN 必须递增”做严格校验，会误判为异常。对账时请以 <code>DeviceID + CmdType</code> 为准，SN 只做请求-应答配对。</span></div>
+</section>
+
+<section id="catalog">
+  <h2>📋 目录查询：平台怎么知道你有几路画面</h2>
+  <p>注册只告诉平台“有一台设备”。平台还需要知道“这台设备下有哪些可看的通道”。于是它发一封 <code>Catalog</code> 查询，设备回一份通道清单。NVR 尤其重要：一个 NVR 的 DeviceID 下可能挂着 8、16、32 个通道，每个通道都有自己的 20 位 ID。</p>
+
+  <pre class="code">// 平台 → 设备：查询目录
+&lt;Query&gt;
+  &lt;CmdType&gt;Catalog&lt;/CmdType&gt;
+  &lt;SN&gt;110&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+&lt;/Query&gt;
+
+// 设备 → 平台：目录应答（节选）
+&lt;Response&gt;
+  &lt;CmdType&gt;Catalog&lt;/CmdType&gt;
+  &lt;SN&gt;110&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;SumNum&gt;16&lt;/SumNum&gt;
+  &lt;DeviceList Num="2"&gt;
+    &lt;Item&gt;
+      &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+      &lt;Name&gt;大门口&lt;/Name&gt;
+      &lt;Manufacturer&gt;Hikvision&lt;/Manufacturer&gt;
+      &lt;Model&gt;DS-2CD3T&lt;/Model&gt;
+      &lt;Owner&gt;保卫科&lt;/Owner&gt;
+      &lt;CivilCode&gt;340200&lt;/CivilCode&gt;
+      &lt;Address&gt;一号门&lt;/Address&gt;
+      &lt;Parental&gt;0&lt;/Parental&gt;
+      &lt;ParentID&gt;34020000002000000001&lt;/ParentID&gt;
+      &lt;RegisterWay&gt;1&lt;/RegisterWay&gt;
+      &lt;Secrecy&gt;0&lt;/Secrecy&gt;
+      &lt;Status&gt;OK&lt;/Status&gt;
+    &lt;/Item&gt;
+    &lt;Item&gt;…&lt;/Item&gt;
+  &lt;/DeviceList&gt;
+&lt;/Response&gt;</pre>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>SumNum 与 Num 的区别</h4>
+      <p class="small"><code>SumNum</code> 是通道总数，<code>DeviceList Num</code> 是本条消息里带了几条。通道多时设备会分多条 Response 发送，平台要按 SumNum 判断收齐没有。</p>
+    </div>
+    <div class="card">
+      <h4>Parental 是什么</h4>
+      <p class="small">表示有没有下级。NVR 下的通道常为 0（无下级）；如果一台设备还挂着子设备，平台需要递归查询，否则目录树会断。</p>
+    </div>
+    <div class="card">
+      <h4>Status 只是快照</h4>
+      <p class="small">Catalog 里的 <code>Status</code> 是“查询那一刻”的状态。通道后来掉线，要靠 <code>DeviceStatus</code> 查询或平台主动订阅来更新。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>工程建议：</b>把“设备 ID → 通道 ID”的映射持久化下来。点播时用的是<strong>通道 ID</strong>，不是设备 ID。把两者混用，INVITE 会 404 或直接没有媒体。</span></div>
+</section>
+
+<section id="invite">
+  <h2>🎬 点播：一次 INVITE，把画面“请”出来</h2>
+  <p class="lead">点播就是打一通 SIP 电话，只不过接通后传的不是声音，而是视频。平台发 INVITE 并附上 SDP：“我想收你的视频，用 PS 封装，我的地址是 10.0.0.5:15060，SSRC 是 0123456789”。设备回 200 OK 确认，平台回 ACK，媒体流才开始。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"GB28181 实时点播（INVITE → RTP/PS）","actors":["平台","设备","媒体流"],"steps":[{"from":0,"to":1,"label":"INVITE（SDP：m=video / PS / y=SSRC）","color":"#7c3aed"},{"from":1,"to":0,"label":"100 Trying","color":"#94a3b8"},{"from":1,"to":0,"label":"200 OK（SDP 确认，含设备侧地址）","color":"#10b981"},{"from":0,"to":1,"label":"ACK（三次握手收尾）","color":"#7c3aed"},{"from":1,"to":2,"label":"RTP / PS 媒体流（H.264 关键帧先到）","color":"#0891b2"},{"from":0,"to":2,"label":"平台按 SSRC 收流、解 PS、送解码器","color":"#0891b2"},{"from":0,"to":1,"label":"BYE（或 INFO 控制播放/暂停）","color":"#e11d48"}]}'></div>
+
+  <pre class="code">INVITE sip:34020000001320000001@3402000000 SIP/2.0
+From: &lt;sip:34020000002000000001@3402000000&gt;;tag=platform1
+To: &lt;sip:34020000001320000001@3402000000&gt;
+Call-ID: play-20261102-001@platform
+CSeq: 1 INVITE
+Subject: 34020000001320000001:0100000000,34020000002000000001:0
+Contact: &lt;sip:34020000002000000001@10.0.0.5:5060&gt;
+Content-Type: application/sdp
+Content-Length: …
+
+v=0
+o=34020000002000000001 0 0 IN IP4 10.0.0.5
+s=Play
+c=IN IP4 10.0.0.5
+t=0 0
+m=video 15060 RTP/AVP 96
+a=rtpmap:96 PS/90000
+a=setup:passive
+a=connection:new
+y=0123456789
+f=v/2/4/25/1/4000/1a/…</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>字段</th><th>含义</th><th>为什么重要</th></tr></thead>
+      <tbody>
+        <tr><td><code>m=video 15060</code></td><td>媒体类型、平台收流端口、payload 类型</td><td>端口写错 → 设备把流发到空气里；防火墙没放行 → 看不到画面</td></tr>
+        <tr><td><code>a=rtpmap:96 PS/90000</code></td><td>payload 96 对应 GB28181 的 PS 封装，时钟 90 kHz</td><td>这是“国标媒体”的暗号。写成 H264 就不是国标 PS 了</td></tr>
+        <tr><td><code>y=0123456789</code></td><td>SSRC，十位十进制</td><td>平台用它区分多路流；设备必须把 RTP 头里的 SSRC 写成这个值，否则平台可能直接丢包</td></tr>
+        <tr><td><code>a=setup:passive</code></td><td>TCP 连接角色（RFC 4145 语义）</td><td>决定谁主动发起 TCP；厂商实现有差异，<b>以抓包握手方向为准</b></td></tr>
+        <tr><td><code>f=v/2/4/25/1/4000/1a/…</code></td><td>媒体描述参数：视频/音频、编码、分辨率、帧率、码率等</td><td>给平台做展示与校验用；不是所有设备都严格填写</td></tr>
+        <tr><td><code>Subject</code></td><td>点播的通道与接收方标识</td><td>部分平台/设备依赖它做路由；漏写可能 404</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>接流之后，还要“控”</h3>
+  <p>点播建立后，播放、暂停、快进、停止都靠 SIP <code>INFO</code> 里的 MANSCDP 控制指令。它不是 RTSP 的 PLAY/PAUSE，而是另一套 XML：</p>
+  <pre class="code">&lt;Control&gt;
+  &lt;CmdType&gt;Play&lt;/CmdType&gt;
+  &lt;SN&gt;120&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+&lt;/Control&gt;
+
+&lt;!-- 暂停 --&gt;
+&lt;Control&gt;&lt;CmdType&gt;Pause&lt;/CmdType&gt;&lt;SN&gt;121&lt;/SN&gt;…&lt;/Control&gt;
+&lt;!-- 拖动（回放时） --&gt;
+&lt;Control&gt;&lt;CmdType&gt;Play&lt;/CmdType&gt;&lt;SN&gt;122&lt;/SN&gt;&lt;Scale&gt;1&lt;/Scale&gt;&lt;Range&gt;…&lt;/Range&gt;&lt;/Control&gt;</pre>
+  <p class="small">注意：<b>控制走 SIP INFO，媒体走 RTP</b>——两条完全独立的通道。抓包时如果只看了 RTP，永远看不到“暂停”这件事。</p>
+</section>
+
+<section id="ps">
+  <h2>🎞️ PS over RTP：把“节目流”塞进快递箱</h2>
+  <p class="lead">为什么不是 MP4？因为 MP4 需要索引（moov），而实时流不能等录完再发。为什么不是 TS？TS 为广播设计，包头开销大、结构复杂；PS（Program Stream）更轻，适合点对点。国标选 PS，本质是选了一种“足够简单、能实时切、开销可控”的封装。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 190" style="width:100%;height:auto" role="img" aria-label="PS 包结构与 RTP 载荷">
+      <rect x="20" y="26" width="150" height="46" rx="5" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="95" y="45" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">RTP Header</text>
+      <text x="95" y="61" text-anchor="middle" font-size="9" fill="#64748b">SSRC / 序号 / 时间戳</text>
+      <rect x="180" y="26" width="120" height="46" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="240" y="45" text-anchor="middle" font-size="10.5" font-weight="700" fill="#155e75">PS Pack Header</text>
+      <text x="240" y="61" text-anchor="middle" font-size="9" fill="#64748b">00 00 01 BA + SCR</text>
+      <rect x="310" y="26" width="150" height="46" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="385" y="45" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">PES Header</text>
+      <text x="385" y="61" text-anchor="middle" font-size="9" fill="#64748b">00 00 01 E0 + PTS/DTS</text>
+      <rect x="470" y="26" width="260" height="46" rx="5" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="600" y="45" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">Elementary Stream</text>
+      <text x="600" y="61" text-anchor="middle" font-size="9" fill="#64748b">H.264 NAL / H.265 NAL / G.711</text>
+      <line x1="170" y1="49" x2="180" y2="49" stroke="#94a3b8"/>
+      <line x1="300" y1="49" x2="310" y2="49" stroke="#94a3b8"/>
+      <line x1="460" y1="49" x2="470" y2="49" stroke="#94a3b8"/>
+      <text x="20" y="102" font-size="10" fill="#475569">① RTP 负责“送到哪”：序号、时间戳、SSRC，丢包靠它发现。</text>
+      <text x="20" y="120" font-size="10" fill="#475569">② PS 负责“装什么”：把视频/音频 PES 按节目流组织，带头部与时钟参考。</text>
+      <text x="20" y="138" font-size="10" fill="#475569">③ PES 负责“何时播”：PTS/DTS 用 90 kHz 时钟，解码器靠它排序。</text>
+      <text x="20" y="156" font-size="10" fill="#475569">④ ES 才是真正的码流：SPS/PPS、IDR、P 帧，H.264 或 H.265。</text>
+    </svg>
+  </div>
+
+  <h3>几个实战中必须知道的事实</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>关键帧决定“第一眼”</h4>
+      <p class="small">平台开始接流时，只有收到一个完整 IDR 才能出画面。设备若正在 GOP 中间，可能先来几秒绿屏/黑屏。低延迟点播要在 INVITE 后让设备尽快强制一个 I 帧（部分设备通过 <code>f=</code> 参数或私有指令支持）。</p>
+    </div>
+    <div class="card">
+      <h4>SSRC 是“取件码”</h4>
+      <p class="small">同一台平台可能同时收几十路流，全靠 SSRC 区分。设备把 SSRC 写错 → 平台按 SDP 里的值过滤 → 包全被丢，表现为“有 RTP 但没画面”。</p>
+    </div>
+    <div class="card">
+      <h4>PS 包与 RTP 包的边界</h4>
+      <p class="small">常见实现让每个 RTP 载荷携带完整的 PS 包，避免接收端做跨包重组。大 I 帧会通过多个 PS 包/PES 承载，接收端按 PTS 与 marker 拼成一帧。</p>
+    </div>
+    <div class="card">
+      <h4>没有索引，就没有随机访问</h4>
+      <p class="small">PS 是流式的，不能像 MP4 那样“跳到第 30 秒”。回放要拖动，必须重新协商时间范围（见下一节），而不是在流里 seek。</p>
+    </div>
+  </div>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"PS 包起始码（示例字节）","bytes":"00 00 01 BA 44 00 04 00 04 01 89 C3 F8 00 00 01 BB 00 03 00 00 01 BC 00 00 01 E0 00 00","fields":[{"name":"PS pack start code","start":0,"end":3,"bits":"32 bit","note":"固定 0x000001BA，PS 包的身份证。接收到它就知道一个新 PS 包开始。"},{"name":"SCR / mux rate","start":4,"end":10,"note":"System Clock Reference 等字段，按 MPEG-2 规则编码；实时流里常被简化。"},{"name":"System header","start":11,"end":17,"bits":"0x000001BB","note":"描述节目流里有哪些流、缓冲大小等。部分设备省略。"},{"name":"Program stream map","start":18,"end":20,"bits":"0x000001BC","note":"把 stream_id 映射到具体编码类型（H.264 / H.265 / G.711）。"},{"name":"Video PES","start":21,"end":25,"bits":"0x000001E0","note":"视频 PES 起始码；0xE0 是视频流 0，音频通常是 0xC0。"}]}'></div>
+</section>
+
+<section id="transport">
+  <h2>🚚 UDP 还是 TCP：两种送法，各有代价</h2>
+  <p>国标允许 UDP 和 TCP 两种媒体传输。UDP 快、开销小，但丢包；TCP 稳、能穿一些 NAT，但延迟更高、断线影响更大。真正的难点不是“选哪个”，而是搞清楚<strong>谁连谁</strong>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方式</th><th>谁发起连接</th><th>SDP 常见写法</th><th>适用场景</th><th>典型问题</th></tr></thead>
+      <tbody>
+        <tr><td><b>UDP</b></td><td>设备直接往平台端口发包</td><td><code>m=video 15060 RTP/AVP 96</code></td><td>局域网、专网，链路稳定</td><td>丢包花屏；NAT/防火墙挡 UDP</td></tr>
+        <tr><td><b>TCP 被动</b></td><td>设备监听，平台去连</td><td>常见 <code>a=setup:passive</code></td><td>平台能访问设备端口</td><td>设备端口未放行；平台连不上</td></tr>
+        <tr><td><b>TCP 主动</b></td><td>设备主动连平台</td><td>常见 <code>a=setup:active</code></td><td>设备在 NAT 后、平台有公网</td><td>平台监听端口未开；设备连错地址</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>厂商差异提醒：</b>“主动/被动”是国标语境下从设备视角的命名，而 <code>setup</code> 是 RFC 4145 从 SDP 发送方视角的语义。两者并不总能一一对应，海康、大华、宇视的实现也出现过相反理解。结论：<strong>不要背字段，去抓 TCP 握手（SYN 方向）</strong>。</span></div>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">平台<span>INVITE + SDP</span></div><span class="ar">⇄</span>
+      <div class="node">SIP 协商<span>确定 IP / 端口 / 传输方式</span></div><span class="ar">→</span>
+      <div class="node hi">TCP 三次握手<span>谁先发 SYN 就是谁主动</span></div><span class="ar">→</span>
+      <div class="node">RTP / PS<span>媒体开始流动</span></div>
+    </div>
+    <figcaption>看懂了 SYN 的方向，就再也不会被“主动/被动”绕晕。</figcaption>
+  </div>
+</section>
+
+<section id="playback">
+  <h2>⏪ 录像回放：不能 seek 的流，怎么拖进度条</h2>
+  <p>实时流是“现在”，回放流是“过去”。PS 流本身没有索引，所以国标换了个办法：<strong>每次拖动都重新发一次 INVITE</strong>，在 SDP 里写明起止时间，让设备从录像文件的那个位置重新开始推。</p>
+
+  <pre class="code">INVITE sip:34020000001320000001@3402000000 SIP/2.0
+Content-Type: application/sdp
+
+v=0
+o=34020000001320000001 0 0 IN IP4 10.0.0.5
+s=Playback
+u=34020000001320000001:0
+c=IN IP4 10.0.0.5
+t=1762000000 1762003600          ← 起止时间（NTP 秒，UTC）
+m=video 15060 RTP/AVP 96
+a=rtpmap:96 PS/90000
+a=setup:passive
+y=0123456789</pre>
+
+  <p><code>s=Playback</code> 是回放，<code>s=Download</code> 是下载（通常也走 SIP + RTP/PS，但语义是“尽快传完”）。时间用 NTP 秒，也就是从 1900-01-01 起算的秒数——<strong>不是 Unix 时间戳</strong>，换算时别差 70 年。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>拖动 = 新的 INVITE</h4>
+      <p class="small">先 BYE 掉旧会话，再用新的 <code>t=</code> 范围发起新会话。播放器看到的“秒开”其实是设备侧重新定位文件并等到下一个 I 帧。</p>
+    </div>
+    <div class="card">
+      <h4>倍速 = Scale</h4>
+      <p class="small">通过 SIP INFO 下发 <code>&lt;Scale&gt;2&lt;/Scale&gt;</code> 实现 2 倍速，负值表示倒放。设备是否支持、支持到几倍，取决于型号。</p>
+    </div>
+    <div class="card">
+      <h4>时间对不上？先查时区</h4>
+      <p class="small">国标时间基准是 UTC。前端界面显示本地时间，换算链路里任何一环漏掉 +8 小时，都会出现“回放八小时前”的经典问题。</p>
+    </div>
+  </div>
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么回放容易“卡在第一帧”？</b>因为设备定位到的是关键帧之前的 P 帧，必须先等到一个 IDR 才能解码。工程上要么让设备对齐关键帧，要么在播放器侧容忍这段等待。</span></div>
+</section>
+
+<section id="cascade">
+  <h2>🌐 级联：平台之上还有平台</h2>
+  <p>区县平台要把画面交给市局，市局再交给省厅——这就是级联。技术上它没有魔法：<strong>下级平台把自己当成一台“设备”，向上级平台注册</strong>，然后共享目录、接受点播，媒体流可以直连，也可以经下级转发。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">摄像头 / NVR<span>Device</span></div><span class="ar">→</span>
+      <div class="node hi">区县平台<span>下级平台（同时是设备）</span></div><span class="ar">→</span>
+      <div class="node hi">市局平台<span>上级平台</span></div><span class="ar">→</span>
+      <div class="node">省厅 / 客户端<span>多级观看</span></div>
+    </div>
+    <figcaption>级联的关键不是“转发流”，而是“转发身份”：下级平台用平台 ID 注册，用通道 ID 接受点播。</div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>目录怎么共享</h4>
+      <p class="small">下级平台向上级上报 Catalog，上级看到的 DeviceID 仍然是原始通道 ID（或按级联规则映射）。这就是为什么跨级点播时，上级用的通道 ID 可能在下级设备上并不存在——它属于“平台虚拟目录”。</p>
+    </div>
+    <div class="card">
+      <h4>媒体走哪条路</h4>
+      <p class="small">两种模式：上级直接向下级设备点播（需要网络可达），或下级平台转发（跨网闸、跨安全域更常见）。后者会多一跳，延迟与带宽都要重新算。</p>
+    </div>
+  </div>
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>级联排错先看三样：</b>下级平台是否用<strong>平台类型 ID</strong>注册成功、上级目录里有没有通道、以及上级点播时 SDP 里的收流地址是否可达。三者缺一，画面都不会出现。</span></div>
+</section>
+
+<section id="gateway">
+  <h2>🚪 网关：让浏览器也能看国标</h2>
+  <p class="lead">浏览器不会说 SIP，也不认 PS。所以现实链路几乎总是：<strong>国标设备 → 国标平台/网关 → 转封装 → WebRTC / HLS / FLV → 浏览器</strong>。这不是“多此一举”，而是把“信令世界”翻译成“HTTP 世界”。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">IPC / NVR<span>SIP + PS/RTP</span></div><span class="ar">→</span>
+      <div class="node hi">国标平台<span>SIP 服务器 + 收流</span></div><span class="ar">→</span>
+      <div class="node">媒体网关<span>PS → H.264 → WebRTC/HLS</span></div><span class="ar">→</span>
+      <div class="node hi">浏览器<span>WHEP / HLS / FLV</span></div>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>组件</th><th>负责什么</th><th>是否做 GB28181</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><b>ZLMediaKit</b></td><td>收流、转协议、按需拉流</td><td>是（内置国标接入）</td><td>常与 wvp-GB28181-pro 搭配：wvp 管 SIP 与业务，ZLM 管媒体</td></tr>
+        <tr><td><b>wvp-GB28181-pro</b></td><td>SIP 注册、目录、点播、级联、Web 管理</td><td>是（平台侧）</td><td>Java 实现，国内部署量很大；需要 MySQL/Redis</td></tr>
+        <tr><td><b>MediaMTX</b></td><td>RTSP/RTMP/SRT/WebRTC 转发</td><td>否（不做 SIP/PS）</td><td>适合做“第二跳”：把 RTSP 转成 WHEP 给浏览器</td></tr>
+        <tr><td><b>SRS</b></td><td>直播服务器，支持 GB28181 接入（视版本）</td><td>部分版本</td><td>以官方文档为准，版本差异明显</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># ZLMediaKit（示例，端口需与配置一致）
+docker run -d --name zlm \
+  -p 1935:1935 -p 8080:80 -p 554:554 \
+  -p 10000:10000/udp \
+  -p 30000-30500:30000-30500/udp \
+  -p 5060:5060/udp -p 5060:5060/tcp \
+  -v $PWD/zlm/config.ini:/opt/media/conf/config.ini \
+  zlmediakit/zlmediakit:master
+
+# 若只做“RTSP → 浏览器 WHEP”的第二跳，MediaMTX 就够：
+docker run -d --name mediamtx \
+  -p 8554:8554 -p 8888:8888 -p 8889:8889 \
+  bluenviron/mediamtx:latest</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>部署前先算三笔账：</b>① SIP 5060 的 UDP/TCP 是否都放行；② 媒体端口段（UDP）是否整段放行；③ 平台收流地址在设备侧是否可达（尤其跨网段/跨 NAT）。绝大多数“注册成功但点播没画面”都死在这三笔账上。</span></div>
+</section>
+
+<section id="debug">
+  <h2>🔬 抓包与排错：把“没画面”拆成可验证的假设</h2>
+  <p>国标排错最有效的方法不是猜，而是<strong>按层次验证</strong>：注册成没成 → 心跳在不在 → 目录有没有 → INVITE 成没成 → RTP 到没到 → PS 能不能解 → 解码器有没有关键帧。每层都有明确的证据。</p>
+
+  <div class="tabs">
+    <button class="tab on" data-t="d1">抓包命令</button>
+    <button class="tab" data-t="d2">Wireshark 过滤器</button>
+    <button class="tab" data-t="d3">症状 → 原因</button>
+  </div>
+  <div class="tab-pnl on" data-p="d1">
+    <pre class="code"># 同时抓 SIP 与媒体端口（示例网段，按实际改）
+tcpdump -i eth0 -s 0 -w gb.pcap \
+  'port 5060 or (portrange 15000-15100)'
+
+# 只看 SIP
+tcpdump -i eth0 -A -s 0 'port 5060'
+
+# 确认 TCP 媒体是谁主动连的（看 SYN 方向）
+tcpdump -i eth0 -n 'tcp[tcpflags] &amp; tcp-syn != 0'</pre>
+    <p class="small"><b>建议：</b>在平台侧和设备侧同时抓，对比时间戳。只抓一侧时，很容易把“包到了但被丢”误判成“设备没发”。</p>
+  </div>
+  <div class="tab-pnl" data-p="d2">
+    <pre class="code">sip                      # 所有 SIP
+sip.Method == "REGISTER"
+sip.Method == "INVITE"
+sip.CSeq.method == "MESSAGE"
+rtp                      # RTP 流
+rtp.ssrc == 0x499602D2   # 十进制 1234567890 的十六进制
+ps                       # PS 封装（Wireshark 可识别部分字段）
+http                     # 若是 WebRTC/HLS 网关</pre>
+    <p class="small">怀疑 SSRC 不匹配时，直接按 <code>rtp.ssrc</code> 过滤，再和 SDP 里的 <code>y=</code> 对比。十进制作十位、十六进制八位，换算时别丢前导零。</p>
+  </div>
+  <div class="tab-pnl" data-p="d3">
+    <div class="scroll-x">
+      <table class="cmp">
+        <thead><tr><th>症状</th><th>大概率原因</th><th>怎么验证</th></tr></thead>
+        <tbody>
+          <tr><td>反复 401</td><td>密码错、realm 不一致、nonce 过期</td><td>对比两次 REGISTER 的 Authorization；确认平台配置的密码与设备一致</td></tr>
+          <tr><td>注册成功但显示离线</td><td>心跳没发、Content-Type 错、SN 不匹配</td><td>抓 MESSAGE 看 XML 与 <code>Content-Type: Application/MANSCDP+xml</code></td></tr>
+          <tr><td>目录为空</td><td>设备无通道、Catalog 分页没收齐、Parental 递归没做</td><td>看 <code>SumNum</code> 与实际 Item 数量</td></tr>
+          <tr><td>INVITE 404</td><td>用了设备 ID 而不是通道 ID</td><td>回看 Catalog 里的通道 ID</td></tr>
+          <tr><td>200 OK 但无 RTP</td><td>设备发到错误地址/端口、防火墙挡 UDP</td><td>两侧同时抓包，看目的 IP:port 是否等于 SDP</td></tr>
+          <tr><td>有 RTP 但黑屏</td><td>SSRC 不匹配、PS 无法解、没等到 IDR</td><td>按 <code>rtp.ssrc</code> 过滤；检查首个关键帧；确认 <code>y=</code> 一致</td></tr>
+          <tr><td>画面花屏/卡顿</td><td>UDP 丢包、码率超带宽、GOP 过长</td><td>看 RTP 序号跳变；改 TCP 或降码率验证</td></tr>
+          <tr><td>回放时间错</td><td>NTP 秒与本地时间混用、时区差 8 小时</td><td>把 <code>t=</code> 换算成 UTC 再对比</td></tr>
+          <tr><td>TCP 连不上</td><td>主动/被动理解相反、端口没开</td><td>抓 SYN 方向；核对设备与平台的监听端口</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>最小验证链：</b>先用 ONVIF/厂商工具确认设备本身能出流；再用 SIP 工具（如 SIPp、pjsua）只测注册；最后才接平台。把变量一个个消掉，比在平台日志里翻一下午快得多。</span></div>
+</section>
+
+<section id="code">
+  <h2>🧑‍💻 最小代码：算摘要、拼 XML、读 PS</h2>
+  <p>下面三段代码不依赖任何国标 SDK，目的是让你看清“协议到底做了什么”。真实项目请用成熟库（pjsip、wvp、ZLM），但读懂这几段，排错时你会知道该看哪里。</p>
+
+  <h3>① SIP Digest 摘要</h3>
+  <pre class="code">import hashlib, os
+
+def md5(s): return hashlib.md5(s.encode()).hexdigest()
+
+def digest(username, password, realm, nonce, uri, method, qop='auth', nc='00000001'):
+    ha1 = md5(f'{username}:{realm}:{password}')
+    ha2 = md5(f'{method}:{uri}')
+    if qop:
+        cnonce = os.urandom(8).hex()
+        resp = md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}')
+        return (f'Digest username="{username}", realm="{realm}", nonce="{nonce}", '
+                f'uri="{uri}", response="{resp}", algorithm=MD5, qop={qop}, '
+                f'nc={nc}, cnonce="{cnonce}"')
+    return f'Digest username="{username}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{md5(f"{ha1}:{nonce}:{ha2}")}"'</pre>
+  <p class="small">要点：<b>HA1 包含密码，HA2 包含方法和 URI</b>。所以同一个 nonce 下，REGISTER 和 INVITE 的 response 一定不同——这也是为什么“抄一条 Authorization 去发别的请求”永远失败。</p>
+
+  <h3>② 扫描 PS 起始码</h3>
+  <pre class="code">PS_START = {
+    0xBA: 'pack_header', 0xBB: 'system_header', 0xBC: 'program_stream_map',
+    0xE0: 'video_pes',   0xC0: 'audio_pes',
+}
+
+def scan_ps(data):
+    """在 RTP 载荷里找 PS 起始码：00 00 01 xx"""
+    i, out = 0, []
+    while i < len(data) - 3:
+        if data[i] == 0 and data[i+1] == 0 and data[i+2] == 1:
+            code = data[i+3]
+            if code in PS_START:
+                out.append((i, PS_START[code]))
+            i += 3
+        else:
+            i += 1
+    return out</pre>
+  <p class="small">真实解析还要读 PES 头里的 PTS/DTS（33 位，拆成 3 段存放），以及处理 <code>stream_id</code>。但“先找起始码”这一步，足以让你判断一段 RTP 里到底有没有 PS 数据。</p>
+
+  <h3>③ 用 FFmpeg 验证“码流本身能不能解”</h3>
+  <pre class="code"># 如果你已经能把 PS 落成文件（例如网关导出的 .ps）
+ffprobe -show_streams clip.ps
+ffmpeg -i clip.ps -c copy clip.mp4
+
+# 如果是标准 RTSP 摄像头（不是国标 PS），可直接：
+ffplay -fflags nobuffer -flags low_delay \
+  -rtsp_transport tcp rtsp://user:pass@192.168.1.64/Streaming/Channels/101</pre>
+  <p class="small">把“网络问题”和“码流问题”分开，是排错的分水岭：文件能解 → 问题在网络/信令；文件都解不了 → 问题在封装或编码参数。</p>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>SIP</td><td>建立、修改、结束会话的信令协议</td><td>它不传媒体，只传“怎么传”的约定</td></tr>
+        <tr><td>SDP</td><td>描述媒体类型、地址、端口、编码的文本</td><td>SDP 是“菜单”，不是数据本身</td></tr>
+        <tr><td>MANSCDP</td><td>国标定义的 XML 控制/通知格式</td><td>装在 SIP MESSAGE / INFO 里</td></tr>
+        <tr><td>PS</td><td>MPEG-2 Program Stream，国标媒体封装</td><td>不是“Photoshop”，也不是 MP4</td></tr>
+        <tr><td>SSRC</td><td>RTP 流的同步源标识</td><td>必须与 SDP 的 <code>y=</code> 一致</td></tr>
+        <tr><td>PES</td><td>PS 里承载一路编码数据的单元</td><td>带 PTS/DTS，决定播放时刻</td></tr>
+        <tr><td>Catalog</td><td>设备上报的通道目录</td><td>点播用通道 ID，不是设备 ID</td></tr>
+        <tr><td>级联</td><td>下级平台向上级注册并共享目录</td><td>媒体可以直连，也可以转发</td></tr>
+        <tr><td>NTP 秒</td><td>从 1900-01-01 起算的秒数</td><td>不是 Unix 时间戳，差 70 年</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>标准：GB/T 28181 · 参考实现：wvp-GB28181-pro / ZLMediaKit</span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
+

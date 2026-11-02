@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音视频方案全景 · 七类场景的选型决策</title>
+<meta name="description" content="不是罗列技术，而是从约束反推方案：直播、点播、视频会议、安防监控、云游戏/远程桌面、短视频、车载/弱网的端到端链路、延迟/并发/成本指标与推荐技术栈，附决策树 SVG 与带宽成本估算方法。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/" class="cur">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>音视频方案：<br><em>先算约束，再选技术</em></h1>
+    <p>方案不是“把最火的组件拼在一起”，而是从四个约束反推：延迟能忍多少、并发有多大、网络有多差、预算怎么算。同一套 WebRTC，放在会议里是正解，放在万人在线直播里可能直接压垮预算。这一页用七类真实场景，把“链路、指标、技术栈”一条条拆开。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#decision">🌳 走一遍决策树</a>
+      <a class="btn btn-ghost" href="#cost">💰 算一笔带宽账</a>
+      <a class="btn btn-ghost" href="#live">从直播看起</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">直播 / 点播</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">视频会议</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">安防监控</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">云游戏</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">短视频</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">车载 / 弱网</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#howto">选型方法：先约束后技术</a>
+    <a href="#live">直播</a>
+    <a href="#vod">点播</a>
+    <a href="#meeting">视频会议</a>
+    <a href="#security">安防监控</a>
+    <a href="#cloudgame">云游戏 / 远程桌面</a>
+    <a href="#shortvideo">短视频</a>
+    <a href="#vehicle">车载 / 弱网</a>
+    <a href="#decision">决策树</a>
+    <a href="#cost">成本估算</a>
+    <a href="#checklist">落地检查清单</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="howto">
+  <h2>🧭 选型方法：先写约束表，再打开技术文档</h2>
+  <p class="lead">选型像装修：先量房、问清楚住几个人、预算多少，再去挑地板。直接问“用什么协议最好”，就像不问户型就买瓷砖。把下面四列填完，答案通常会自己浮出来。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>约束</th><th>要问的问题</th><th>影响的技术决策</th></tr></thead>
+      <tbody>
+        <tr><td><b>延迟</b></td><td>人能忍多久？是“看”还是“操作”？</td><td>HLS → FLV → WebRTC/SRT 的选择；GOP 与缓冲策略</td></tr>
+        <tr><td><b>并发</b></td><td>峰值多少人同时看？上行/下行谁更大？</td><td>源站 + 边缘/CDN；SFU 还是 MCU；单机容量与带宽</td></tr>
+        <tr><td><b>网络</b></td><td>局域网、公网、4G/5G、卫星？丢包率多少？</td><td>SRT/FEC、ABR、多链路；是否必须 TURN 中继</td></tr>
+        <tr><td><b>成本</b></td><td>按流量还是按带宽？存储要留多久？谁来转码？</td><td>码率阶梯、存储分层、GPU/CPU 转码、CDN 计费模型</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>一个反直觉的事实：</b>延迟每降低一档，成本往往不是线性增加。把 HLS 换成 WebRTC，可能要新增 TURN、边缘节点和更高的运维复杂度；把 1080p 降到 720p，反而可能同时降低带宽、转码和存储三项成本。先找“约束里最硬的那一条”，再为它付费。</span></div>
+</section>
+
+<section id="live">
+  <h2>📺 直播：一条单向传送带，延迟与成本在两头拉扯</h2>
+  <p class="lead">直播像一条单向传送带：主播把货放上去，服务器分拣，观众从不同出口取货。传送带本身不加工，只负责“尽快、稳定地复制”。真正的取舍在出口：HLS 兼容性最好但慢，FLV 快一点但要 MSE，WebRTC 最快但并发贵。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">采集 / 编码<span>OBS、FFmpeg、硬件编码</span></div><span class="ar">→</span>
+      <div class="node">推流<span>RTMP / SRT / WHIP</span></div><span class="ar">→</span>
+      <div class="node hi">源站<span>SRS / ZLM / MediaMTX</span></div><span class="ar">→</span>
+      <div class="node">分发<span>HTTP-FLV / HLS / CDN</span></div><span class="ar">→</span>
+      <div class="node">播放器<span>MSE / hls.js / 原生</span></div>
+    </div>
+    <figcaption>互动性越强，越要把“最后一公里”往 WebRTC/FLV 挪；纯观看型直播可以用 HLS + CDN 摊薄成本。</figcaption>
+  </div>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"直播链路的四次关键交互","actors":["编码器","接入服务器","分发 / 边缘","播放器"],"steps":[{"from":0,"to":1,"label":"推流会话建立","color":"#7c3aed","detail":"RTMP 握手或 SRT 握手，鉴权通过后开始持续发送压缩包；推流端要按实时速度发送（FFmpeg 用 -re）。"},{"from":1,"to":1,"label":"转封装与切片","color":"#0891b2","detail":"服务器把进来的包重新组织成 FLV tag、HLS 切片或 WebRTC RTP。默认不解码，所以 CPU 开销远小于转码。"},{"from":2,"to":1,"label":"边缘回源 / 拉流","color":"#f59e0b","detail":"观众连边缘时，边缘按需从源站回源；同一路流只回源一次，再复制给大量观众。"},{"from":2,"to":3,"label":"按协议下发","color":"#10b981","detail":"HLS 走 HTTP 切片，FLV 走长连接，WHEP 走 SRTP。播放器按自身能力选择，业务侧用 ABR 或多协议兜底。"},{"from":0,"to":1,"label":"断流与重连","color":"#e11d48","detail":"推流断开后，服务器按策略保留会话或通知业务；恢复时要重新对齐关键帧，避免观众长时间黑屏。"}]}'></div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟</h4>
+      <p class="small">HLS 常规 6–30 s，LL-HLS 约 2–5 s；HTTP-FLV 1–3 s；WebRTC 0.3–1 s。延迟预算是“编码 + 切片 + 缓冲 + 网络”的总和，不要只盯着协议名。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">瓶颈通常是出口带宽与连接数，不是 CPU。源站只服务边缘，观众连边缘；单机并发要按“码率 × 人数”算，不要按“能开多少进程”算。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">CDN 流量是大头，转码是固定成本，存储（录制/回看）是长尾成本。降低码率、减少档位、缩短录制保留期，通常比换服务器更省钱。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">OBS / FFmpeg</span><span class="tag tag-p">RTMP 或 SRT 推流</span><span class="tag tag-c">SRS / ZLMediaKit</span><span class="tag tag-c">HTTP-FLV 低延迟</span><span class="tag tag-a">HLS + CDN 大规模</span><span class="tag tag-g">WebRTC/WHEP 强互动</span></p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>首屏与延迟要分开优化。</b>缩短 GOP 能让首帧更快，但码率会上升；LL-HLS 能降延迟，但切片更碎、请求更多。先用 <a href="../player.html">播放器页</a> 的方法量出“首帧时间”和“稳定延迟”，再决定要不要为最后 2 秒多付一倍成本。</span></div>
+</section>
+
+<section id="vod">
+  <h2>🎞️ 点播：把一次上传，变成很多种“尺码”</h2>
+  <p class="lead">点播像服装店：同一件衣服要备 S/M/L 几个尺码，顾客按身材挑。视频也一样，一次上传后转成多档分辨率/码率，播放器根据带宽切换。点播不追求“实时”，追求“起播快、拖动顺、长尾便宜”。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">上传<span>分片 / 断点续传</span></div><span class="ar">→</span>
+      <div class="node">对象存储<span>原片 + 转码产物</span></div><span class="ar">→</span>
+      <div class="node hi">转码农场<span>H.264 / HEVC / AV1 多档</span></div><span class="ar">→</span>
+      <div class="node">CDN<span>HLS / DASH</span></div><span class="ar">→</span>
+      <div class="node">播放器<span>ABR 自适应</span></div>
+    </div>
+    <figcaption>点播的核心不是“转码”，而是“转码产物怎么组织、怎么被播放器选到”。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟 / 起播</h4>
+      <p class="small">点播不要求低延迟，但要求起播快：moov/faststart、首片足够小、CDN 命中率高。拖动要快，靠的是关键帧间隔与索引，而不是更快的服务器。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">点播并发是“长尾分布”：热门内容少数几个文件承担大部分流量，冷门内容占用存储。CDN 缓存命中率决定回源压力。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">存储 + 转码 + CDN 三块。档位不是越多越好：多一档就多一份存储与转码，且低档位未必有人看。按实际播放分布裁剪。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">对象存储 / 分片上传</span><span class="tag tag-c">FFmpeg 转码农场</span><span class="tag tag-a">HLS / DASH + ABR</span><span class="tag tag-g">CDN + 缓存策略</span><span class="tag tag-p">hls.js / dash.js / 原生</span></p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>ABR 不是“档位越多越专业”。</b>每增加一档，就要多转一次、多存一份、多维护一条播放列表；如果最低档码率仍然高于弱网可用带宽，ABR 也救不了。先按“目标设备 + 网络分布”定 3–5 档，再用播放数据调整。</span></div>
+</section>
+
+<section id="meeting">
+  <h2>🎙️ 视频会议：不是“把直播反过来”，而是多人对讲</h2>
+  <p class="lead">会议像一间圆桌会议室：每个人都同时说、同时听，服务器要做的是“把每个人的声音分发给其他人”，而不是把一路流广播给所有人。这就是 SFU（选路转发）与 MCU（混流）的区别：SFU 省 CPU、保留单独音轨；MCU 省客户端带宽、但服务器要解码混流。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">终端 A<span>采集 + 编码 + 回声消除</span></div><span class="ar">⇄</span>
+      <div class="node">SFU<span>Janus / LiveKit / mediasoup</span></div><span class="ar">⇄</span>
+      <div class="node">TURN<span>NAT 穿透失败时中继</span></div><span class="ar">⇄</span>
+      <div class="node hi">终端 B / C<span>解码 + 混音 + 渲染</span></div><span class="ar">→</span>
+      <div class="node">录制 / 转推<span>可选</span></div>
+    </div>
+    <figcaption>SFU 只转发，不混流；每个参会者收到的是“别人的原始流”。这也是它比 MCU 便宜的原因。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟</h4>
+      <p class="small">目标通常在 300 ms 以内，否则对话会“抢话”。除了网络，回声消除、抖动缓冲、编码延迟都会吃掉预算。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">按“房间数 × 每房间路数 × 码率”估算 SFU 出口。10 人 720p 会议，SFU 要向每人转发另外 9 路，出口压力远大于单人直播。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">TURN 中继流量、SFU 带宽、录制存储。企业内网可直连时成本低；公网大规模会议必须把 TURN 与边缘算进去。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">WebRTC（ICE / DTLS / SRTP）</span><span class="tag tag-c">Janus / LiveKit / mediasoup（以官方文档为准）</span><span class="tag tag-a">coturn</span><span class="tag tag-g">SFU + 服务端混流（可选）</span><span class="tag tag-p">录制 / 转推</span></p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>会议排错优先看 ICE，而不是编码。</b>“一方黑屏、另一方正常”多半是某条候选路径不通；“全员卡顿”才更像带宽或 SFU 过载。TURN 不是可选项——在企业防火墙下，它经常是唯一能通的路径。</span></div>
+</section>
+
+<section id="security">
+  <h2>📹 安防监控：先有“可靠取流”，再谈“好看”</h2>
+  <p class="lead">安防像一栋楼的消防系统：平时没人注意，出事时必须能看到、能回放、能证明。技术链路通常不是从 websocket 开始，而是从 SIP 注册、目录、点播、PS over RTP 开始。浏览器只是最后一环，前面任何一环断了，画面都不会出现。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">IPC / NVR<span>GB28181 设备</span></div><span class="ar">→</span>
+      <div class="node">SIP 平台<span>wvp-GB28181-pro</span></div><span class="ar">→</span>
+      <div class="node hi">媒体服务器<span>ZLMediaKit 收流</span></div><span class="ar">→</span>
+      <div class="node">协议转换<span>FLV / HLS / WHEP</span></div><span class="ar">→</span>
+      <div class="node">客户端<span>Web / 电视墙 / App</span></div>
+    </div>
+    <figcaption>国标负责“把流要过来”，媒体服务器负责“把流翻译给浏览器”，两者不要混成一个组件。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟</h4>
+      <p class="small">实时监看通常 0.5–2 s 可接受；电视墙对延迟更敏感。回放不追求实时，但要求拖动后尽快出关键帧。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">摄像头数量多、观看人数少，是典型“多路小流量”。瓶颈常在收流端口段、SIP 会话数与按需拉流的调度，而不是单路带宽。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">7×24 存储是长尾大头；实时观看带宽是次要成本。按“路数 × 码率 × 保留天数”算存储，比按“总摄像头数”拍脑袋可靠。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">GB/T 28181</span><span class="tag tag-c">wvp-GB28181-pro + ZLMediaKit</span><span class="tag tag-a">FLV / HLS / WHEP 出口</span><span class="tag tag-g">按需拉流 + 录像回放</span><span class="tag tag-p">电视墙 / 客户端</span></p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“注册成功”不等于“能看”。</b>注册只证明设备在线，目录证明有通道，INVITE 证明点播协商成功，RTP/PS 到达且 SSRC 匹配才证明流真的来了。排错顺序与抓包方法见 <a href="../gb28181.html">GB28181 专页</a>。</span></div>
+</section>
+
+<section id="cloudgame">
+  <h2>🎮 云游戏 / 远程桌面：把“显卡”搬到离用户更近的地方</h2>
+  <p class="lead">云游戏像把游戏机房搬到小区门口：画面在云端渲染，编码后通过网络送到你家屏幕，你的操作再传回去。它和直播最大的不同是“双向 + 极低延迟”：超过 100 ms，玩家就能感觉到“手不跟眼”。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">云端 GPU<span>渲染 + NVENC</span></div><span class="ar">→</span>
+      <div class="node">零拷贝<span>显存直通编码器</span></div><span class="ar">→</span>
+      <div class="node hi">边缘节点<span>WebRTC / SRT</span></div><span class="ar">→</span>
+      <div class="node">接入网<span>5G / 宽带</span></div><span class="ar">→</span>
+      <div class="node">客户端<span>硬解 + 低延迟缓冲</span></div>
+    </div>
+    <figcaption>链路上每一跳都在加延迟；真正能省的是“渲染→编码”这一段的内存拷贝，以及最后一公里的网络绕行。</figcaption>
+  </div>
+
+  <div data-lazy-viz data-viz="zerocopy" data-opts='{}'></div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟</h4>
+      <p class="small">目标通常是端到端 30–80 ms（网络条件好时）；编码、传输、解码、显示各占一段。超过 100 ms 后，操作类场景的体验明显下降。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">并发单位是“GPU 会话”而不是“观众”。一张卡能切多少路，取决于分辨率、帧率、编码器与显存；不是软件能无限扩。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">GPU 机时 + 边缘带宽。1080p60 的码率远高于直播，按流量计费会很贵；通常用“包月 GPU + 边缘节点”模式。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">NVENC / VAAPI 硬件编码</span><span class="tag tag-c">零拷贝（GPU 显存直通）</span><span class="tag tag-a">WebRTC（低延迟）</span><span class="tag tag-g">边缘节点 + 就近接入</span><span class="tag tag-p">硬解客户端</span></p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>云游戏不是“把视频编码参数调低”就能做。</b>编码器本身的帧级延迟、抖动缓冲、垂直同步都会累积。硬件编码的 low-latency 模式与零拷贝链路，往往比换协议更能减少那 20 ms。具体参数以各 GPU 厂商文档为准。</span></div>
+</section>
+
+<section id="shortvideo">
+  <h2>📱 短视频：一次上传，长期被反复播放</h2>
+  <p class="lead">短视频像便利店货架：商品不多，但每天被很多人拿起来看一眼。它不追求实时，追求“起播快、滑动不卡、单次观看成本低”。因此重点不在推流协议，而在转码档位、CDN 命中率与播放器预加载。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">手机拍摄<span>可变帧率 / HDR</span></div><span class="ar">→</span>
+      <div class="node">上传<span>分片 + 断点续传</span></div><span class="ar">→</span>
+      <div class="node hi">转码 / 审核<span>多档 + 封面 + 内容审核</span></div><span class="ar">→</span>
+      <div class="node">CDN<span>HLS / DASH + 预热</span></div><span class="ar">→</span>
+      <div class="node">Feed 播放器<span>预加载 + ABR</span></div>
+    </div>
+    <figcaption>短视频的“延迟”主要看起播，而不是直播意义上的端到端延迟。</figcaption>
+  </div>
+
+  <div data-lazy-viz data-viz="abr" data-opts='{"title":"短视频多档码率：带宽与清晰度的折中","bw":6}'></div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟 / 起播</h4>
+      <p class="small">目标通常是首帧 &lt; 200–500 ms。靠的是短 GOP、小首片、预加载与 CDN 命中，而不是更强的服务器。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">DAU 很大但单次时长短，流量呈“脉冲式”。CDN 边缘缓存与热门内容预热，比源站扩容更有效。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">单次观看成本 = 码率 × 时长。降低 10% 码率、裁剪无人观看的档位，长期收益远大于一次性采购折扣。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">分片上传</span><span class="tag tag-c">FFmpeg 多档转码</span><span class="tag tag-a">HLS / DASH</span><span class="tag tag-g">CDN + 预热</span><span class="tag tag-p">Feed 播放器预加载</span></p>
+</section>
+
+<section id="vehicle">
+  <h2>🚚 车载 / 弱网：网络像一条会断的路，方案要会“绕路”</h2>
+  <p class="lead">车载图传像在颠簸的公路上送快递：丢包、抖动、切换基站、隧道断线都是常态。这里最不该做的是“假设网络稳定”。SRT 的 ARQ、FEC、可配置延迟，加上多卡聚合与本地缓存，才是主线。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">车载摄像头<span>H.265 / 多路</span></div><span class="ar">→</span>
+      <div class="node">编码 / 封装<span>低码率 + 短 GOP</span></div><span class="ar">→</span>
+      <div class="node hi">SRT / WebRTC<span>ARQ + FEC</span></div><span class="ar">→</span>
+      <div class="node">多链路<span>4G/5G 双卡聚合</span></div><span class="ar">→</span>
+      <div class="node">边缘接入<span>MediaMTX / ZLM</span></div>
+    </div>
+    <figcaption>弱网方案的核心不是“换协议”，而是“接受丢包，并主动补回来”。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>延迟</h4>
+      <p class="small">可接受范围通常比会议宽：200 ms–2 s 都可能；SRT 的延迟缓冲是可配置的，用延迟换稳定是常见选择。</p>
+    </div>
+    <div class="card">
+      <h4>并发</h4>
+      <p class="small">瓶颈在上行：一辆车能推几路，取决于基站上行与套餐。多路场景优先降分辨率/帧率，而不是加天线。</p>
+    </div>
+    <div class="card">
+      <h4>成本</h4>
+      <p class="small">蜂窝流量是主要成本。H.265、按需上传（事件触发）、本地缓存回传，通常比全程高清上传更划算。</p>
+    </div>
+  </div>
+
+  <p><b>推荐技术栈：</b><span class="tag tag-p">H.265 / AV1（视设备支持）</span><span class="tag tag-c">SRT（ARQ + FEC）</span><span class="tag tag-a">多链路聚合</span><span class="tag tag-g">边缘接入（MediaMTX / ZLM）</span><span class="tag tag-p">本地缓存 / 断点续传</span></p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别在弱网里追求“零延迟”。</b>网络已经丢包时，越小的缓冲越容易花屏/卡死。SRT 的延迟参数、FEC 开销、码率自适应要一起调；只改其中一个，通常只是把“卡顿”换成“糊”。</span></div>
+</section>
+
+<section id="decision">
+  <h2>🌳 决策树：从需求反推方案</h2>
+  <p class="lead">把前面的约束压缩成几个“是/否”，从根往下走，叶子就是起点方案。它不是标准答案，而是帮你排除明显不合适的技术，避免一上来就陷入“哪个服务器最好”的争论。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 980 480" style="width:100%;height:auto" role="img" aria-label="音视频方案选型决策树">
+      <defs>
+        <marker id="arw" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+
+      <rect x="380" y="12" width="220" height="40" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+      <text x="490" y="37" text-anchor="middle" font-size="11.5" font-weight="700" fill="#5b21b6">先写清：体验 / 规模 / 网络 / 预算</text>
+
+      <rect x="380" y="84" width="220" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="490" y="109" text-anchor="middle" font-size="11.5" fill="#5b21b6">需要双向实时互动？</text>
+
+      <rect x="110" y="156" width="210" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="215" y="181" text-anchor="middle" font-size="11.5" fill="#5b21b6">端到端延迟 &lt; 100 ms？</text>
+
+      <rect x="640" y="156" width="210" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="745" y="181" text-anchor="middle" font-size="11.5" fill="#5b21b6">内容要长期保存、可回看？</text>
+
+      <rect x="10" y="236" width="150" height="54" rx="7" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="85" y="258" text-anchor="middle" font-size="12" font-weight="700" fill="#155e75">云游戏 / 远程桌面</text>
+      <text x="85" y="274" text-anchor="middle" font-size="8.5" fill="#475569">WebRTC + NVENC + 边缘 GPU</text>
+
+      <rect x="175" y="236" width="150" height="54" rx="7" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="250" y="258" text-anchor="middle" font-size="12" font-weight="700" fill="#155e75">视频会议 / 在线教育</text>
+      <text x="250" y="274" text-anchor="middle" font-size="8.5" fill="#475569">WebRTC SFU + TURN</text>
+
+      <rect x="500" y="236" width="190" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="595" y="261" text-anchor="middle" font-size="11.5" fill="#5b21b6">内容以用户上传的短视频为主？</text>
+
+      <rect x="710" y="236" width="190" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="805" y="261" text-anchor="middle" font-size="11.5" fill="#5b21b6">上行链路稳定可靠？</text>
+
+      <rect x="400" y="316" width="140" height="54" rx="7" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="470" y="338" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">短视频</text>
+      <text x="470" y="354" text-anchor="middle" font-size="8.5" fill="#475569">转码 + CDN + HLS/DASH</text>
+
+      <rect x="560" y="316" width="180" height="40" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="650" y="341" text-anchor="middle" font-size="11.5" fill="#5b21b6">源是摄像头、需 7×24 监看？</text>
+
+      <rect x="690" y="316" width="130" height="54" rx="7" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="755" y="338" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">互动直播</text>
+      <text x="755" y="354" text-anchor="middle" font-size="8.5" fill="#475569">RTMP/SRT + FLV/HLS</text>
+
+      <rect x="835" y="316" width="130" height="54" rx="7" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="900" y="338" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">车载 / 弱网图传</text>
+      <text x="900" y="354" text-anchor="middle" font-size="8.5" fill="#475569">SRT + FEC + 多链路</text>
+
+      <rect x="545" y="400" width="140" height="54" rx="7" fill="#fff1f2" stroke="#fecdd3"/>
+      <text x="615" y="422" text-anchor="middle" font-size="12" font-weight="700" fill="#9f1239">安防监控</text>
+      <text x="615" y="438" text-anchor="middle" font-size="8.5" fill="#475569">GB28181 + ZLM + 网关</text>
+
+      <rect x="710" y="400" width="150" height="54" rx="7" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="785" y="422" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">点播 / 长视频</text>
+      <text x="785" y="438" text-anchor="middle" font-size="8.5" fill="#475569">转码农场 + CDN</text>
+
+      <line x1="490" y1="52" x2="490" y2="84" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="430" y1="124" x2="215" y2="156" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="550" y1="124" x2="745" y2="156" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="318" y="146" text-anchor="middle" font-size="9.5" fill="#047857">是</text>
+      <text x="655" y="146" text-anchor="middle" font-size="9.5" fill="#9f1239">否</text>
+
+      <line x1="160" y1="196" x2="85" y2="236" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="270" y1="196" x2="250" y2="236" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="112" y="223" text-anchor="middle" font-size="9.5" fill="#047857">是</text>
+      <text x="280" y="223" text-anchor="middle" font-size="9.5" fill="#9f1239">否</text>
+
+      <line x1="690" y1="196" x2="595" y2="236" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="800" y1="196" x2="805" y2="236" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="630" y="223" text-anchor="middle" font-size="9.5" fill="#047857">是</text>
+      <text x="820" y="223" text-anchor="middle" font-size="9.5" fill="#9f1239">否</text>
+
+      <line x1="560" y1="276" x2="470" y2="316" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="640" y1="276" x2="650" y2="316" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="502" y="303" text-anchor="middle" font-size="9.5" fill="#047857">是</text>
+      <text x="665" y="303" text-anchor="middle" font-size="9.5" fill="#9f1239">否</text>
+
+      <line x1="750" y1="276" x2="755" y2="316" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="860" y1="276" x2="900" y2="316" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="768" y="303" text-anchor="middle" font-size="9.5" fill="#047857">稳定</text>
+      <text x="892" y="303" text-anchor="middle" font-size="9.5" fill="#9f1239">不稳定</text>
+
+      <line x1="615" y1="356" x2="615" y2="400" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <line x1="700" y1="356" x2="785" y2="400" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#arw)"/>
+      <text x="630" y="382" text-anchor="middle" font-size="9.5" fill="#047857">是</text>
+      <text x="760" y="382" text-anchor="middle" font-size="9.5" fill="#9f1239">否</text>
+    </svg>
+    <figcaption>决策树只负责“排除明显不合适”，最终方案仍要用真实流量、真实网络和真实预算验证。</figcaption>
+  </div>
+
+  <p class="small">读法：从顶部往下。以“安防监控”为例——不是双向互动 → 需要长期保存 → 不是用户上传短视频 → 源是摄像头且需 7×24 监看 → 落到“GB28181 + ZLM + 网关”。如果其中任一条答案不同，就应该换叶子，而不是硬套。</p>
+</section>
+
+<section id="cost">
+  <h2>💰 成本估算：先把“带宽 × 码率”算清楚</h2>
+  <p class="lead">音视频的成本像水费：单价不高，但一直流。最容易算错的是单位——Mbps 是“每秒多少兆比特”，GB 是“字节”，中间差一个 8，还有 1024。先把公式写对，再谈采购折扣。</p>
+
+  <div class="formula">峰值带宽(Mbps) = 单路码率(Mbps) × 并发路数 × (1 + 冗余比例)</div>
+  <div class="formula">流量(GB) = 码率(Mbps) × 时长(s) ÷ 8 ÷ 1024</div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>场景</th><th>假设</th><th>日流量</th><th>月流量</th><th>示例月成本<br><span class="small">¥0.20/GB</span></th></tr></thead>
+      <tbody>
+        <tr><td>直播</td><td class="num">4 Mbps · 500 并发 · 2 h/场 · 1 场/日</td><td class="num">约 1.72 TB</td><td class="num">约 51.5 TB</td><td class="num">约 ¥10,547</td></tr>
+        <tr><td>点播</td><td class="num">4 Mbps · 1000 日活 · 30 min/日</td><td class="num">约 0.86 TB</td><td class="num">约 25.8 TB</td><td class="num">约 ¥5,273</td></tr>
+        <tr><td>短视频</td><td class="num">1.5 Mbps · 5000 日活 · 10 min/日</td><td class="num">约 0.54 TB</td><td class="num">约 16.1 TB</td><td class="num">约 ¥3,296</td></tr>
+        <tr><td>云游戏</td><td class="num">15 Mbps · 100 并发 · 1 h/日</td><td class="num">约 0.64 TB</td><td class="num">约 19.3 TB</td><td class="num">约 ¥3,955</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">示例单价仅用于比较量级，不是任何厂商的报价；实际 CDN 常按阶梯流量计价，自建 IDC 常按 95 峰值带宽计费，两种模型不要叠加。上表按 1 GB = 1024 MB 估算。</p>
+
+  <h3>另外两笔容易被忽略的账</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>存储：按“路数 × 码率 × 保留天数”</h4>
+      <p class="small">4 Mbps 连续录制：每小时约 1.76 GB，每天约 42.2 GB，每月约 1.24 TB/路。100 路、保留 30 天约 124 TB。若示例单价 ¥0.15/GB/月，仅存储就约 ¥19,000/月——通常比实时观看更贵。</p>
+    </div>
+    <div class="card">
+      <h4>固定带宽：按“并发 × 码率 × 冗余”</h4>
+      <p class="small">4 Mbps × 1000 并发 × 1.2 ≈ 4.8 Gbps。若示例单价 ¥15/Mbps/月，约 ¥72,000/月。自建机房时，这笔钱替代了 CDN 流量费，不是额外叠加。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>降本优先级通常是：</b>先砍没人看的档位与超长保留期 → 再优化码率/编码器 → 最后才换更便宜的带宽。转码占的是机时，带宽占的是持续现金流；先动后者，账面上更快见效。</span></div>
+</section>
+
+<section id="checklist">
+  <h2>✅ 落地检查清单：上线前先过这五关</h2>
+  <p>方案写得再漂亮，落地时也会被端口、证书、鉴权和时间戳打回原形。下面这份清单按“先能通、再能看、最后能运营”的顺序排列，适合在项目评审时逐条打勾。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>关卡</th><th>要确认的事</th><th>验收方式</th></tr></thead>
+      <tbody>
+        <tr><td><b>① 约束</b></td><td>延迟目标、峰值并发、网络类型、预算上限是否写成数字</td><td>把“尽量低延迟”换成“P95 &lt; 800 ms”这样的句子</td></tr>
+        <tr><td><b>② 协议</b></td><td>最后一公里给浏览器什么协议；是否需要转码；是否需要 TURN</td><td>用最小 demo 验证，不靠 PPT</td></tr>
+        <tr><td><b>③ 容量</b></td><td>峰值带宽、存储月增、转码机时是否算过</td><td>用本页公式代入真实码率与并发</td></tr>
+        <tr><td><b>④ 部署</td><td>SIP/RTSP/RTMP/SRT/ICE 所需端口是否整段放行；证书与域名是否就绪</td><td>从外网真实拨测，不只看内网</td></tr>
+        <tr><td><b>⑤ 可观测</b></td><td>首帧时间、卡顿率、断流率、回源率、鉴权失败率是否有指标</td><td>每一路流都能回答“卡在哪一层”</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>三个常见反模式：</b>① 用 WebRTC 承载万人大直播，TURN 账单先爆；② 所有内容只留一个 1080p 档，弱网用户体验和带宽成本同时失控；③ 把“服务器能启动”当成“方案能上线”，跳过了端口、跨域、ICE 与鉴权验证。方案页的价值不在于列组件，而在于提前把这些坑写进验收表。</span></div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>成本与延迟均为示例模型，实际以业务实测与厂商报价为准</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

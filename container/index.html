@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>容器与封装 · MP4 / fMP4 / TS / FLV 的字节结构与索引</title>
+<meta name="description" content="用“一本书”理解封装：MP4 的 ftyp、moov、stbl 索引与 faststart，fMP4 的 moof/tfdt，MPEG-TS 的 188 字节包与 PAT/PMT，FLV 的 tag 结构，以及时间戳、音画同步与封装开销计算。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/" class="cur">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>容器：同一段画面，<br><em>换四种箱子</em></h1>
+    <p>编码决定“写什么字”，封装决定“怎么装订成书”。MP4 像一本书：目录在前、正文在后；TS 像一列固定 188 座的车厢；FLV 像一张张连着贴的便利贴。看懂箱子的结构，你才解释得清“文件能播、网页黑屏”“进度条拖不动”“音画差半秒”这些怪事。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#bytes">🔬 看真实字节</a>
+      <a class="btn btn-ghost" href="#ts">📦 拆一个 TS 包</a>
+      <a class="btn btn-ghost" href="#compare">拿对比表</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MP4 / ISO BMFF</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">fMP4 / CMAF</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MPEG-TS</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">FLV</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HLS / DASH</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">容器到底解决什么</a>
+    <a href="#anatomy">MP4 的 box 树</a>
+    <a href="#bytes">真实字节：ftyp 与 mvhd</a>
+    <a href="#index">索引与 faststart</a>
+    <a href="#fragment">fMP4 与分片</a>
+    <a href="#ts">MPEG-TS 的 188 字节</a>
+    <a href="#flv">FLV 的 tag</a>
+    <a href="#compare">四种容器对比</a>
+    <a href="#sync">时间戳与音画同步</a>
+    <a href="#hls">HLS / DASH 的分片</a>
+    <a href="#math">体积与开销计算</a>
+    <a href="#debug">排错清单</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>📚 容器到底解决什么：文字与装订</h2>
+  <p class="lead">把编码器输出的 H.264 NAL 或 AAC 帧想成<strong>散页的稿纸</strong>：每页写了内容，但没有页码、没有目录、没有“第几页对应第几秒”。容器做的事情，就是把这些散页装订成书：加封面（品牌与兼容性）、加目录（索引表）、加页码（时间戳），偶尔还加版权页和字幕页。</p>
+  <p>所以“封装”不等于“压缩”。把 MP4 转成 TS 时用 <code>ffmpeg -c copy</code>，视频码流一个字节都没变，变的只是箱子。反过来，把 <code>.ts</code> 改名成 <code>.mp4</code> 更不会改变任何字节——播放器仍然按 TS 去解析，只是你的操作系统图标变了。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">采集<span>YUV / PCM</span></div><span class="ar">→</span>
+      <div class="node hi">编码<span>H.264 / AAC</span></div><span class="ar">→</span>
+      <div class="node hi">封装<span>MP4 / TS / FLV</span></div><span class="ar">→</span>
+      <div class="node">传输<span>HTTP / RTMP / RTP</span></div><span class="ar">→</span>
+      <div class="node">解封装<span>读目录与时间戳</span></div><span class="ar">→</span>
+      <div class="node">解码渲染<span>YUV → RGB</span></div>
+    </div>
+    <figcaption>编码与封装是两道独立工序。排障时先问“码流本身能不能解”，再问“箱子有没有装对”。</figcaption>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>容器不负责画质</h4>
+      <p class="small">容器只搬运编码后的样本（sample）。同一段 H.264，装进 MP4 与装进 TS，画质完全一样；差别在索引、开销、可寻址性与浏览器兼容性。</p>
+    </div>
+    <div class="card">
+      <h4>裸流没有时间轴</h4>
+      <p class="small"><code>.h264</code>（Annex B）与 <code>.aac</code>（ADTS）是裸流：没有轨道概念、没有每帧时长、没有随机访问索引。能顺序播，不能可靠 seek，也很难做音画同步。</p>
+    </div>
+    <div class="card">
+      <h4>扩展名不可信</h4>
+      <p class="small">判断真实容器用 <code>ffprobe -show_format</code> 看 <code>format_name</code>，例如 <code>mov,mp4,m4a,3gp,3g2,mj2</code> 或 <code>mpegts</code>。抓包与工单里因为改后缀浪费的时间非常多。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>一句话记法：</b>编码是“把画面变成比特”，封装是“把比特排成可寻址的时间轴”。前者决定 4 Mbps 能不能看，后者决定第 30 秒能不能瞬间跳过去。</span></div>
+</section>
+
+<section id="anatomy">
+  <h2>🧬 MP4 的 box 树：书是怎么装订的</h2>
+  <p>MP4 沿用 ISO Base Media File Format（ISO/IEC 14496-12）。整个文件由一个个 <b>box</b> 嵌套而成，每个 box 以 4 字节大小 + 4 字节类型开头。最小的 <code>ftyp</code> 只有 24 字节，最大的 <code>mdat</code> 可能几百 MB。理解这棵树，你就知道播放器为什么“必须先把 moov 读完才能播”。</p>
+
+  <div class="tree">
+<span class="k">ftyp</span> <span class="note">— 品牌与兼容性：isom / iso2 / avc1 / mp42</span>
+<span class="k">moov</span> <span class="note">— 影片元数据与全部索引（没有像素）</span>
+  <span class="l"><span class="k">mvhd</span> <span class="t">全局时间刻度 timescale、总时长 duration</span></span>
+  <span class="l"><span class="k">trak</span> <span class="note">— 一条轨道（视频或音频）</span>
+    <span class="l"><span class="k">tkhd</span> <span class="t">轨道 ID、宽高、旋转矩阵</span></span>
+    <span class="l"><span class="k">mdia</span>
+      <span class="l"><span class="k">mdhd</span> <span class="t">该媒体自己的 timescale / duration / 语言</span></span>
+      <span class="l"><span class="k">hdlr</span> <span class="t">vide / soun / sbtl</span></span>
+      <span class="l last"><span class="k">minf → stbl</span> <span class="t">样本表：真正的索引在这里</span></span>
+    </span>
+  </span>
+  <span class="l last"><span class="k">trak</span> <span class="note">— 音频轨道，结构同上，stsd 里是 mp4a</span></span>
+<span class="k">mdat</span> <span class="note">— 媒体数据：H.264 样本、AAC 帧，按 chunk 排列</span>
+  </div>
+
+  <p><b>box 的三条硬规则：</b>① 默认 32 位 <code>size</code>，类型紧跟其后；② 若 <code>size == 1</code>，后面还有 64 位 <code>largesize</code>（大文件常见）；③ 若 <code>size == 0</code>，表示这个 box 一直延伸到文件末尾（多见于 <code>mdat</code>）。解析器必须先读大小再决定跳过多少字节，这也是“损坏一个长度字段，后面全乱”的原因。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 210" style="width:100%;height:auto" role="img" aria-label="moov 在文件尾部与 faststart 的对比">
+      <text x="20" y="20" font-size="11" font-weight="700" fill="#334155">未优化：moov 在文件尾部</text>
+      <rect x="20" y="30" width="92" height="38" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="66" y="54" text-anchor="middle" font-size="11" fill="#155e75">ftyp</text>
+      <rect x="120" y="30" width="470" height="38" rx="5" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="355" y="54" text-anchor="middle" font-size="11" fill="#92400e">mdat · 像素与音频数据（几百 MB）</text>
+      <rect x="598" y="30" width="120" height="38" rx="5" fill="#fff1f2" stroke="#fda4af"/>
+      <text x="658" y="47" text-anchor="middle" font-size="11" font-weight="700" fill="#9f1239">moov</text>
+      <text x="658" y="61" text-anchor="middle" font-size="9" fill="#9f1239">索引在最后</text>
+      <text x="20" y="86" font-size="9.5" fill="#64748b">浏览器必须先下完整个 mdat 才能拿到 moov → 首帧等待、进度条不可拖</text>
+
+      <text x="20" y="122" font-size="11" font-weight="700" fill="#334155">faststart：moov 前移</text>
+      <rect x="20" y="132" width="92" height="38" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="66" y="156" text-anchor="middle" font-size="11" fill="#155e75">ftyp</text>
+      <rect x="120" y="132" width="120" height="38" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="180" y="149" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">moov</text>
+      <text x="180" y="163" text-anchor="middle" font-size="9" fill="#047857">先读索引</text>
+      <rect x="248" y="132" width="470" height="38" rx="5" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="483" y="156" text-anchor="middle" font-size="11" fill="#92400e">mdat · 可以边下边播、随时 seek</text>
+      <text x="20" y="190" font-size="9.5" fill="#64748b">执行 ffmpeg -movflags +faststart 只是移动 moov 的位置，不重新编码，不损失画质</text>
+    </svg>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>为什么很多“下载的 MP4”不能边下边播？</b>因为编码器默认把 moov 写在文件末尾，方便边写边追加。上传网站前跑一次 faststart，是最便宜的体验优化。</span></div>
+</section>
+
+<section id="bytes">
+  <h2>🔬 真实字节：把 ftyp 与 mvhd 拆开</h2>
+  <p>下面这段是 <code>ftyp</code> 与 <code>moov/mvhd</code> 开头的真实布局（62 字节，示例文件）。前 24 字节说明“这是什么品牌的 MP4、兼容哪些规范”；随后 <code>moov</code> 的长度是 0x154，里面第一个子 box 是 108 字节的 <code>mvhd</code>。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"MP4 ftyp + moov/mvhd 头部","bytes":"00 00 00 18 66 74 79 70 69 73 6F 6D 00 00 02 00 69 73 6F 32 61 76 63 31 00 00 01 54 6D 6F 6F 76 00 00 00 6C 6D 76 68 64 00 00 00 00 00 00 00 01 00 00 03 E8 00 00 0F A0 00 01 00 00 01 00","fields":[{"name":"ftyp.box_size","start":0,"end":3,"bits":"32 bit","note":"0x00000018 = 24 字节，正好是 ftyp 的总长度：8 字节头 + 4 major + 4 minor + 2 个兼容品牌 ×4。"},{"name":"ftyp.major_brand","start":4,"end":7,"bits":"4CC","note":"0x66747970 即 ASCII「ftyp」。4CC 是四个字符的 box 类型编码。"},{"name":"major_brand = isom","start":8,"end":11,"bits":"4CC","note":"主品牌 isom 表示遵循 ISO Base Media（MP4）基础规范。"},{"name":"minor_version","start":12,"end":15,"bits":"32 bit","note":"0x00000200 = 512，品牌版本号，只作提示，不决定解码能力。"},{"name":"compatible_brands","start":16,"end":23,"bits":"2 × 4CC","note":"iso2 与 avc1：声明同时兼容 ISO 第二版与 AVC 视频。播放器据此快速判断能不能接。"},{"name":"moov.box_size","start":24,"end":27,"bits":"32 bit","note":"0x00000154 = 340 字节。若为 1 则改用 64 位 largesize；若为 0 则延伸到文件尾。"},{"name":"moov.type","start":28,"end":31,"bits":"4CC","note":"0x6D6F6F76 = ASCII「moov」，影片元数据容器。"},{"name":"mvhd.box_size","start":32,"end":35,"bits":"32 bit","note":"0x0000006C = 108 字节，这是 version 0 的 mvhd 固定长度；version 1 为 120 字节。"},{"name":"mvhd.type","start":36,"end":39,"bits":"4CC","note":"0x6D766864 = ASCII「mvhd」，movie header。"},{"name":"version + flags","start":40,"end":43,"bits":"8 + 24 bit","note":"全 0：version 0，无 flag。决定后面时间字段是 32 位还是 64 位。"},{"name":"creation_time","start":44,"end":47,"bits":"32 bit","note":"0x00000001，从 1904-01-01 00:00:00 UTC 起算的秒数。不是 Unix 纪元，换算时差 2,082,844,800 秒。"},{"name":"timescale","start":48,"end":51,"bits":"32 bit","note":"0x000003E8 = 1000。mvhd 时间刻度为毫秒，1 tick = 1 ms。"},{"name":"duration","start":52,"end":55,"bits":"32 bit","note":"0x00000FA0 = 4000 tick，除以 timescale 得 4.000 秒。"},{"name":"rate","start":56,"end":59,"bits":"16.16 定点","note":"0x00010000 = 1.0，正常播放速度。0.5 就是 0x00008000。"},{"name":"volume","start":60,"end":61,"bits":"8.8 定点","note":"0x0100 = 1.0（满音量）。音频轨道的 tkhd 里通常为 0，音量由音频样本决定。"}],"hint":"点击图例逐字段看偏移。注意 ftyp 的 24 字节刚好装下两个兼容品牌，再加一个品牌就会变成 28 字节。"}'></div>
+
+  <p><b>用命令验证这些数字：</b><code>ffprobe -show_entries format=duration,size,bit_rate -of default=nw=1 in.mp4</code>。如果 <code>duration</code> 与 <code>mvhd.duration / timescale</code> 对不上，优先怀疑 timescale 被写错，或 <code>moov</code> 里还有 <code>elst</code> 编辑列表改变了呈现时长。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要把 <code>mvhd</code> 的 timescale 当成视频的 timescale。</b>视频轨道的 <code>mdhd.timescale</code> 常见是 90000（90 kHz，和 RTP 时钟一致），音频常见 48000。两套刻度不同，换算必须经过各自的 mdhd，而不是全局的 mvhd。</span></div>
+</section>
+
+<section id="index">
+  <h2>🗂️ 索引与 faststart：目录里到底写了什么</h2>
+  <p>真正让播放器“瞬间跳到第 30 秒”的，是 <code>stbl</code>（sample table）里的六张表。它们不是缓存，而是文件的“页码 + 行号 + 字数”总账：每个样本（通常就是一帧）在哪个字节、持续多久、是不是关键帧，全在这里。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>表名</th><th>回答什么问题</th><th>关键字段</th><th>工程含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>stts</code></td><td>每个样本显示多久（解码时长）</td><td><code>sample_count</code>、<code>sample_delta</code></td><td>90 kHz 下 delta=3000 即 33.33 ms，对应 30 fps</td></tr>
+        <tr><td><code>ctts</code></td><td>PTS 相对 DTS 偏移多少</td><td><code>sample_offset</code></td><td>有 B 帧才需要；version 1 才允许负偏移</td></tr>
+        <tr><td><code>stss</code></td><td>哪些样本是关键帧</td><td>同步样本序号列表</td><td>缺失时播放器只能猜，拖动会花屏或黑屏</td></tr>
+        <tr><td><code>stsz</code></td><td>每个样本多少字节</td><td><code>sample_size</code> 或逐样本大小</td><td>变长编码必用；固定大小时只存一个值</td></tr>
+        <tr><td><code>stsc</code></td><td>样本怎么分组到 chunk</td><td><code>first_chunk</code>、<code>samples_per_chunk</code></td><td>把“样本序号”映射到“第几个块”</td></tr>
+        <tr><td><code>stco / co64</code></td><td>每个 chunk 在文件里的偏移</td><td>32 位或 64 位偏移</td><td>大于 4 GB 的文件必须用 co64，否则偏移溢出</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>seek 的真实路径：</b>目标时间 → 用 <code>stts</code> 累加找到时间附近的样本 → 用 <code>stss</code> 回退到最近的同步样本（I 帧）→ 用 <code>stsc</code> 找到它属于哪个 chunk → 用 <code>stco</code> 得到文件偏移 → 用 <code>stsz</code> 算出精确字节范围。一次拖动，本质上是一次“查六张表 + 发一个 HTTP Range 请求”。</p>
+
+  <pre class="code"># 把 moov 移到文件开头（不重新编码）
+ffmpeg -i in.mp4 -c copy -movflags +faststart out.mp4
+
+# 看 box 顺序（Bento4 的 mp4dump）
+mp4dump --verbosity 2 out.mp4 | head -40
+
+# 看每个包的 PTS / DTS / 关键帧标记
+ffprobe -select_streams v -show_packets \
+  -show_entries packet=pts_time,dts_time,flags in.mp4 | head</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>faststart 的代价：</b>它需要在写完后把 moov 整体搬到前面，并重写所有 <code>stco</code> 偏移。大文件会多一次磁盘读写，但换来“秒开 + 可拖”。这是纯容器层面的操作，与画质无关。</span></div>
+</section>
+
+<section id="fragment">
+  <h2>🧩 fMP4：活页笔记本，每页自带目录</h2>
+  <p>传统 MP4 是“整本书 + 一个总目录”，必须拿到 moov 才能开始。fMP4（fragmented MP4）把它改成<strong>活页笔记本</strong>：初始化段（init）只带编码参数，后面每个分片（fragment）都自带 <code>moof</code> 小目录和 <code>mdat</code> 正文。这样流式传输时，收到第一个分片就能解码，不必等完整文件。</p>
+
+  <div class="tree">
+<span class="k">ftyp</span> + <span class="k">moov</span> <span class="note">— 初始化段（init segment），只含 track 定义，不含样本</span>
+<span class="k">styp</span> <span class="note">— 分片类型标识，CMAF 常见 msdh / msix</span>
+<span class="k">moof</span>
+  <span class="l"><span class="k">mfhd</span> <span class="t">fragment sequence number，分片序号</span></span>
+  <span class="l last"><span class="k">traf</span>
+    <span class="l"><span class="k">tfhd</span> <span class="t">track_ID、默认样本标志（关键帧/非关键帧）</span></span>
+    <span class="l"><span class="k">tfdt</span> <span class="t">baseMediaDecodeTime，该片第一个样本的解码时刻</span></span>
+    <span class="l last"><span class="k">trun</span> <span class="t">sample_count / duration / size / composition_time_offset</span></span>
+  </span>
+<span class="k">mdat</span> <span class="note">— 本片的实际编码样本</span>
+<span class="k">sidx</span> <span class="note">— 可选：分片级索引，告诉客户端每片多少字节、多长</span>
+  </div>
+
+  <p>数字上很好核对：25 fps、每片 2 秒 → 每片 50 个样本，<code>tfdt</code> 以 90 kHz 递增 180000。若片首不是关键帧，客户端在这片里永远等不到可解码起点，所以分片必须<strong>对齐 IDR</strong>。</p>
+
+  <pre class="code"># 生成 keyframe-aligned 的 fMP4（适合 DASH / 低延迟 HLS）
+ffmpeg -i in.mp4 -c copy \
+  -movflags +frag_keyframe+empty_moov+default_base_moof out_frag.mp4
+
+# 只做一次封装转换，视频与音频码流不变
+ffmpeg -i in.mp4 -c copy -f mp4 -movflags +frag_keyframe out_cmaf.mp4</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>为什么 CMAF 用 fMP4</h4>
+      <p class="small">CMAF 要求同一份分片能被 HLS 与 DASH 复用。fMP4 的 <code>moof + mdat</code> 结构允许同一分片换一条清单即可播放，减少存储与 CDN 回源两套切片。</p>
+    </div>
+    <div class="card">
+      <h4>empty_moov 是什么</h4>
+      <p class="small"><code>+empty_moov</code> 让初始化段里的 moov 不携带样本表，样本信息全部下放到每个 <code>moof/trun</code>。这是流式写文件的常用组合，也方便边生成边发送。</p>
+    </div>
+  </div>
+</section>
+
+<section id="ts">
+  <h2>🚄 MPEG-TS：一列固定 188 座的车厢</h2>
+  <p class="lead">TS（MPEG-2 Transport Stream，ISO/IEC 13818-1）像一列火车：每节车厢固定 188 字节，车头写着“这节属于哪条线路”（PID）。它不追求最高空间效率，而追求<strong>丢了一节还能继续开</strong>——这正是广播与不稳定网络需要的特性。代价是每 188 字节就有 4 字节车头，固定开销约 2.13%。</p>
+
+  <div class="bits">TS 包头 = 4 字节（32 bit）</div>
+  <div class="bitfield">
+    <div class="bf bf-1" style="flex:8"><b>sync 8</b><i>0x47</i></div>
+    <div class="bf bf-2" style="flex:1"><b>TEI</b><i>1</i></div>
+    <div class="bf bf-3" style="flex:1"><b>PUSI</b><i>1</i></div>
+    <div class="bf bf-4" style="flex:1"><b>pri</b><i>1</i></div>
+    <div class="bf bf-5" style="flex:13"><b>PID 13</b><i>0x0000–0x1FFF</i></div>
+    <div class="bf bf-6" style="flex:2"><b>scr</b><i>2</i></div>
+    <div class="bf bf-7" style="flex:2"><b>AFC</b><i>2</i></div>
+    <div class="bf bf-8" style="flex:4"><b>CC</b><i>4</i></div>
+  </div>
+  <p class="small">PUSI=1 表示载荷里有一个新单元（PES 或 PSI 表）的起点；AFC=01 表示只有载荷、=11 表示带自适应字段；CC 是同一 PID 内的 4 位循环计数，<strong>跳号就是丢包</strong>，这是 TS 排错最直接的证据。</p>
+
+  <h3>PAT：节目清单的第一页</h3>
+  <p>TS 里所有表的入口都藏在 PID 0 的 PAT（Program Association Table）。它只做一件事：告诉我“节目号 1 的 PMT 在 PID 100（0x64）”。拿到 PMT，才知道视频流在哪个 PID、音频流在哪个 PID。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"TS PAT 包（含 0x47 同步字节）","bytes":"47 40 00 10 00 00 B0 0D 00 01 C1 00 00 00 01 E0 64 1F 2A 8C 5B","fields":[{"name":"sync_byte","start":0,"end":0,"bits":"8 bit","note":"固定 0x47。接收端靠它找包边界；连续 5 个 0x47 基本可确认是 TS。"},{"name":"PUSI + PID 高 5 位","start":1,"end":1,"bits":"1 + 1 + 1 + 5","note":"0x40 = 0100 0000：PUSI=1（新单元起点），PID 高 5 位全 0。此处 PID=0x0000（PAT）。"},{"name":"PID 低 8 位","start":2,"end":2,"bits":"8 bit","note":"0x00，与上字节拼成 PID 0。节目关联表固定走 PID 0。"},{"name":"scrambling + AFC + CC","start":3,"end":3,"bits":"2 + 2 + 4","note":"0x10 = 0001 0000：不加密，AFC=01（仅载荷），连续计数 0。下一包同 PID 应为 1。"},{"name":"pointer_field","start":4,"end":4,"bits":"8 bit","note":"0x00：本节从载荷第 1 个字节开始，没有前置数据。"},{"name":"table_id","start":5,"end":5,"bits":"8 bit","note":"0x00 = PAT。PMT 是 0x02，CAT 是 0x01，SDT 是 0x42。"},{"name":"section_length","start":6,"end":7,"bits":"12 bit","note":"0xB00D：section_syntax_indicator=1，长度 0x00D = 13 字节（含 CRC），正好容纳 1 个节目项。"},{"name":"transport_stream_id","start":8,"end":9,"bits":"16 bit","note":"0x0001，区分同一网络里的不同 TS 流，常用于多节目复用。"},{"name":"version / current_next","start":10,"end":10,"bits":"5 + 1","note":"0xC1 = 1100 0001：version=0，current_next=1（当前生效）。表内容变化时 version 加 1。"},{"name":"section_number","start":11,"end":11,"bits":"8 bit","note":"0x00，本表第 0 段。"},{"name":"last_section_number","start":12,"end":12,"bits":"8 bit","note":"0x00，共 1 段。节目很多时会拆成多段。"},{"name":"program_number","start":13,"end":14,"bits":"16 bit","note":"0x0001，节目号；0 表示后面是 NIT 而不是 PMT。"},{"name":"program_map_PID","start":15,"end":16,"bits":"3 + 13 bit","note":"0xE064：reserved 位 111 + PID 0x0064（100）。PMT 就在 PID 100。"},{"name":"CRC_32","start":17,"end":20,"bits":"32 bit","note":"示例值。真实值由 section 内容按多项式 0x04C11DB7 计算，校验失败整张表丢弃。"}],"hint":"PAT 每 100–500 ms 重复一次，换台延迟很大时先看它的重复间隔。"}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>PID</th><th>典型用途</th><th>怎么发现</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0x0000</td><td>PAT</td><td>固定入口，所有解析从这里开始</td></tr>
+        <tr><td class="num">0x0001</td><td>CAT（条件访问）</td><td>加密节目才用</td></tr>
+        <tr><td class="num">0x0010</td><td>NIT（网络信息表）</td><td>描述运营商、频点等</td></tr>
+        <tr><td class="num">0x0064</td><td>PMT（本例）</td><td>由 PAT 的 program_map_PID 指定</td></tr>
+        <tr><td class="num">0x0100</td><td>视频 PES（本例）</td><td>由 PMT 的 stream_type 0x1B / 0x24 指定</td></tr>
+        <tr><td class="num">0x0101</td><td>音频 PES（本例）</td><td>stream_type 0x0F = AAC ADTS</td></tr>
+        <tr><td class="num">0x1FFF</td><td>空包（null）</td><td>填充用，可以安全丢弃</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>视频/音频数据装在 <b>PES</b> 里，PES 起始码固定 <code>00 00 01 E0</code>（视频）或 <code>00 00 01 C0</code>（音频）。PES 头里的 PTS/DTS 是 33 位、按 90 kHz 计数：一帧在 25 fps 下间隔 3600 tick。TS 包本身只负责切分与传输，<strong>播放时刻靠 PES 时间戳</strong>。</p>
+
+  <div data-lazy-viz data-viz="mux" data-opts='{"target":"ts"}'></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>TS 的两个经典坑：</b>① 同一个 PID 的 CC 不连续 → 丢包，先查网络与缓冲区；② PCR 抖动过大（> 100 ms 量级）→ 解码器时钟漂移，表现为周期性卡顿。PCR 在 <code>PCR_PID</code> 上，通常跟视频 PID 一致。</span></div>
+</section>
+
+<section id="flv">
+  <h2>📝 FLV：一张张便利贴，贴出时间轴</h2>
+  <p>FLV 的设计目标只有一个：<strong>让 RTMP 在浏览器插件时代尽量简单地传</strong>。它没有 MP4 那样的树状索引，而是一条条 tag 顺着写。结构简单到用几十行代码就能解析，但也因此不适合本地随机访问。</p>
+
+  <pre class="code">FLV 文件头 13 字节（9 字节头 + 4 字节 PreviousTagSize0）
+
+46 4C 56 01 05 00 00 00 09 00 00 00 00
+│     │  │  │           │  └────────── PreviousTagSize0 = 0
+│     │  │  │           └───────────── DataOffset = 9（头长度）
+│     │  │  └───────────────────────── Flags：0x05 = 有音频(0x04) + 有视频(0x01)
+│     │  └──────────────────────────── Version = 1
+│     └─────────────────────────────── Signature = "FLV"
+└───────────────────────────────────── 文件签名：0x46 0x4C 0x56 = ASCII「FLV」</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>字段</th><th>长度</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>TagType</code></td><td>1 B</td><td>8 = 音频，9 = 视频，18 = script（onMetaData）</td></tr>
+        <tr><td><code>DataSize</code></td><td>3 B</td><td>tag 正文长度，不含 11 字节 tag 头</td></tr>
+        <tr><td><code>Timestamp</code></td><td>3 B</td><td>低 24 位，单位毫秒</td></tr>
+        <tr><td><code>TimestampExtended</code></td><td>1 B</td><td>高 8 位，合成 32 位时间戳</td></tr>
+        <tr><td><code>StreamID</code></td><td>3 B</td><td>固定为 0</td></tr>
+        <tr><td><code>PreviousTagSize</code></td><td>4 B</td><td>上一个 tag 的“11 + DataSize”，用于反向校验</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>视频 tag 的第一个字节高 4 位是帧类型（1 = 关键帧，2 = 普通帧），低 4 位是编码 ID（7 = AVC）。AVC 还有 <code>AVCPacketType</code>（0 = 序列头 SPS/PPS，1 = NALU，2 = 流结束）和 <strong>3 字节有符号 CompositionTime</strong>——它就是 MP4 里的 <code>ctts</code> 偏移，用毫秒表示。没有它，B 帧的显示顺序就错了。</p>
+
+  <pre class="code"># 把本地 MP4 推到 RTMP（FLV 是 RTMP 的默认封装）
+ffmpeg -i in.mp4 -c copy -f flv rtmp://127.0.0.1:1935/live/test
+
+# HTTP-FLV 输出（很多直播服务器支持）
+ffmpeg -i in.mp4 -c copy -f flv http://127.0.0.1:8080/live/test.flv</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>FLV 时间戳是 32 位毫秒：</b>理论上约 49.7 天回绕（2³² ms）。长时间不重启的直播服务要处理回绕，否则会出现“时间倒流”、播放器卡死或疯狂追帧。</span></div>
+</section>
+
+<section id="compare">
+  <h2>⚖️ 四种容器对比：各有各的“合理场景”</h2>
+  <p>没有最好的容器，只有最合适的场景。选择时优先看三件事：<strong>要不要随机访问</strong>、<strong>网络稳不稳</strong>、<strong>浏览器/播放器认不认</strong>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>MP4</th><th>fMP4 / CMAF</th><th>MPEG-TS</th><th>FLV</th></tr></thead>
+      <tbody>
+        <tr><td>结构</td><td>box 树，moov 集中索引</td><td>init + moof/mdat 分片</td><td>188 字节固定包</td><td>顺序 tag</td></tr>
+        <tr><td>随机访问</td><td>强（stbl 六张表）</td><td>强（sidx / 分片边界）</td><td>弱（需搜索关键帧）</td><td>弱（基本只能顺序）</td></tr>
+        <tr><td>封装开销</td><td>很小（每样本几字节索引）</td><td>小（每片一个 moof）</td><td>约 2.13%（4/188），另有 PSI 周期</td><td>约 15 B/tag，按帧大小摊销</td></tr>
+        <tr><td>抗丢包</td><td>不适合直接流式</td><td>适合，可分片重传</td><td>强（同步字节 + CC）</td><td>弱（依赖 TCP）</td></tr>
+        <tr><td>典型用途</td><td>下载、点播、离线</td><td>HLS fMP4、DASH、低延迟</td><td>广播、国标 PS 之外的直播、HLS 传统切片</td><td>RTMP 直播、HTTP-FLV</td></tr>
+        <tr><td>浏览器</td><td>原生支持 H.264/AAC</td><td>MSE / EME 支持</td><td>需 MSE + 转封装</td><td>需 flv.js 或服务端转协议</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>要“秒开 + 可拖”</h4>
+      <p class="small">点播用 MP4 + faststart；大规模点播用 fMP4 + CDN 分片。别把长 GOP 的 TS 直接丢给浏览器。</p>
+    </div>
+    <div class="card">
+      <h4>要“弱网还能看”</h4>
+      <p class="small">TS 的固定包长与 CC 让丢包检测很便宜，但真正抗丢包靠的是 FEC/重传。TS 只是让错误<strong>可被发现</strong>。</p>
+    </div>
+    <div class="card">
+      <h4>要“最低延迟直播”</h4>
+      <p class="small">RTMP/FLV 或 WebRTC。FLV 的 tag 开销随帧变大而摊薄，但 49.7 天的时间戳回绕要自己处理。</p>
+    </div>
+  </div>
+</section>
+
+<section id="sync">
+  <h2>⏱️ 时间戳与音画同步：三套刻度怎么对齐</h2>
+  <p>音画不同步，十有八九不是“解码器坏了”，而是时间刻度换算错了。MP4 里至少有三套刻度：<code>mvhd.timescale</code>（全局，常见 1000）、视频 <code>mdhd.timescale</code>（常见 90000）、音频 <code>mdhd.timescale</code>（常见 48000）。每个样本的时间都以<strong>自己轨道</strong>的刻度表示。</p>
+
+  <div class="formula">t（秒） = sample_time（ticks） / mdhd.timescale　　PTS = DTS + ctts.sample_offset</div>
+
+  <p>以 30 fps 视频为例：90 kHz 下每帧 <code>sample_delta = 3000</code>；第 100 帧的 DTS 是 300000 tick，也就是 3.333 秒。音频 AAC 一帧 1024 个采样，48 kHz 下每帧 <code>1024</code> tick（21.33 ms）。两套刻度必须各自换算成秒，才能比较谁早谁晚。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>现象</th><th>时间戳层面的原因</th><th>验证方法</th></tr></thead>
+      <tbody>
+        <tr><td>B 帧播放顺序乱</td><td><code>ctts</code> 缺失或用了 version 0 存负偏移</td><td><code>ffprobe -show_packets</code> 看 pts_time 与 dts_time 是否成对出现</td></tr>
+        <tr><td>整体早/晚几百毫秒</td><td><code>elst</code> 编辑列表未应用，或首帧 CTS 非零</td><td>对比首帧 pts_time 与容器 start_time</td></tr>
+        <tr><td>越播越不同步</td><td>音频 timescale 写错（如把 48000 写成 44100）</td><td>看 <code>mdhd.timescale</code> 与 <code>ffprobe</code> 的 <code>time_base</code></td></tr>
+        <tr><td>拖动后不同步</td><td>seek 落在非关键帧，重建参考链断裂</td><td>检查 <code>stss</code>；确认 seek 目标前有 IDR</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 逐包查看 PTS / DTS（视频）
+ffprobe -select_streams v -show_packets \
+  -show_entries packet=pts_time,dts_time,flags,size in.mp4
+
+# 查看轨道时间基
+ffprobe -show_streams -show_entries stream=codec_type,time_base,start_time,duration</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>修复优先级：</b>先确认“时间戳是否正确”（容器问题），再确认“解码是否按 PTS 输出”（播放器问题）。用 <code>ffmpeg -c copy</code> 重封装一次，如果同步恢复正常，问题就在原容器的索引/时间戳，而不是编码。</span></div>
+</section>
+
+<section id="hls">
+  <h2>🍰 HLS / DASH：把书切成小册子</h2>
+  <p>HLS 的本质是“把整本书切成几秒一册，再给一张借阅清单”。客户端先拿 m3u8，按顺序取分片；每片都能独立起播，所以能适配不同码率、能在 CDN 边缘缓存。代价是分片边界带来额外请求与延迟。</p>
+
+  <pre class="code">#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:4
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MAP:URI="init.mp4"          ← fMP4 必须有初始化段
+#EXTINF:4.000,
+seg0.m4s
+#EXTINF:4.000,
+seg1.m4s
+#EXTINF:4.000,
+seg2.m4s
+#EXT-X-ENDLIST</pre>
+
+  <pre class="code"># 生成 4 秒一片的 HLS（TS 分片）
+ffmpeg -i in.mp4 -c copy -hls_time 4 -hls_playlist_type vod out.m3u8
+
+# 生成 fMP4 分片（CMAF 风格）
+ffmpeg -i in.mp4 -c copy -hls_segment_type fmp4 \
+  -hls_time 4 -hls_playlist_type vod out_fmp4.m3u8</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>TS 分片与 fMP4 分片</h4>
+      <p class="small">TS 分片每片都自带 PAT/PMT，能独立解码，兼容性最好；fMP4 分片依赖 init 段，体积更小、便于与 DASH 复用。两者都能被 HLS 清单描述。</p>
+    </div>
+    <div class="card">
+      <h4>低延迟靠什么</h4>
+      <p class="small">LL-HLS 用 <code>EXT-X-PART</code> 把一片再切成 0.5–1 秒的小块，配合阻塞式请求降低等待；DASH 侧对应 chunked CMAF。代价是请求数与服务器压力上升。</p>
+    </div>
+  </div>
+
+  <p class="small">注意：<code>#EXT-X-TARGETDURATION</code> 必须是不小于所有 <code>#EXTINF</code> 的整数秒。写小了，部分播放器会直接拒绝加载清单。</p>
+</section>
+
+<section id="math">
+  <h2>🧮 体积与开销：把“感觉”换成数字</h2>
+  <p>估算存储与带宽只需要一个公式。真正容易出错的是单位：码率用 bit/s，文件大小用 Byte，中间差 8 倍。</p>
+
+  <div class="formula">文件大小（MB） = 码率（Mbps） × 时长（秒） / 8</div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>码率</th><th>1 分钟</th><th>1 小时</th><th>8 小时</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr><td class="num">2 Mbps</td><td class="num">15 MB</td><td class="num">900 MB</td><td class="num">7.2 GB</td><td>720p 直播</td></tr>
+        <tr><td class="num">4 Mbps</td><td class="num">30 MB</td><td class="num">1.8 GB</td><td class="num">14.4 GB</td><td>1080p 网页视频</td></tr>
+        <tr><td class="num">8 Mbps</td><td class="num">60 MB</td><td class="num">3.6 GB</td><td class="num">28.8 GB</td><td>1080p 高码率 / 4K 低码率</td></tr>
+        <tr><td class="num">16 Mbps</td><td class="num">120 MB</td><td class="num">7.2 GB</td><td class="num">57.6 GB</td><td>4K 点播</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>封装开销有多少</h3>
+  <p>TS：每个 188 字节包只有 184 字节载荷，固定开销 <b>4/188 = 2.128%</b>。按 30 fps、每帧 2400 字节计算，一帧要切成 14 个包（13×184=2392，剩 8 字节进第 14 个包），封装后 14×188 = 2632 字节，多出 232 字节，约 <b>9.7%</b>——因为最后一包没装满。FLV：每 tag 11 字节头 + 4 字节 PreviousTagSize，2400 字节的帧开销约 <b>0.63%</b>。MP4：<code>stsz</code> 每样本 4 字节、<code>stco</code> 每 chunk 4 字节，通常低于 0.1%。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>别忽略索引本身的体积：</b>4 万帧的 30 分钟视频，仅 <code>stsz</code> 就要 16 万字节，加上 <code>stco/stsc/stts</code> 通常是几百 KB。相比之下，TS 的 2% 固定开销在 4 Mbps 下一小时约 38 MB，哪个更贵要按场景算。</span></div>
+</section>
+
+<section id="debug">
+  <h2>🛠️ 排错清单：从症状回到箱子</h2>
+  <p>封装类问题有一个共同点：<strong>码流可能完全正常，只是“目录写错了”或“播放器读不到目录”</strong>。所以第一步永远是把码流抽出来单独验证，而不是盲目转码。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>症状</th><th>大概率原因</th><th>一条命令验证</th></tr></thead>
+      <tbody>
+        <tr><td>本地能播，网页黑屏</td><td>浏览器不支持该容器/编码组合</td><td><code>ffprobe -show_streams</code> 看 codec_name 是否为 h264 / aac</td></tr>
+        <tr><td>首帧很慢，进度条拖不动</td><td>moov 在文件尾部，或缺 <code>stss</code></td><td><code>mp4dump --verbosity 2 in.mp4</code> 看 moov 顺序</td></tr>
+        <tr><td>拖动后花屏</td><td>seek 落在 P/B 帧，索引缺关键帧表</td><td>检查 <code>stss</code>；用 <code>-g</code> 重编码对齐 GOP</td></tr>
+        <tr><td>音画差固定几百毫秒</td><td><code>elst</code> / 首帧 CTS / timescale 不一致</td><td><code>ffprobe -show_packets</code> 对比首帧 pts_time</td></tr>
+        <tr><td>TS 花屏、卡顿</td><td>同 PID 的 CC 跳号（丢包）</td><td>Wireshark 过滤 <code>mp2t</code>，看连续计数</td></tr>
+        <tr><td>TS 换台慢</td><td>PAT/PMT 重复间隔过长</td><td>统计同一 PID 的表出现间隔，通常应 ≤ 500 ms</td></tr>
+        <tr><td>长时间直播后时间错乱</td><td>FLV/RTMP 32 位毫秒时间戳回绕</td><td>看服务端是否在 ~49.7 天处重置时间基</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 0) 先确认容器与编码
+ffprobe -show_format -show_streams in.mp4
+
+# 1) 只换箱子，不碰码流（最安全的对照实验）
+ffmpeg -i in.ts -c copy out.mp4
+ffmpeg -i in.mp4 -c copy -movflags +faststart out_fast.mp4
+
+# 2) 看包级时间戳
+ffprobe -select_streams v -show_packets \
+  -show_entries packet=pts_time,dts_time,flags in.mp4 | head -30
+
+# 3) 确认关键帧间隔（GOP）
+ffprobe -select_streams v -show_frames \
+  -show_entries frame=key_frame,pts_time -of csv in.mp4 | head -40</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>顺序不要反：</b>先 <code>-c copy</code> 换容器，再考虑重编码。很多“播放不了”的问题，一次无损重封装就能解决；直接转码既慢又损失画质，还会掩盖真正的容器问题。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>box</td><td>MP4 的基本结构单元，4 字节长度 + 4 字节类型</td><td>不是“压缩块”，只是容器里的一个节点</td></tr>
+        <tr><td>moov</td><td>影片元数据与索引的容器</td><td>它不含像素；像素在 mdat</td></tr>
+        <tr><td>mdat</td><td>媒体样本数据区</td><td>顺序存放，靠 stco/stsz 定位</td></tr>
+        <tr><td>stbl</td><td>样本表集合（stts/ctts/stss/stsz/stsc/stco）</td><td>seek 的核心，不是缓存</td></tr>
+        <tr><td>faststart</td><td>把 moov 移到文件开头</td><td>只改布局，不重编码</td></tr>
+        <tr><td>fMP4</td><td>分片 MP4：moof + mdat</td><td>不是一种新编码</td></tr>
+        <tr><td>PAT</td><td>TS 的节目关联表，PID 0</td><td>只给 PMT 的 PID，不给视频 PID</td></tr>
+        <tr><td>PMT</td><td>节目映射表，列出各路流的 PID 与类型</td><td>PID 由 PAT 指定，不固定</td></tr>
+        <tr><td>PCR</td><td>节目时钟参考，用于解码器时钟恢复</td><td>不是 PTS；PTS 是呈现时刻</td></tr>
+        <tr><td>PES</td><td>TS 里承载编码数据的单元，带 PTS/DTS</td><td>不是“PS 封装”</td></tr>
+        <tr><td>CTS</td><td>Composition Time Offset，PTS 与 DTS 的差</td><td>FLV 用毫秒，MP4 用轨道 tick</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span><a href="../index.html">首页</a> · <a href="../codec/">编解码</a> · <a href="../protocol/">协议</a> · 标准：ISO/IEC 14496-12 / 13818-1</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多媒体服务器 · MediaMTX / ZLMediaKit / SRS / Janus / nginx-rtmp</title>
+<meta name="description" content="把媒体服务器当作“转运中心”而非“加工厂”：对比 MediaMTX、ZLMediaKit、SRS、Janus、nginx-rtmp 的协议、延迟、部署复杂度与适用场景，给出按需拉流配置、最小 Docker 命令、推拉流路径图与端口/CORS/ICE/鉴权排错清单。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/" class="cur">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>多媒体服务器：<br><em>不是加工厂，是转运中心</em></h1>
+    <p>很多人把“流媒体服务器”想象成一台不停转码的机器。它更像快递转运中心：把一种运输方式送来的包裹收下，拆掉外箱、重新贴单，再用另一种方式送出去。延迟、并发和成本，取决于你让它“拆到哪一层”，而不是 CPU 有多强。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#compare">📊 直接看对比表</a>
+      <a class="btn btn-ghost" href="#mediamtx">配 MediaMTX</a>
+      <a class="btn btn-ghost" href="#ops">拿排错清单</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MediaMTX</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">ZLMediaKit</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">SRS</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">Janus</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">nginx-rtmp</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">RTSP / RTMP / SRT / WebRTC</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">服务器到底在做什么</a>
+    <a href="#protocols">协议与延迟地图</a>
+    <a href="#mediamtx">MediaMTX</a>
+    <a href="#zlm">ZLMediaKit</a>
+    <a href="#srs">SRS</a>
+    <a href="#janus">Janus</a>
+    <a href="#nginx">nginx-rtmp</a>
+    <a href="#compare">五者对比</a>
+    <a href="#docker">最小 Docker</a>
+    <a href="#path">推拉流路径图</a>
+    <a href="#ops">端口 / CORS / ICE / 鉴权</a>
+    <a href="#links">与国标、播放器衔接</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>🚉 服务器到底在做什么：收、拆、贴、发</h2>
+  <p class="lead">媒体服务器最常见的四种动作：<b>接收</b>（ingest，摄像头或主播推流进来）、<b>转封装</b>（remux，把 RTSP 的 RTP 包换成 FLV/HLS/WebRTC 需要的形式）、<b>分发</b>（把同一路流发给很多播放器）、<b>按需拉流</b>（有人看才去拉上游，没人看就断开）。它通常<b>不转码</b>——转码是另一台“加工厂”的活。</p>
+  <p>把这个边界认清，选型会简单很多：如果只是“RTSP 摄像头给浏览器看”，需要的是转封装 + WebRTC 网关；如果需要“把 4K 源压成 720p 再分发”，那就要在链路里加转码节点（FFmpeg、GPU 转码或服务器内置的转码能力），而不是指望一台轻量转发服务器帮你省带宽。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>接入层（Ingest）</h4>
+      <p class="small">接收 RTSP/RTMP/SRT/WebRTC 推流，维持会话、鉴权、断线重连。并发压力主要在这里和网络带宽上。</p>
+    </div>
+    <div class="card">
+      <h4>源站（Origin）</h4>
+      <p class="small">保存并转发同一路流，生成 HLS/DASH 切片，提供 FLV/WebRTC 出口。通常是单点或小集群。</p>
+    </div>
+    <div class="card">
+      <h4>边缘（Edge）</h4>
+      <p class="small">从源站回源，承担大量观众。回源协议常见 RTMP/SRT，边缘只做转发，不再向上游重复拉流。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>先问一句：这路流需要“被处理”吗？</b>只换协议，选轻量转发（MediaMTX）；要国标接入与多协议出口，选 ZLMediaKit；要做直播源站与集群，选 SRS；只做 WebRTC 会议网关，选 Janus；只是维护老系统，才考虑 nginx-rtmp。把“转发”和“转码”混为一谈，是最常见的选型错误。</span></div>
+</section>
+
+<section id="protocols">
+  <h2>🛣️ 协议与延迟地图：卡车、专线、对讲机、连载小说</h2>
+  <p class="lead">RTMP 像专线卡车：稳定、生态成熟，但需要 Flash 时代留下的通道；RTSP 像遥控器：适合和摄像头一对一对话；SRT 像带纠错单号的快递：能在公网丢包环境下把货补齐；WebRTC 像双向对讲机：延迟最低，但要处理 ICE、DTLS、SRTP；HLS 像“切片连载小说”：兼容性最好，代价是切片与缓冲带来的延迟。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>协议</th><th>传输</th><th>典型延迟</th><th>浏览器原生支持</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td><b>RTSP</b></td><td>TCP / UDP（RTP）</td><td class="num">0.2–1 s（局域网）</td><td><span class="badge-no">否</span></td><td>摄像头、NVR、局域网监看</td></tr>
+        <tr><td><b>RTMP</b></td><td>TCP 1935</td><td class="num">1–3 s</td><td><span class="badge-no">否</span>（需 FLV.js）</td><td>直播推流、源站回源</td></tr>
+        <tr><td><b>HTTP-FLV</b></td><td>HTTP（长连接）</td><td class="num">1–3 s</td><td><span class="badge-no">否</span>（需 MSE）</td><td>低延迟网页直播</td></tr>
+        <tr><td><b>HLS</b></td><td>HTTP（切片）</td><td class="num">6–30 s；LL-HLS 约 2–5 s</td><td><span class="badge-ok">是</span></td><td>点播、大规模直播、移动端</td></tr>
+        <tr><td><b>SRT</b></td><td>UDP</td><td class="num">0.3–2 s（可配）</td><td><span class="badge-no">否</span></td><td>弱网推流、跨公网回源</td></tr>
+        <tr><td><b>WebRTC</b></td><td>UDP（SRTP）+ ICE</td><td class="num">0.2–1 s</td><td><span class="badge-ok">是</span></td><td>会议、云游戏、低延迟监看</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">延迟是“端到端典型值”，会随 GOP、缓冲策略、网络与播放器实现变化，不是协议标准的一部分。HLS 的延迟主要来自切片时长与播放器起播缓冲，而不是编码本身。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>浏览器不是万能播放器。</b>Chrome 不认 RTSP，不认裸 RTMP；能直接播的是 HLS（Safari 原生、Chrome 需 MSE 或 hls.js）和 WebRTC。所谓“网页看 RTSP”，中间一定有一台服务器帮你转成 HLS/FLV/WHEP。选型时先确定“最后一公里”给浏览器什么协议。</span></div>
+</section>
+
+<section id="mediamtx">
+  <h2>🧩 MediaMTX：一个二进制，把四种协议接在一起</h2>
+  <p class="lead">MediaMTX（前身 rtsp-simple-server）像一座小型转运站：Go 写的单二进制，默认就开 RTSP、RTMP、HLS、WebRTC、SRT，配置文件按“路径（path）”组织。一条路径既可以是被推流的目标，也可以是按需从上游拉来的源。它不做国标 SIP，也不做复杂转码，定位就是“轻量、好部署、协议转换”。</p>
+
+  <pre class="code"># mediamtx.yml（节选；键名与默认值以官方文档为准）
+rtspAddress: :8554
+rtmpAddress: :1935
+hlsAddress: :8888
+webrtcAddress: :8889
+srtAddress: :8890
+apiAddress: :9997
+hlsAllowOrigin: '*'
+
+paths:
+  cam1:
+    # 有人观看时才去拉上游，最后一个人离开 10 秒后断开
+    source: rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101
+    sourceOnDemand: yes
+    sourceOnDemandCloseAfter: 10s
+
+  live:
+    # 没有 source：等待外部推流进来
+    record: no</pre>
+
+  <pre class="code"># 推到 live 路径
+ffmpeg -re -i in.mp4 -c:v libx264 -preset veryfast -tune zerolatency \
+  -f flv rtmp://server:1935/live
+
+# 从 cam1 拉 RTSP（也可以让服务器按需回源）
+ffplay -rtsp_transport tcp rtsp://server:8554/cam1
+
+# 浏览器播放：HLS / WebRTC(WHEP)
+# http://server:8888/cam1/index.m3u8
+# http://server:8889/cam1/whep</pre>
+
+  <p class="small">MediaMTX 的默认端口是 8554（RTSP）、1935（RTMP）、8888（HLS）、8889（WebRTC HTTP）、8890（SRT）、9997（API）。部署在 NAT/云主机后，WebRTC 还需要把公网地址告诉 ICE（例如 <code>webrtcAdditionalHosts</code>），否则浏览器只能拿到内网候选地址。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"MediaMTX 的 WHEP 播放协商（浏览器侧）","actors":["浏览器","MediaMTX"],"steps":[{"from":0,"to":1,"label":"POST /cam1/whep（SDP offer）","color":"#7c3aed","detail":"WHEP 用一次 HTTP POST 把 offer 交给服务器；路径名就是 MediaMTX 里的 path。"},{"from":1,"to":0,"label":"SDP answer（200/201，实现而异）","color":"#10b981","detail":"服务器返回 answer，其中包含它准备使用的媒体方向、编码与 ICE 参数。"},{"from":1,"to":0,"label":"ICE 候选（服务端）","color":"#0891b2","detail":"候选地址必须浏览器可达。云主机要额外声明公网地址，否则只有内网 host candidate。"},{"from":0,"to":1,"label":"DTLS 握手 / SRTP 密钥","color":"#f59e0b","detail":"WebRTC 媒体用 SRTP 加密，密钥由 DTLS 协商；证书与指纹不匹配会直接失败。"},{"from":1,"to":0,"label":"RTP 媒体（H.264 / Opus 等）","color":"#10b981","detail":"媒体真正开始流动。若浏览器迟迟收不到包，先查 ICE 连通性，再查编码是否被浏览器支持。"}]}'></div>
+</section>
+
+<section id="zlm">
+  <h2>🧰 ZLMediaKit：多协议 + 国标接入的“国产瑞士军刀”</h2>
+  <p class="lead">ZLMediaKit 更像一座带报关窗口的转运中心：除了 RTSP/RTMP/HLS/HTTP-FLV/WebRTC/SRT，它原生支持 GB28181 的 RTP/PS 收流，还能通过 HTTP API 与 hook 被业务系统编排。国内常见的组合是“wvp-GB28181-pro 管 SIP 信令与业务，ZLM 管媒体收流与转协议”。</p>
+
+  <pre class="code"># config.ini（节选，键名与默认端口以官方文档为准）
+[protocol]
+enable_rtsp=1
+enable_rtmp=1
+enable_hls=1
+enable_fmp4=1
+enable_mp4=0
+enable_rtc=1
+
+[rtp_proxy]
+# GB28181 收流端口段；示例值，必须与防火墙/端口映射一致
+port_range=30000-30500
+
+[http]
+port=80</pre>
+
+  <p>按需拉流在 ZLM 里通常由两件事配合完成：<b>hook</b>（例如“无人观看”时通知业务层）与 <b>HTTP API</b>（例如按需打开/关闭 RTP 收流端口）。国标点播时，wvp 先通过 SIP 让设备推流，再调用 ZLM 的 <code>openRtpServer</code> 分配收流端口；没人看时关闭端口并让设备停止推流，避免 7×24 空转。</p>
+
+  <pre class="code"># 最小启动（端口段需与 config.ini 和防火墙一致）
+docker run -d --name zlm \
+  -p 1935:1935 -p 8080:80 -p 554:554 \
+  -p 10000:10000/udp \
+  -p 30000-30500:30000-30500/udp \
+  -p 5060:5060/udp -p 5060:5060/tcp \
+  -v $PWD/zlm/config.ini:/opt/media/conf/config.ini \
+  zlmediakit/zlmediakit:master
+
+# HTTP API 示例（实际参数与返回结构见官方 API 文档）
+# /index/api/openRtpServer?port=30000&tcp_mode=1&stream_id=test
+# /index/api/closeRtpServer?stream_id=test</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>国标链路的关键不是 ZLM，而是“端口账”。</b>SIP 5060（UDP/TCP）要通、RTP 收流端口段要整段放行、设备侧要能访问到平台的收流地址。三者缺一，表现就是“注册成功、点播 200 OK、但画面不来”。国标细节见 <a href="../gb28181.html">GB28181 专页</a>。</span></div>
+</section>
+
+<section id="srs">
+  <h2>📡 SRS：直播源站与边缘集群的老牌选手</h2>
+  <p class="lead">SRS 像一家成熟的快递网络：RTMP 是它的主干线路，HLS/HTTP-FLV/WebRTC/SRT 是不同出口。它擅长“源站 + 边缘”的层级分发：边缘节点从源站回源，观众只连边缘，源站不会被每个观众直接压垮。</p>
+
+  <pre class="code"># srs.conf（节选；不同大版本的指令有差异，以官方文档为准）
+listen              1935;
+max_connections     1000;
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+vhost __defaultVhost__ {
+    hls {
+        enabled     on;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp on;
+    }
+}</pre>
+
+  <p class="small">集群的典型做法：源站开启 <code>forward</code> 把流推到边缘，边缘不再回源给观众；或者让边缘按需回源。配置项名称、WebRTC 端口与证书要求随版本变化，落地前先对照官方文档与示例配置。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>源站（Origin）</h4>
+      <p class="small">接收主播推流，负责切片与回源服务。通常只部署少量实例，关注上行带宽与磁盘（HLS 切片）。</p>
+    </div>
+    <div class="card">
+      <h4>边缘（Edge）</h4>
+      <p class="small">从源站拉流并服务观众。可水平扩展，关注出口带宽与并发连接数；回源链路要稳定，否则边缘会放大故障。</p>
+    </div>
+  </div>
+</section>
+
+<section id="janus">
+  <h2>🎛️ Janus：只做 WebRTC 的“会议室网关”</h2>
+  <p class="lead">Janus 不是通用媒体服务器，而是一座 WebRTC 网关：它把浏览器的 PeerConnection 接到服务端，再通过“插件”决定这间屋子是会议室、直播分发、SIP 网关还是录制器。它像一栋写字楼：楼里有很多会议室（插件），但楼本身不生产内容。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>插件（示例）</th><th>用途</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>janus.plugin.videoroom</code></td><td>多人音视频房间（SFU）</td><td>视频会议、在线课堂</td></tr>
+        <tr><td><code>janus.plugin.streaming</code></td><td>把 RTSP/RTMP 等流分发给多个 WebRTC 观众</td><td>低延迟监看、直播</td></tr>
+        <tr><td><code>janus.plugin.sip</code></td><td>WebRTC 与 SIP 互通</td><td>呼叫中心、传统电话网</td></tr>
+        <tr><td><code>janus.plugin.echotest</code></td><td>回声测试</td><td>连通性排查、媒体质量验证</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Janus 的部署难点不在“装起来”，而在 NAT 与 ICE：它必须让浏览器拿到可达的候选地址，必要时配合 STUN/TURN；信令层通常是你自己的业务服务器通过 REST/WebSocket 调 Janus，而不是让浏览器直连。媒体端口段、证书、鉴权 token 都要在配置里明确声明。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>Janus 不做 HLS，也不做 RTMP 接入。</b>如果业务同时需要“会议 + 大规模 HLS 回看”，通常要组合部署（Janus 负责实时房间，SRS/ZLM 负责直播与录制），而不是硬让一个组件干所有事。</span></div>
+</section>
+
+<section id="nginx">
+  <h2>🧱 nginx-rtmp：能用，但别拿它开新局</h2>
+  <p class="lead">nginx-rtmp-module 像一辆还能启动的老卡车：RTMP 推拉、HLS 切片、简单的 stat 页面都有，部署也不复杂。但它长期缺少活跃维护，不支持 WebRTC/SRT，复杂的按需拉流与集群能力也有限。维护遗留系统可以继续用，新项目更适合 SRS/ZLM/MediaMTX。</p>
+
+  <pre class="code"># nginx.conf（节选）
+rtmp {
+    server {
+        listen 1935;
+        application live {
+            live on;
+            record off;
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 4s;
+        }
+    }
+}
+http {
+    server {
+        listen 8080;
+        location /hls {
+            types {
+                application/vnd.apple.mpegurl m3u8;
+                video/mp2t ts;
+            }
+            root /tmp;
+            add_header Cache-Control no-cache;
+        }
+    }
+}</pre>
+
+  <p class="small">注意：HLS 切片目录要由 HTTP 服务暴露，且 <code>Cache-Control</code> 不能缓存 m3u8；RTMP 本身不携带鉴权，推流密钥通常靠 URL 参数 + 业务校验。上述指令在不同分支/模块版本中可能略有差异，以所使用模块的文档为准。</p>
+</section>
+
+<section id="compare">
+  <h2>📊 五者对比：先看约束，再看功能表</h2>
+  <p>下面这张表不是“谁更强”，而是“谁更适合什么约束”。部署复杂度按“单机跑起来”评估；真实生产还要叠加鉴权、监控、集群、证书与运维成本。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>项目</th><th>协议能力</th><th>典型延迟</th><th>部署复杂度</th><th>适用场景</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td><b>MediaMTX</b></td><td>RTSP / RTMP / HLS / WebRTC(WHEP) / SRT</td><td class="num">WebRTC 0.3–1 s<br>HLS 6–30 s</td><td>低（单二进制/容器）</td><td>边缘转发、按需拉流、小规模多协议接入</td><td>不做 SIP/PS，不做转码</td></tr>
+        <tr><td><b>ZLMediaKit</b></td><td>RTSP / RTMP / HLS / HTTP-FLV / WebRTC / SRT / GB28181</td><td class="num">FLV 1–3 s<br>WebRTC 0.3–1 s</td><td>中</td><td>国标安防、多协议出口、需要 hook/API 编排</td><td>常与 wvp 搭配</td></tr>
+        <tr><td><b>SRS</b></td><td>RTMP / HLS / HTTP-FLV / WebRTC / SRT</td><td class="num">FLV 1–3 s<br>WebRTC 0.3–1 s</td><td>中</td><td>直播源站、源站+边缘集群、CDN 回源</td><td>集群方案成熟，配置随版本变化</td></tr>
+        <tr><td><b>Janus</b></td><td>WebRTC（插件扩展 SIP/录制等）</td><td class="num">0.2–1 s</td><td>中高（ICE/TURN/信令）</td><td>视频会议、WebRTC 网关、SIP 互通</td><td>不做 RTMP/HLS 分发</td></tr>
+        <tr><td><b>nginx-rtmp</b></td><td>RTMP / HLS</td><td class="num">FLV 1–3 s<br>HLS 6–30 s</td><td>低</td><td>遗留系统、简单推流与切片</td><td>维护不活跃，不适合新项目</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">“延迟”一列是常见配置下的经验值；开启低延迟模式、调整 GOP/切片/缓冲后会变化。所有项目的具体端口、配置键与功能边界，<strong>以各自官方文档为准</strong>。</p>
+</section>
+
+<section id="docker">
+  <h2>🐳 最小 Docker：三条命令先跑起来</h2>
+  <p>先用最小配置验证“推得进、拉得出”，再谈集群与鉴权。下面的端口映射是示例，实际要与配置文件、防火墙和安全组保持一致。</p>
+
+  <pre class="code"># MediaMTX：RTSP 8554 / RTMP 1935 / HLS 8888 / WebRTC 8889 / API 9997
+docker run -d --name mediamtx \
+  -p 8554:8554 -p 1935:1935 -p 8888:8888 -p 8889:8889 \
+  -p 8890:8890/udp -p 9997:9997 \
+  bluenviron/mediamtx:latest
+
+# ZLMediaKit：注意 RTP 端口段要与容器内 config.ini 一致
+docker run -d --name zlm \
+  -p 1935:1935 -p 8080:80 -p 554:554 \
+  -p 30000-30500:30000-30500/udp \
+  -v $PWD/zlm/config.ini:/opt/media/conf/config.ini \
+  zlmediakit/zlmediakit:master
+
+# SRS：RTMP 1935 / API 1985 / HTTP 8080 / WebRTC 8000(UDP，示例)
+docker run -d --name srs \
+  -p 1935:1935 -p 1985:1985 -p 8080:8080 -p 8000:8000/udp \
+  ossrs/srs:latest</pre>
+
+  <p class="small">Janus 通常需要从源码或社区镜像构建，且必须配置 NAT/ICE 与媒体端口段；镜像 tag 与配置项以官方文档/镜像页为准。容器化后最容易忘的是“UDP 端口段”——只映射 TCP 端口，WebRTC/SRT 一定失败。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>验证顺序：</b>① <code>docker logs</code> 看监听是否成功；② 用 FFmpeg 推一路测试流；③ 用 ffplay 拉 RTSP/FLV；④ 浏览器打开 HLS/WHEP；⑤ 最后才接业务鉴权。把变量分开，比一上来就调业务代码快。</span></div>
+</section>
+
+<section id="path">
+  <h2>🔀 推拉流路径图：一条流经过谁，在哪里变形</h2>
+  <p class="lead">直播链路像一条传送带：采集端把流“推”进接入层，服务器在内部把一种包装换成另一种包装，分发层再把同一份内容复制给很多观众。观众“拉”的时候，拿到的往往不是原始码流，而是服务器转封装后的版本。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">采集 / 编码<span>OBS、摄像头、FFmpeg</span></div><span class="ar">→</span>
+      <div class="node">接入<span>RTMP / SRT / RTSP / WHIP</span></div><span class="ar">→</span>
+      <div class="node hi">媒体服务器<span>解封装 + 转封装 + 分发</span></div><span class="ar">→</span>
+      <div class="node">分发<span>HLS / HTTP-FLV / WHEP</span></div><span class="ar">→</span>
+      <div class="node">播放端<span>浏览器 / App / 电视墙</span></div>
+    </div>
+    <figcaption>服务器默认只“换包装”，不“改内容”；需要改分辨率/码率时，必须在链路里显式加转码节点。</figcaption>
+  </div>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"一次推流到播放的协议路径","actors":["推流端","媒体服务器","播放端"],"steps":[{"from":0,"to":1,"label":"推流：RTMP / SRT / RTSP","color":"#7c3aed","detail":"推流端先与接入层建立会话（RTMP 握手、SRT 握手或 RTSP ANNOUNCE），随后持续发送压缩包。"},{"from":1,"to":1,"label":"服务器：解封装 + 转封装","color":"#0891b2","detail":"以 MediaMTX/ZLM 为例：把进来的 RTP/FLV 包拆开，按需要重新组织成 HLS 切片、FLV tag 或 WebRTC 的 RTP。此步通常不解码。"},{"from":2,"to":1,"label":"播放端拉流：HLS / FLV / WHEP","color":"#f59e0b","detail":"播放端主动请求。HLS 是 HTTP 拉切片；FLV 是长连接；WHEP 是一次 HTTP 协商后走 SRTP。"},{"from":1,"to":2,"label":"媒体下发","color":"#10b981","detail":"同一路流可同时以多种协议下发。并发高时先在服务器侧做边缘/多实例，而不是让每个观众都回源到摄像头。"},{"from":0,"to":1,"label":"断流 / 重连","color":"#e11d48","detail":"推流断开后，服务器应保留会话一段时间并按策略重拉；按需拉流的路径则相反：没人看就主动断开上游。"}]}'></div>
+</section>
+
+<section id="ops">
+  <h2>🧯 排错：端口、CORS、ICE、鉴权，四道门</h2>
+  <p>媒体服务器“跑起来了”不等于“能看了”。下面四道门，任何一道没过，表现都可能是黑屏或一直转圈。按顺序验证，比在日志里翻找更快。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>协议 / 组件</th><th>示例端口</th><th>传输</th><th>常见坑</th></tr></thead>
+      <tbody>
+        <tr><td>RTSP</td><td class="num">554 / 8554</td><td>TCP（RTP 可 UDP）</td><td>只开 TCP 没开 UDP；摄像头 URL 通道号写错</td></tr>
+        <tr><td>RTMP</td><td class="num">1935</td><td>TCP</td><td>推流 key 写错；防火墙只放行 80/443</td></tr>
+        <tr><td>SRT</td><td class="num">8890（示例）</td><td>UDP</td><td>只映射 TCP；streamid 与访问控制不匹配</td></tr>
+        <tr><td>WebRTC</td><td class="num">8889（HTTP）+ 动态 UDP</td><td>TCP + UDP</td><td>ICE 只拿到内网地址；UDP 被禁；没配 TURN</td></tr>
+        <tr><td>HLS / HTTP-FLV</td><td class="num">8888 / 8080</td><td>TCP</td><td>跨域头缺失；m3u8 被缓存；切片目录未暴露</td></tr>
+        <tr><td>GB28181 SIP / RTP</td><td class="num">5060 / 30000–30500（示例）</td><td>UDP/TCP</td><td>RTP 端口段未整段放行；收流地址设备不可达</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-t="c1">CORS</button>
+    <button class="tab" data-t="c2">ICE</button>
+    <button class="tab" data-t="c3">鉴权</button>
+    <button class="tab" data-t="c4">症状表</button>
+  </div>
+  <div class="tab-pnl on" data-p="c1">
+    <p class="small">HLS、HTTP-FLV、WHEP 都是浏览器发起的 HTTP 请求，页面与流不在同一个源时，必须有正确的 <code>Access-Control-Allow-Origin</code>。常见配置入口：MediaMTX 的 <code>hlsAllowOrigin</code>，ZLM/SRS 的 HTTP 跨域开关（键名以各自文档为准）。不要用 <code>*</code> 搭配凭证请求，也不要把 CORS 当成鉴权。</p>
+  </div>
+  <div class="tab-pnl" data-p="c2">
+    <p class="small">WebRTC 失败先看候选地址：<code>host</code> 是内网、<code>srflx</code> 是 STUN 反射、<code>relay</code> 是 TURN 中继。云主机/容器部署要显式告诉服务器“我的公网地址是什么”，否则浏览器拿到 172.x/10.x 的候选，ICE 永远连不通。企业网禁 UDP 时，只能走 TURN/TCP 或换 HLS/FLV。</p>
+  </div>
+  <div class="tab-pnl" data-p="c3">
+    <p class="small">至少区分“推流鉴权”和“播放鉴权”：推流 key 泄露会导致别人冒名开播；播放 token 泄露会导致盗链。常见做法是业务服务器签发短时 token，媒体服务器通过 HTTP hook 或内置鉴权校验。不要在公开页面里硬编码长期密钥，也不要把 key 只放在 URL 里当唯一防线。</p>
+  </div>
+  <div class="tab-pnl" data-p="c4">
+    <div class="scroll-x">
+      <table class="cmp">
+        <thead><tr><th>症状</th><th>优先排查</th><th>快速验证</th></tr></thead>
+        <tbody>
+          <tr><td>推流成功，页面黑屏</td><td>拉流协议是否被浏览器支持；CORS</td><td>用 ffplay / VLC 拉同一路径；浏览器控制台看请求</td></tr>
+          <tr><td>HLS 一直转圈</td><td>m3u8 是否可访问；切片是否生成；缓存头</td><td>直接打开 m3u8 与首个 ts；看服务器日志</td></tr>
+          <tr><td>WebRTC 连不上</td><td>ICE 候选、UDP、TURN、证书</td><td>看 offer/answer 的候选类型；用 Trickle ICE 测试页</td></tr>
+          <tr><td>首个画面很慢</td><td>GOP 过长；服务器等关键帧</td><td>缩短 GOP；观察首个 IDR 到达时间</td></tr>
+          <tr><td>播放几分钟后卡死</td><td>鉴权过期；按需拉流被断开；带宽不足</td><td>对照 token 有效期与 sourceOnDemand 超时</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>四道门按顺序过：</b>端口通 → 协议能握手 → 浏览器跨域允许 → 鉴权通过。任何一步跳过去，都会把问题带到下一层，最后变成“看起来像编码问题”的玄学。实在定位不了，就在服务器侧抓包，看请求有没有到、回包是什么。</span></div>
+</section>
+
+<section id="links">
+  <h2>🔗 与国标、播放器衔接：服务器只是中间那一跳</h2>
+  <p class="lead">安防场景里，服务器前面是 SIP/PS 的国标世界，后面是 HTTP/WebRTC 的浏览器世界；直播场景里，服务器前面是推流端，后面是播放器与 CDN。把它放在链路中的正确位置，才知道该配什么、该测什么。</p>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">IPC / NVR<span>SIP + PS/RTP</span></div><span class="ar">→</span>
+      <div class="node hi">国标平台 / 网关<span>wvp + ZLMediaKit</span></div><span class="ar">→</span>
+      <div class="node">转协议<span>FLV / HLS / WHEP</span></div><span class="ar">→</span>
+      <div class="node hi">播放器<span>浏览器 / 客户端</span></div>
+    </div>
+    <figcaption>国标负责“把流要过来”，服务器负责“把流翻译给浏览器”，播放器负责“解出来给人看”。</figcaption>
+  </div>
+
+  <p class="small">如果你的问题是“GB28181 设备注册了但点播没画面”，请先去 <a href="../gb28181.html">GB28181 专页</a> 按信令、SDP、SSRC、端口的顺序排查；如果问题是“流能拉到但网页播不了”，请去 <a href="../player.html">播放器专页</a> 看协议选择、MSE/WHEP 与首帧策略。两台服务器之间互相甩锅，通常是因为没有把“信令层”和“媒体层”分开验证。</p>
+
+  <div class="cross">
+    <span class="ico">🧭</span>
+    <div class="bd">
+      <h4>下一步：把两端补齐</h4>
+      <p>国标侧看 SIP 注册、INVITE 与 PS 封装；播放侧看 HLS/FLV/WHEP 的起播与排错。</p>
+      <div class="btns">
+        <a class="btn btn-pl" href="../gb28181.html">GB28181 专页 →</a>
+        <a class="btn btn-pl" href="../player.html">播放器专页 →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>参考：MediaMTX / ZLMediaKit / SRS / Janus / nginx-rtmp 官方文档 · 版本与端口以官方文档为准</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

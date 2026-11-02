@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音视频本体论 · 容器 / 编解码 / 协议 / 硬件 / FFmpeg / 服务器</title>
+<meta name="description" content="从标准到像素：系统梳理音视频容器、编解码、传输协议、硬件加速、FFmpeg 内部实现与多媒体服务器的原理、结构、代码和互动演示。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html" class="cur">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html">GB28181</a>
+    <a href="player.html">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html">WASM</a>
+    <a href="lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>音视频<em>本体论</em><br>从标准到像素</h1>
+    <p>容器决定“怎么装”，编解码决定“怎么压”，协议决定“怎么送”，硬件决定“多快、多省”。本站把标准编号、位流结构、原理推导、可运行代码与互动演示放在同一条链上——让你不只会调参数，还能解释每一个字节为什么存在。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#ontology">🧠 打开本体图谱</a>
+      <a class="btn btn-ghost" href="solutions/">🗺️ 音视频方案全景</a>
+      <a class="btn btn-ghost" href="lab.html">🧪 进入实验室</a>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="n">7+</div><div class="l">封装容器与家族</div></div>
+      <div class="stat"><div class="n">12</div><div class="l">视频 / 音频编码</div></div>
+      <div class="stat"><div class="n">9</div><div class="l">传输与信令协议</div></div>
+      <div class="stat"><div class="n">6</div><div class="l">硬件加速平台</div></div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#ontology">本体图谱</a>
+    <a href="#stack">四层闭环</a>
+    <a href="#family">家族树</a>
+    <a href="#pipeline">端到端流水线</a>
+    <a href="#math">码率与容量</a>
+    <a href="#read">双轴阅读法</a>
+    <a href="#site">站点地图</a>
+    <a href="#quickstart">快速开始</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="ontology">
+  <h2>🧠 本体图谱 <span class="tag tag-p">可拖拽 · 可过滤 · 可跳转</span></h2>
+  <p class="lead">音视频不是一堆孤立的名词，而是一张有依赖关系的图：媒体由<strong>容器</strong>承载，容器里装<strong>编码</strong>后的码流，码流经<strong>协议</strong>传输，<strong>硬件</strong>负责加速，<strong>工具链</strong>把这一切编排起来。拖动节点重排、按分组过滤、悬停查看关系、点击进入专题。</p>
+  <div class="diagram" style="padding:.6rem">
+    <div id="ontology-graph" style="position:relative;width:100%">
+      <canvas style="display:block;border-radius:.5rem;background:#fff"></canvas>
+    </div>
+    <div id="onto-legend" class="pill-row" style="margin-top:.6rem"></div>
+    <div id="onto-info" class="seq-note" style="margin-top:.5rem">拖拽节点可以重排图谱；点击节点跳转到对应专题。悬停查看关系。</div>
+    <div style="margin-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap">
+      <button id="onto-reset" class="btn-mini">↺ 重置布局</button>
+      <span class="small">节点大小 —— 连接度；颜色 —— 所属层。</span>
+    </div>
+  </div>
+  <div class="callout callout-i"><span class="ic">💡</span><span>先看“关系”，再看“细节”。当你知道 MP4 的 <span class="term">moov</span> 指向 <span class="term">trak</span>、<span class="term">stbl</span> 再指向 <span class="term">stsd</span> 里的 <span class="term">avcC</span>，你就同时理解了容器与编码的接缝。</span></div>
+</section>
+
+<section id="stack">
+  <h2>🧱 四层闭环</h2>
+  <p>任何音视频系统都可以拆成四层。每一层有自己的“标准语言”，层与层之间靠时间戳、像素格式、码流格式这三个契约连接。</p>
+  <div class="grid-4">
+    <div class="card">
+      <h4>① 采集 / 编码 <span class="tag tag-r">压缩</span></h4>
+      <p class="small">镜头 → 传感器 → ISP → YUV。编码器做预测、变换、量化、熵编码，把 12 bpp 的原始像素压到 0.02–0.2 bpp。</p>
+      <p class="small">关键词：GOP、I/P/B、CRF、profile/level、4:2:0。</p>
+      <a class="btn-mini" href="codec/">进入编解码 →</a>
+    </div>
+    <div class="card">
+      <h4>② 封装 <span class="tag tag-c">组织</span></h4>
+      <p class="small">把视频帧、音频帧、字幕、元数据装进有时间轴的容器；解决随机访问索引、音画同步、分片与流式传输。</p>
+      <p class="small">关键词：MP4 box、TS PID/PCR、EBML、FLV tag。</p>
+      <a class="btn-mini" href="container/">进入容器 →</a>
+    </div>
+    <div class="card">
+      <h4>③ 传输 <span class="tag tag-g">分发</span></h4>
+      <p class="small">RTMP/SRT 负责上行，HLS/DASH 负责大规模下行，WebRTC 负责超低延迟双向，RTSP/RTP 负责监控与实时流。</p>
+      <p class="small">关键词：延迟、丢包、拥塞控制、ABR、CDN。</p>
+      <a class="btn-mini" href="protocol/">进入协议 →</a>
+    </div>
+    <div class="card">
+      <h4>④ 解码 / 渲染 <span class="tag tag-a">还原</span></h4>
+      <p class="small">解封装 → 解码 → 色彩转换 → 显示；音频经抖动缓冲、重采样、混音后送到声卡。硬件解码/编码把这条链搬到 GPU/ASIC。</p>
+      <p class="small">关键词：DPB、零拷贝、HDR、A/V sync。</p>
+      <a class="btn-mini" href="hwaccel/">进入硬件 →</a>
+    </div>
+  </div>
+  <div class="callout callout-tip"><span class="ic">🔗</span><span><b>三个契约：</b>像素格式（如 NV12 / yuv420p / P010）连接采集与编码；码流格式（如 Annex B / AVCC / OBU）连接编码与容器；时间基（如 1/90000 / 1/1000）连接容器与传输。排障时先定位哪个契约被破坏。</span></div>
+</section>
+
+<section id="family">
+  <h2>🌳 家族树</h2>
+  <p>展开每一族，查看成员与适用场景。带链接的条目直接跳到对应专题的锚点。</p>
+
+  <details class="b" open>
+    <summary><span class="ar">▶</span>📦 封装容器 <span class="tag tag-c">7 族</span></summary>
+    <div class="bd">
+      <a class="fam" href="container/#mp4"><b>MP4 / MOV / fMP4</b> — ISO/IEC 14496-12（ISO BMFF）；点播、移动端、DASH/HLS 分片的事实标准</a>
+      <a class="fam" href="container/#ts"><b>MPEG-TS</b> — ISO/IEC 13818-1；188 字节包、PID、PCR；直播、数字电视、SRT 承载</a>
+      <a class="fam" href="container/#mkv"><b>Matroska / WebM</b> — EBML 可扩展标记；多轨、字幕、章节；WebM 用 VP9/AV1 + Opus/Vorbis</a>
+      <a class="fam" href="container/#flv"><b>FLV</b> — Adobe 遗产格式；RTMP/HTTP-FLV 的低延迟直播载体，浏览器需 flv.js</a>
+      <a class="fam" href="container/#others"><b>AVI / Ogg / WAV / ADTS</b> — 历史与专用格式；AVI 无 B 帧时间戳、Ogg 用 page/granule、WAV PCM、ADTS 裸 AAC</a>
+      <a class="fam" href="container/#timing"><b>时间基与 PTS/DTS</b> — 容器的“时间语言”；timescale、cts、edit list、B 帧重排</a>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>🎞️ 视频编码 <span class="tag tag-r">6 代</span></summary>
+    <div class="bd">
+      <a class="fam" href="codec/#h264"><b>H.264 / AVC</b> — ITU-T H.264 / ISO 14496-10；NAL、SPS/PPS、CAVLC/CABAC；兼容性之王</a>
+      <a class="fam" href="codec/#h265"><b>H.265 / HEVC</b> — ITU-T H.265 / ISO 23008-2；CTU 四叉树、SAO、WPP；同质量省 40–50%</a>
+      <a class="fam" href="codec/#av1"><b>AV1</b> — AOMedia 2018；OBU、superblock、CDEF、film grain；免专利、压缩强</a>
+      <a class="fam" href="codec/#vp9"><b>VP9</b> — Google；WebM/WebRTC 常用；superframe、分段编码</a>
+      <a class="fam" href="codec/#vvc"><b>VVC / H.266</b> — 2020；更细划分、ALF；压缩再省 30–50%，复杂度更高</a>
+      <a class="fam" href="codec/#prores"><b>ProRes / DNxHR</b> — 中间码（mezzanine），剪辑友好、低压缩比</a>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>🔊 音频编码 <span class="tag tag-a">5 类</span></summary>
+    <div class="bd">
+      <a class="fam" href="codec/#aac"><b>AAC</b> — ISO/IEC 14496-3；ADTS 头、MDCT、SBR/PS；直播与点播默认</a>
+      <a class="fam" href="codec/#opus"><b>Opus</b> — RFC 6716；SILK + CELT，6–510 kbps，20 ms 帧；WebRTC 首选</a>
+      <a class="fam" href="codec/#audio-others"><b>MP3 / AC-3 / FLAC / PCM</b> — 兼容、影院、无损、原始；理解采样率/位深/声道</a>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>🌐 传输协议 <span class="tag tag-g">9 种</span></summary>
+    <div class="bd">
+      <a class="fam" href="protocol/#rtmp"><b>RTMP</b> — TCP 1935；握手 + chunk + AMF；推流事实标准，延迟 1–3 s</a>
+      <a class="fam" href="protocol/#rtsp"><b>RTSP / RTP / RTCP</b> — RFC 2326/3550/6184；监控与 IPTV；DESCRIBE/SETUP/PLAY</a>
+      <a class="fam" href="protocol/#srt"><b>SRT</b> — UDP + ARQ；抗丢包、低延迟、可加密；远程制作与上行</a>
+      <a class="fam" href="protocol/#hls"><b>HLS</b> — RFC 8216；m3u8 + TS/fMP4 分片；CDN 大规模分发；LL-HLS 2–5 s</a>
+      <a class="fam" href="protocol/#dash"><b>DASH</b> — ISO/IEC 23009-1；MPD + 分片；开放标准、DRM 友好</a>
+      <a class="fam" href="protocol/#webrtc"><b>WebRTC</b> — SDP/ICE/DTLS-SRTP；浏览器原生实时通信；SFU 架构 200–500 ms</a>
+      <a class="fam" href="protocol/#httpflv"><b>HTTP-FLV / NDI</b> — FLV over HTTP、局域网制作；低延迟与广播级</a>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>⚡ 硬件与工具 <span class="tag tag-p">加速 / 编排</span></summary>
+    <div class="bd">
+      <a class="fam" href="hwaccel/#nvidia"><b>NVENC / NVDEC / CUDA</b> — NVIDIA 独立编码器与显存零拷贝</a>
+      <a class="fam" href="hwaccel/#intel"><b>QSV / oneVPL</b> — Intel iGPU 的 MFX 会话与 VPP</a>
+      <a class="fam" href="hwaccel/#amd"><b>AMF / VCE</b> — AMD GPU 编码</a>
+      <a class="fam" href="hwaccel/#apple"><b>VideoToolbox</b> — macOS/iOS 硬编硬解</a>
+      <a class="fam" href="hwaccel/#linux"><b>VAAPI / V4L2 M2M</b> — Linux 通用视频加速</a>
+      <a class="fam" href="hwaccel/#windows"><b>DXVA2 / D3D11VA / Media Foundation</b> — Windows 解码与编码</a>
+      <a class="fam" href="ffmpeg/"><b>FFmpeg / libav*</b> — 解封装、解码、滤镜、编码、封装的总调度</a>
+      <a class="fam" href="gstreamer.html"><b>GStreamer</b> — 运行时流水线框架；element/pad/caps、时钟同步、动态 pad、硬件零拷贝</a>
+      <a class="fam" href="servers/"><b>SRS / MediaMTX / ZLMediaKit / mediasoup / LiveKit</b> — 源站、边缘、SFU</a>
+    </div>
+  </details>
+</section>
+
+<section id="pipeline">
+  <h2>🔁 端到端流水线</h2>
+  <p class="lead">下面这条链是“一次直播”的最小完整路径。每一个箭头都可能引入延迟、丢帧或时间戳错误；排障的本质是确定问题发生在哪一段。</p>
+  <div class="flow">
+    <div class="node hi">镜头 / 传感器<span>光 → 电</span></div><span class="ar">→</span>
+    <div class="node">ISP<span>去马赛克 / 3A</span></div><span class="ar">→</span>
+    <div class="node">YUV 4:2:0<span>NV12 / I420</span></div><span class="ar">→</span>
+    <div class="node hi">编码器<span>H.264 / HEVC</span></div><span class="ar">→</span>
+    <div class="node">码流<span>Annex B / AVCC</span></div><span class="ar">→</span>
+    <div class="node">封装<span>FLV / TS / fMP4</span></div><span class="ar">→</span>
+    <div class="node hi">协议<span>RTMP / SRT</span></div><span class="ar">→</span>
+    <div class="node">源站<span>SRS / MediaMTX</span></div><span class="ar">→</span>
+    <div class="node">转码 / 切片<span>多档 ABR</span></div><span class="ar">→</span>
+    <div class="node">CDN<span>HLS / DASH</span></div><span class="ar">→</span>
+    <div class="node hi">播放器<span>解封装 → 解码</span></div><span class="ar">→</span>
+    <div class="node">渲染<span>GPU / 音频</span></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>延迟都花在哪里？</h4>
+      <table>
+        <thead><tr><th>环节</th><th>典型延迟</th><th>可控手段</th></tr></thead>
+        <tbody>
+          <tr><td>采集 + ISP</td><td class="num">10–40 ms</td><td>相机低延迟模式、关闭后处理</td></tr>
+          <tr><td>编码</td><td class="num">5–60 ms</td><td>低延迟 preset、关闭 B 帧/lookahead</td></tr>
+          <tr><td>封装 / 切片</td><td class="num">0–6000 ms</td><td>LL-HLS、短 segment、fMP4</td></tr>
+          <tr><td>网络 / CDN</td><td class="num">10–200 ms</td><td>就近边缘、专线、SRT/WebRTC</td></tr>
+          <tr><td>播放器缓冲</td><td class="num">0.2–30 s</td><td>低延迟模式、目标缓冲、追帧</td></tr>
+          <tr><td>解码 / 渲染</td><td class="num">5–30 ms</td><td>硬解、vsync、音频时钟对齐</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h4>三种典型延迟档</h4>
+      <p><b>超低延迟（&lt; 1 s）</b>：WebRTC / SRT + 低延迟编码。用于会议、连麦、远程操控、云游戏。代价是复杂度、NAT 穿透与抗丢包。</p>
+      <p><b>低延迟（1–5 s）</b>：HTTP-FLV、LL-HLS、低延迟 DASH。用于电商直播、互动直播。CDN 友好，成本可控。</p>
+      <p><b>标准延迟（10–30 s）</b>：HLS/DASH 常规分片。用于点播、赛事回看、大规模分发。抗抖动能力最强。</p>
+      <p class="small">延迟不是单一数字：首帧时间、端到端延迟、卡顿率、直播延迟稳定性要分开度量。低延迟往往以卡顿率为代价。</p>
+    </div>
+  </div>
+  <div class="callout callout-w"><span class="ic">⚠️</span><span>最常见的“直播卡顿”不是网络问题，而是编码器 GOP 过长 + 播放器等待 IDR。直播场景通常把关键帧间隔设为 1–2 秒，并让切片边界对齐 IDR。</span></div>
+</section>
+
+<section id="math">
+  <h2>📐 码率、存储与延迟</h2>
+  <p>先建立数量级直觉，再谈参数。以下公式默认 8 bit、4:2:0、无压缩。</p>
+  <div class="math-b">R<sub>raw</sub> = W × H × fps × bpp &nbsp;&nbsp;|&nbsp;&nbsp; bpp<sub>4:2:0</sub> = 8 + 8/2 + 8/2 = 12 bit/pixel</div>
+  <p>1080p30 4:2:0 8bit：<span class="math">1920 × 1080 × 30 × 12 ≈ 746 Mbit/s ≈ 93 MB/s</span>。这就是为什么必须压缩：H.264 用 4–8 Mbps 就能达到可接受画质，压缩比约 100–200 倍。</p>
+  <div class="math-b">存储(GB/小时) = 码率(Mbps) × 3600 / 8 / 1000 = 码率 × 0.45</div>
+  <p>例：4 Mbps 直播录 1 小时 ≈ 1.8 GB；20 路 4 Mbps 录 30 天 ≈ 20 × 1.8 × 24 × 30 ≈ 25.9 TB。做容量规划时再乘 1.1–1.2 的封装与索引余量。</p>
+  <div class="math-b">HLS 延迟 ≈ 3 × target duration + 播放器缓冲 &nbsp;&nbsp;|&nbsp;&nbsp; LL-HLS ≈ 1–2 × part duration + 缓冲</div>
+  <p>6 秒分片、3 个分片窗口 → 约 18 秒 + 缓冲；改用 2 秒分片 + LL-HLS 的部分分片，可压到 2–5 秒。代价是请求数增加、CDN 命中率下降。</p>
+  <div class="grid-3">
+    <div class="card"><h4>CBR</h4><p class="small">恒定码率，编码器用填充/码率控制维持峰值。适合带宽固定、直播。质量随内容复杂度波动。</p></div>
+    <div class="card"><h4>VBR</h4><p class="small">可变码率，按复杂度分配比特。点播更高效；直播需要设置 maxrate/bufsize 防止突发。</p></div>
+    <div class="card"><h4>CRF</h4><p class="small">恒定质量因子（x264/x265），码率随内容变化。点播归档首选；数值越小质量越高（18–28 常用）。</p></div>
+  </div>
+</section>
+
+<section id="read">
+  <h2>🧭 双轴阅读法</h2>
+  <div class="two-col">
+    <div class="card">
+      <h4>媒体轴：内容如何被表示</h4>
+      <p class="small">像素 → 预测残差 → 变换系数 → 量化 → 熵编码 → NAL/OBU → 访问单元 → 容器 sample。</p>
+      <p class="small">适合从 <a href="codec/">编解码</a> 进入，再读 <a href="container/">容器</a>。你会理解为什么 SPS/PPS 必须随码流走、为什么 B 帧需要重排、为什么 4:2:0 的宽高必须是偶数。</p>
+    </div>
+    <div class="card">
+      <h4>传输轴：内容如何被送达</h4>
+      <p class="small">码流 → 封装单元 → 协议消息 → 网络包 → 抖动缓冲 → 解码。</p>
+      <p class="small">适合从 <a href="protocol/">协议</a> 进入，再读 <a href="servers/">服务器</a> 与 <a href="solutions/">方案</a>。你会理解 RTMP chunk 为什么这样切、SRT 的 ARQ 如何换延迟、WebRTC 为什么必须用 SFU。</p>
+    </div>
+  </div>
+  <p class="small">两条轴的交点是<strong>时间戳</strong>与<strong>码流格式</strong>。建议每读一个容器就问三个问题：它的时间基是什么？它如何随机访问？它如何携带编码参数？</p>
+</section>
+
+<section id="site">
+  <h2>🗂️ 站点地图</h2>
+  <div class="grid-3">
+    <a class="card" href="solutions/"><h4>🗺️ 音视频方案</h4><p class="small">单向直播、低延迟连麦、视频会议、在线教育、点播、监控、远程操控、转码农场；延迟预算、拓扑、成本与选型决策。</p></a>
+    <a class="card" href="container/"><h4>📦 容器</h4><p class="small">MP4/MOV、MPEG-TS、Matroska/WebM、FLV、AVI/Ogg/WAV；box/tree、位域、hex 与封装开销动画。</p></a>
+    <a class="card" href="codec/"><h4>🎞️ 编解码</h4><p class="small">H.264/HEVC/AV1/VP9/VVC、AAC/Opus/MP3/AC-3/FLAC；预测、变换、量化、熵编码与率失真。</p></a>
+    <a class="card" href="protocol/"><h4>🌐 协议</h4><p class="small">RTMP、RTSP/RTP/RTCP、SRT、HLS、DASH、WebRTC、HTTP-FLV；时序动画、头部字段与 ABR。</p></a>
+    <a class="card" href="hwaccel/"><h4>⚡ 硬件加速</h4><p class="small">NVENC/QSV/AMF/VideoToolbox/VAAPI/D3D11VA；零拷贝、参数表、平台 recipe 与坑。</p></a>
+    <a class="card" href="ffmpeg/"><h4>🛠️ FFmpeg</h4><p class="small">libav* 架构、AVPacket/AVFrame 生命周期、滤镜图、时间戳、硬件帧、API 代码与调试。</p></a>
+    <a class="card" href="gstreamer.html"><h4>🎛️ GStreamer</h4><p class="small">pipeline/element/pad/caps、状态机与 preroll、动态 pad、时钟与延迟、gst-launch 配方、C API、硬件零拷贝与排错。</p></a>
+    <a class="card" href="gb28181.html"><h4>🇨🇳 GB28181 国标</h4><p class="small">SIP 注册与鉴权、心跳与 Catalog、INVITE 点播、SDP 中的 SSRC、PS over RTP、TCP 主动/被动、回放与级联、抓包排错。</p></a>
+    <a class="card" href="player.html"><h4>▶️ 浏览器播流</h4><p class="small">RTSP/RTMP 为什么不能直连；WHEP、HLS、HTTP-FLV 三条路线；可交互播放器、MediaMTX 网关配方与延迟对比。</p></a>
+    <a class="card" href="servers/"><h4>🖥️ 多媒体服务器</h4><p class="small">SRS、MediaMTX、ZLMediaKit、OvenMediaEngine、mediasoup/LiveKit/Janus、Nginx-rtmp；选型与部署。</p></a>
+    <a class="card" href="wasm.html"><h4>🧬 ffmpeg.wasm</h4><p class="small">浏览器内转码、抽音轨、裁剪、缩放、GIF；WebAssembly/Worker/MEMFS 原理与 API 生命周期。</p></a>
+    <a class="card" href="lab.html"><h4>🧪 实验室</h4><p class="small">码率/存储计算器、ABR 阶梯、GOP 与 seek 代价、零拷贝带宽；可调参数实时看到结果。</p></a>
+    <a class="card" href="#glossary"><h4>📖 术语表</h4><p class="small">GOP、PTS/DTS、SAR/DAR、IDR、SEI、EBML、PCR、jitter buffer、simulcast 等。</p></a>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>⚡ 快速开始</h2>
+  <p>用 FFmpeg 把“容器 / 编码 / 协议”这三件事串起来。先探测，再转码，再切片，最后推流。</p>
+  <pre class="code"><span class="cm"># 1. 看清一个文件里到底有什么：流、编码、时间基、码率、关键帧</span>
+ffprobe -hide_banner -show_streams -show_format -show_packets -select_streams v:0 input.mp4
+
+<span class="cm"># 2. 高质量转 H.264 + AAC MP4（Web 兼容：yuv420p + faststart）</span>
+ffmpeg -i input.mov -c:v libx264 -preset medium -crf 23 \
+  -profile:v high -level 4.1 -pix_fmt yuv420p \
+  -c:a aac -b:a 128k -movflags +faststart output.mp4
+
+<span class="cm"># 3. 生成 HLS 多档（先转码，再切片；切片边界必须对齐 IDR）</span>
+ffmpeg -i input.mp4 -c:v libx264 -crf 22 -g 48 -keyint_min 48 -sc_threshold 0 \
+  -c:a aac -b:a 128k -f hls -hls_time 4 -hls_playlist_type vod \
+  -hls_segment_filename 'seg_%03d.ts' index.m3u8
+
+<span class="cm"># 4. 推 RTMP 到本地 SRS / MediaMTX（低延迟：关闭 B 帧、短 GOP）</span>
+ffmpeg -i input.mp4 -c:v libx264 -preset veryfast -tune zerolatency \
+  -g 30 -bf 0 -b:v 2500k -maxrate 2500k -bufsize 5000k \
+  -c:a aac -b:a 128k -f flv rtmp://127.0.0.1/live/stream
+
+<span class="cm"># 5. 查看硬件能力（Linux / Windows / macOS 各有不同后端）</span>
+ffmpeg -hide_banner -hwaccels
+ffmpeg -hide_banner -encoders | grep -E 'nvenc|qsv|vaapi|videotoolbox|amf'</pre>
+  <div class="callout callout-tip"><span class="ic">🧪</span><span>把第 4 条命令里的 <code>-tune zerolatency</code>、<code>-g 30</code>、<code>-bf 0</code> 分别去掉再推流，用播放器观察首帧与延迟——这是理解“编码参数如何影响延迟”的最快实验。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>术语</th><th>含义</th><th>为什么重要</th></tr></thead>
+    <tbody>
+      <tr><td><b>GOP</b></td><td>Group of Pictures，从一个 I 帧到下一个 I 帧之间的帧序列</td><td>决定随机访问粒度、直播延迟与切片边界</td></tr>
+      <tr><td><b>I / P / B</b></td><td>帧内、前向预测、双向预测帧</td><td>压缩效率与解码顺序/显示顺序的根源</td></tr>
+      <tr><td><b>IDR</b></td><td>Instantaneous Decoder Refresh，清空参考帧的 I 帧</td><td>seek、切片、推流断线恢复的锚点</td></tr>
+      <tr><td><b>PTS / DTS</b></td><td>显示时间戳 / 解码时间戳</td><td>B 帧导致 DTS ≤ PTS；容器与播放器靠它同步</td></tr>
+      <tr><td><b>time base</b></td><td>时间单位（如 1/90000 秒）</td><td>跨容器/协议转换时必须重采样时间戳</td></tr>
+      <tr><td><b>SAR / DAR</b></td><td>样本宽高比 / 显示宽高比</td><td>非方形像素视频被拉伸或挤压的原因</td></tr>
+      <tr><td><b>NAL / OBU</b></td><td>H.264/HEVC 的网络抽象层单元 / AV1 的开放比特流单元</td><td>码流的基本封装单位；SPS/PPS 藏在其中</td></tr>
+      <tr><td><b>SEI</b></td><td>补充增强信息</td><td>HDR 元数据、时间码、closed caption 的载体</td></tr>
+      <tr><td><b>EBML</b></td><td>可扩展标记语言式二进制容器结构</td><td>Matroska/WebM 的树形组织方式</td></tr>
+      <tr><td><b>PID / PCR</b></td><td>TS 包标识 / 节目时钟参考</td><td>多节目复用与接收端时钟恢复</td></tr>
+      <tr><td><b>ABR</b></td><td>Adaptive Bitrate，按带宽切换码率档</td><td>大规模分发时平衡画质与卡顿</td></tr>
+      <tr><td><b>jitter buffer</b></td><td>抖动缓冲，吸收网络到达时间波动</td><td>延迟与卡顿的直接调节器</td></tr>
+      <tr><td><b>simulcast / SVC</b></td><td>同时发多路独立码流 / 分层编码</td><td>WebRTC SFU 为不同接收者选层</td></tr>
+      <tr><td><b>zero-copy</b></td><td>帧不回到 CPU 内存，直接在显存中传递</td><td>高分辨率高帧率下决定吞吐与功耗</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="cross">
+  <div class="ico">🗺️</div>
+  <div class="bd">
+    <h4>下一步：把标准放回场景</h4>
+    <p>容器、编码、协议只是零件。真正的工程问题是：这个场景要多低延迟、多少人、什么网络、多少预算？</p>
+    <div class="btns">
+      <a class="btn btn-pl" href="solutions/">音视频方案全景 →</a>
+      <a class="btn btn-pl" href="protocol/#webrtc">WebRTC 深潜 →</a>
+      <a class="btn btn-pl" href="servers/">服务器选型 →</a>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+</div>
+
+<footer><div class="wrap">liveinonetools · 音视频本体论 · <a href="https://github.com/yejinlei/liveinonetools">GitHub</a> · 标准、原理、代码与互动演示</div></footer>
+
+<script src="main.js"></script>
+<script src="ontology.js"></script>
+</body>
+</html>

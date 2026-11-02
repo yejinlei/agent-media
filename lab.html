@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实验室 · 码率 / 存储 / GOP / 延迟 / 零拷贝计算器</title>
+<meta name="description" content="音视频工程计算器：码率与存储、带宽与并发、ABR 阶梯、GOP 与 seek、端到端延迟预算、零拷贝流量，以及 FFmpeg 命令生成器。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html">GB28181</a>
+    <a href="player.html">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html">WASM</a>
+    <a href="lab.html" class="cur">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.2rem 0 2.8rem">
+  <div class="wrap">
+    <h1>音视频<em>实验室</em></h1>
+    <p>把“感觉”换成“数字”：一条 1080p 视频到底占多少带宽？一小时的录像要多少存储？端到端延迟的预算花在哪里？GOP 变长后 seek 要解多少帧？零拷贝到底省了多少 PCIe 流量？改参数、看结果，再回到原理页对照。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#bitrate">📊 码率与存储</a>
+      <a class="btn btn-ghost" href="#latency">⏱️ 延迟预算</a>
+      <a class="btn btn-ghost" href="wasm.html">🧪 浏览器内转码</a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#bitrate">码率与存储</a>
+    <a href="#bandwidth">带宽与并发</a>
+    <a href="#abr">ABR 阶梯</a>
+    <a href="#gop">GOP 与 seek</a>
+    <a href="#latency">延迟预算</a>
+    <a href="#zerocopy">零拷贝流量</a>
+    <a href="#cmdgen">命令生成器</a>
+    <a href="#checklist">工程检查表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="bitrate">
+  <h2>📊 码率与存储计算器</h2>
+  <p class="lead">码率的本质是“每秒多少 bit”。它由分辨率、帧率、每像素比特数（bpp）和编码效率共同决定。存储则是码率对时间的积分。下面的模型用 bpp 近似，适合做容量规划的第一版估算。</p>
+
+  <div class="formula">
+    码率 R = W × H × fps × bpp　　存储 S = R / 8 × 时长 × 副本数
+  </div>
+
+  <div class="lab">
+    <div class="ctrl" style="grid-template-columns:repeat(3,1fr)">
+      <label>分辨率
+        <select id="bRes">
+          <option value="1280x720">720p · 1280×720</option>
+          <option value="1920x1080" selected>1080p · 1920×1080</option>
+          <option value="2560x1440">1440p · 2560×1440</option>
+          <option value="3840x2160">4K · 3840×2160</option>
+          <option value="7680x4320">8K · 7680×4320</option>
+        </select>
+      </label>
+      <label>帧率
+        <select id="bFps">
+          <option value="24">24 fps</option>
+          <option value="25">25 fps</option>
+          <option value="30" selected>30 fps</option>
+          <option value="50">50 fps</option>
+          <option value="60">60 fps</option>
+        </select>
+      </label>
+      <label>编码 / 质量档
+        <select id="bCodec">
+          <option value="0.09">H.264 · 视频通话（低质量）</option>
+          <option value="0.06" selected>H.264 · 直播/点播常用</option>
+          <option value="0.04">H.265 · 同质量更省</option>
+          <option value="0.03">AV1 · 同质量最省</option>
+          <option value="0.012">AV1 · 极低码率（静态画面）</option>
+          <option value="1.5">ProRes 422 · 中间码</option>
+          <option value="12">RAW 10bit 4:2:2（未压缩）</option>
+        </select>
+      </label>
+      <label>时长（小时）
+        <input type="number" id="bHours" value="1" min="0.01" step="0.1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem;font-family:inherit;font-size:.85rem">
+      </label>
+      <label>副本数
+        <input type="number" id="bCopies" value="1" min="1" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem;font-family:inherit;font-size:.85rem">
+      </label>
+      <label>音频码率（kbps）
+        <input type="number" id="bAudio" value="128" min="0" step="16" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem;font-family:inherit;font-size:.85rem">
+      </label>
+    </div>
+    <div id="bOut" class="seq-note" style="min-height:4.6rem"></div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">💡</span><span><b>bpp 只是估算：</b>真实编码器输出取决于内容复杂度、GOP、CRF、preset、并行度。静态 PPT 的 1080p 可能只有 0.01 bpp，而运动会场景可达 0.2 bpp。容量规划要留 30%–50% 余量，并用真实素材压一遍。</span></div>
+
+  <div class="scroll-x">
+    <table class="grid">
+      <thead><tr><th>场景</th><th>典型分辨率 / 帧率</th><th>编码</th><th>典型码率</th><th>1 小时存储</th></tr></thead>
+      <tbody>
+        <tr><td>视频会议</td><td>1280×720 @ 30</td><td>H.264</td><td>1.5–2.5 Mbps</td><td>0.7–1.1 GB</td></tr>
+        <tr><td>电商直播</td><td>1920×1080 @ 30</td><td>H.264</td><td>4–6 Mbps</td><td>1.8–2.7 GB</td></tr>
+        <tr><td>4K 点播</td><td>3840×2160 @ 30</td><td>H.265 / AV1</td><td>15–25 Mbps</td><td>6.7–11 GB</td></tr>
+        <tr><td>监控（7×24）</td><td>1920×1080 @ 25</td><td>H.265</td><td>2–4 Mbps</td><td>0.9–1.8 GB</td></tr>
+        <tr><td>影院母版</td><td>4096×2160 @ 24</td><td>JPEG2000 / ProRes</td><td>150–250 Mbps</td><td>67–112 GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="bandwidth">
+  <h2>🌐 带宽与并发</h2>
+  <p>下行带宽需求等于“并发观众 × 每路码率”。CDN 的成本模型通常是“峰值带宽”或“流量”。这里同时给出两者，方便做预算。</p>
+  <div class="lab">
+    <div class="ctrl" style="grid-template-columns:repeat(4,1fr)">
+      <label>单路码率（Mbps）<input type="number" id="nBitrate" value="4" min="0.1" step="0.1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>并发观看数<input type="number" id="nUsers" value="1000" min="1" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>单场时长（分钟）<input type="number" id="nMin" value="60" min="1" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>CDN 单价（元 / GB）<input type="number" id="nPrice" value="0.24" min="0" step="0.01" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+    </div>
+    <div id="nOut" class="seq-note" style="min-height:4.6rem"></div>
+  </div>
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>峰值不是平均：</b>直播开播瞬间、热点事件、整点秒杀会让并发在几十秒内翻几倍。容量要按峰值的 1.3–2 倍准备，并用多源站 + 多 CDN 做冗余。回源带宽通常是边缘的 1/10–1/50。</span></div>
+</section>
+
+<section id="abr">
+  <h2>📶 ABR 阶梯与切换</h2>
+  <p>自适应码率（ABR）把同一内容编码成多档，播放器根据实时带宽与缓冲区选择档位。阶梯不是越密越好：档位过多会让切片与存储翻倍；档位过少会出现“要么糊、要么卡”。</p>
+
+  <div class="lab">
+    <h4>阶梯设计三条经验</h4>
+    <ul class="small" style="margin-top:.4rem">
+      <li><b>相邻档位约 1.5–2 倍码率</b>：差距太小会频繁切换，太大则画质跳变明显。</li>
+      <li><b>最低档要能在弱网下活下来</b>：移动端 300–500 kbps、360p 是常见底线。</li>
+      <li><b>对齐关键帧</b>：所有档位使用相同 GOP 与 IDR 位置，切换才能无缝。</li>
+    </ul>
+  </div>
+
+  <div data-lazy-viz data-viz="abr" data-opts='{}'></div>
+
+  <p class="small">拖动滑块模拟带宽变化，观察播放器如何选择档位；“播放”会叠加正弦波动，模拟真实网络抖动。</p>
+</section>
+
+<section id="gop">
+  <h2>🎯 GOP、关键帧与 seek 代价</h2>
+  <p>随机访问不是免费的：要跳到第 N 秒，解码器必须先找到它之前最近的 I 帧，然后按解码顺序解到目标帧。GOP 越长，压缩率越高，但 seek 越慢、直播抗丢包越差。</p>
+
+  <div data-lazy-viz data-viz="gop" data-opts='{"gop":12,"bframes":2,"fps":25,"frames":24}'></div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>GOP 与压缩率</h4>
+      <p class="small">I 帧通常比 P 帧大 3–10 倍，比 B 帧大更多。GOP 从 2 秒拉到 10 秒，码率可能下降 5%–15%，但随机访问与错误恢复变差。</p>
+      <div class="formula" style="font-size:.9rem">seek 平均解码帧数 ≈ GOP / 2</div>
+    </div>
+    <div class="card">
+      <h4>场景建议</h4>
+      <p class="small"><b>直播</b>：1–2 秒一个 IDR，配合 ABR 与快速切换。<b>点播</b>：2–10 秒，或用 open-GOP + 智能索引。<b>低延迟互动</b>：更短 GOP，甚至全 I 帧（代价是码率）。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">💡</span><span><b>开放 GOP vs 封闭 GOP：</b>封闭 GOP 的 I 帧不依赖前一 GOP，seek 干净；开放 GOP 的 I 帧可能参考前面的帧，压缩略好但随机访问需要多解一段。切片封装（HLS/DASH）通常要求封闭 GOP 或对齐 IDR。</span></div>
+</section>
+
+<section id="latency">
+  <h2>⏱️ 端到端延迟预算</h2>
+  <p>延迟是一条链路上每一段等待的总和。先拆项，再优化“最大项”，不要盲目调一个参数。下表给出互动直播/视频会议的典型量级。</p>
+
+  <div class="lab">
+    <div class="ctrl" style="grid-template-columns:repeat(4,1fr)">
+      <label>采集 + ISP（ms）<input type="number" id="lCap" value="30" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>编码（ms）<input type="number" id="lEnc" value="40" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>网络单程（ms）<input type="number" id="lNet" value="40" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>抖动缓冲（ms）<input type="number" id="lJit" value="60" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>服务端处理（ms）<input type="number" id="lSrv" value="20" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>解码（ms）<input type="number" id="lDec" value="30" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>渲染 / 显示（ms）<input type="number" id="lRen" value="20" min="0" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>协议缓冲（ms）<input type="number" id="lBuf" value="30" min="0" step="10" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+    </div>
+    <div id="lOut" class="seq-note" style="min-height:4.6rem"></div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="grid">
+      <thead><tr><th>方案</th><th>典型端到端延迟</th><th>主要延迟来源</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>WebRTC（同城）</td><td>80–250 ms</td><td>编码、抖动缓冲、网络</td><td>连麦、会议、远程操控</td></tr>
+        <tr><td>WebRTC（跨洲）</td><td>250–600 ms</td><td>物理 RTT、TURN 中转</td><td>跨国会议</td></tr>
+        <tr><td>LL-HLS / LL-DASH</td><td>1.5–4 s</td><td>切片时长、CDN 缓存、缓冲区</td><td>大规模直播、电商</td></tr>
+        <tr><td>标准 HLS</td><td>6–30 s</td><td>切片 + 播放器缓冲</td><td>点播、弱网兼容</td></tr>
+        <tr><td>RTMP / HTTP-FLV</td><td>1–3 s</td><td>缓冲区、GOP</td><td>国内直播、低成本</td></tr>
+        <tr><td>SRT</td><td>0.5–2 s</td><td>latency 参数、重传</td><td>上行回传、跨公网</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="zerocopy">
+  <h2>🚀 零拷贝与 PCIe 流量</h2>
+  <p>没有零拷贝时，一帧视频要在系统内存与显存之间往返两次：解码输出回 CPU、再上传给编码器。4K 高帧率下，这条 PCIe 流量会先于 GPU 算力成为瓶颈。</p>
+  <div data-lazy-viz data-viz="zerocopy" data-opts='{}'></div>
+  <div class="callout callout-tip"><span class="ic">✅</span><span>开启零拷贝的三件事：解码器输出 <code>hw_frames_ctx</code>；滤镜链使用 GPU 滤镜（<code>scale_cuda</code> / <code>scale_vaapi</code> / <code>vpp_qsv</code>）；编码器输入像素格式与硬件帧一致。中间任何一次 <code>hwdownload</code> 都会把收益打回原形。</span></div>
+</section>
+
+<section id="cmdgen">
+  <h2>🛠️ FFmpeg 命令生成器</h2>
+  <p>选择参数，生成一条可直接运行的命令。生成的是“起点”而不是“终点”：真实项目还要考虑像素格式、色彩空间、GOP、B 帧、音频重采样与封装约束。</p>
+
+  <div class="lab">
+    <div class="ctrl" style="grid-template-columns:repeat(3,1fr)">
+      <label>输入文件<input type="text" id="cIn" value="input.mp4"></label>
+      <label>输出文件<input type="text" id="cOut" value="output.mp4"></label>
+      <label>视频编码
+        <select id="cVcodec">
+          <option value="libx264">H.264 (libx264)</option>
+          <option value="libx265">H.265 (libx265)</option>
+          <option value="libsvtav1">AV1 (SVT-AV1)</option>
+          <option value="libvpx-vp9">VP9 (libvpx)</option>
+          <option value="copy">不重编码 (-c:v copy)</option>
+        </select>
+      </label>
+      <label>质量（CRF，越小越好）<input type="number" id="cCrf" value="23" min="0" max="63" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+      <label>preset
+        <select id="cPreset">
+          <option value="ultrafast">ultrafast</option>
+          <option value="veryfast" selected>veryfast</option>
+          <option value="medium">medium</option>
+          <option value="slow">slow</option>
+        </select>
+      </label>
+      <label>缩放
+        <select id="cScale">
+          <option value="">保持原尺寸</option>
+          <option value="1280:-2">宽 1280（等比）</option>
+          <option value="1920:-2">宽 1920（等比）</option>
+          <option value="3840:-2">宽 3840（等比）</option>
+        </select>
+      </label>
+      <label>音频
+        <select id="cAcodec">
+          <option value="aac">AAC 128k</option>
+          <option value="libopus">Opus 96k</option>
+          <option value="copy">不重编码</option>
+          <option value="none">去掉音频</option>
+        </select>
+      </label>
+      <label>封装优化
+        <select id="cFast">
+          <option value="1" selected>MP4 faststart（边下边播）</option>
+          <option value="0">普通 MP4</option>
+        </select>
+      </label>
+      <label>GOP（帧）<input type="number" id="cGop" value="50" min="1" step="1" style="width:100%;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.35rem"></label>
+    </div>
+    <pre class="code" id="cOutCmd" style="white-space:pre-wrap;user-select:all"></pre>
+    <button class="btn btn-c" id="cCopy">📋 复制命令</button>
+    <span class="small" id="cCopied" style="margin-left:.5rem"></span>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要盲目堆参数：</b>先确认输入的真实属性（<code>ffprobe</code>），再决定是否需要重编码。转封装用 <code>-c copy</code> 几乎无损且极快；只有需要改分辨率、码率、像素格式或编码格式时才重编码。</span></div>
+</section>
+
+<section id="checklist">
+  <h2>✅ 工程检查表</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h4>上线前</h4>
+      <ul class="small">
+        <li>用 <code>ffprobe</code> 核对编码、profile、像素格式、时间基。</li>
+        <li>确认关键帧间隔与切片边界对齐（HLS/DASH）。</li>
+        <li>确认音画同步：音频采样率、声道、时间基一致。</li>
+        <li>弱网测试：丢包 5%/10%、带宽 500 kbps 下的表现。</li>
+        <li>首帧时间、卡顿率、切换次数三项指标。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>排障顺序</h4>
+      <ul class="small">
+        <li>先看容器/封装是否正确（能否解出帧）。</li>
+        <li>再看时间戳（PTS/DTS、timescale、B 帧重排）。</li>
+        <li>再看像素格式/色彩（绿屏、偏色、花屏）。</li>
+        <li>最后看网络与缓冲（卡顿、延迟、抖动）。</li>
+      </ul>
+    </div>
+  </div>
+  <div class="cross">
+    <span class="ico">🧪</span>
+    <div class="bd">
+      <h4>想直接跑命令？</h4>
+      <p>打开 ffmpeg.wasm 实验台，在浏览器里本地上传文件、执行命令、下载结果，不需要安装 FFmpeg。</p>
+      <div class="btns">
+        <a class="btn btn-pl" href="wasm.html">进入 ffmpeg.wasm 实验台 →</a>
+        <a class="btn btn-pl" href="ffmpeg/">阅读 FFmpeg 深度页</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<script src="main.js"></script>
+<script>
+(function () {
+  function $(id) { return document.getElementById(id); }
+  function fmt(n) { return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 }); }
+
+  function calcBitrate() {
+    const [w, h] = $('bRes').value.split('x').map(Number);
+    const fps = +$('bFps').value;
+    const bpp = +$('bCodec').value;
+    const hours = Math.max(0.0001, +$('bHours').value || 0);
+    const copies = Math.max(1, +$('bCopies').value || 1);
+    const audioK = Math.max(0, +$('bAudio').value || 0);
+    const vMbps = w * h * fps * bpp / 1e6;
+    const totalMbps = vMbps + audioK / 1000;
+    const gbPerHour = totalMbps * 3600 / 8 / 1000;
+    const totalGb = gbPerHour * hours * copies;
+    const rawMbps = w * h * fps * 1.5 * 8 / 1e6; // YUV420 8bit
+    $('bOut').innerHTML =
+      `视频码率 <b>${fmt(vMbps)} Mbps</b> · 含音频（${audioK} kbps）总计 <b>${fmt(totalMbps)} Mbps</b>` +
+      ` · 压缩前 YUV420 约 <b>${fmt(rawMbps)} Mbps</b>（压缩比约 ${fmt(rawMbps / Math.max(0.001, totalMbps))}:1）<br>` +
+      `每小时 <b>${fmt(gbPerHour)} GB</b> · ${fmt(hours)} 小时 × ${copies} 副本 = <b>${fmt(totalGb)} GB</b>（按 1 GB = 10^9 B 计）`;
+  }
+
+  function calcNetwork() {
+    const mbps = Math.max(0.01, +$('nBitrate').value || 0);
+    const users = Math.max(1, +$('nUsers').value || 1);
+    const mins = Math.max(1, +$('nMin').value || 1);
+    const price = Math.max(0, +$('nPrice').value || 0);
+    const peak = mbps * users;
+    const trafficGb = peak * 60 * mins / 8 / 1000;
+    const cost = trafficGb * price;
+    $('nOut').innerHTML =
+      `峰值下行带宽 <b>${fmt(peak)} Mbps</b>（约 ${fmt(peak / 1000)} Gbps）<br>` +
+      `单场总流量 <b>${fmt(trafficGb)} GB</b> · CDN 成本约 <b>¥${fmt(cost)}</b>（按 ¥${price}/GB）`;
+  }
+
+  function calcLatency() {
+    const keys = ['lCap', 'lEnc', 'lNet', 'lJit', 'lSrv', 'lDec', 'lRen', 'lBuf'];
+    const vals = keys.map(k => Math.max(0, +$(k).value || 0));
+    const total = vals.reduce((a, b) => a + b, 0);
+    const max = Math.max(...vals);
+    const idx = vals.indexOf(max);
+    const names = ['采集/ISP', '编码', '网络单程', '抖动缓冲', '服务端处理', '解码', '渲染', '协议缓冲'];
+    let cls = '互动级（<200 ms）';
+    if (total >= 200 && total < 500) cls = '准互动（200–500 ms）';
+    else if (total >= 500 && total < 2000) cls = '低延迟直播（0.5–2 s）';
+    else if (total >= 2000) cls = '普通直播 / 点播级（>2 s）';
+    $('lOut').innerHTML =
+      `端到端延迟合计 <b>${total} ms</b>（${(total / 1000).toFixed(2)} s）→ ${cls}<br>` +
+      `最大单项：<b>${names[idx]} ${max} ms</b>（占 ${(max / (total || 1) * 100).toFixed(0)}%）。优化顺序应从最大项开始；互动场景优先压缩缓冲与编码延迟。`;
+  }
+
+  function buildCmd() {
+    const inp = $('cIn').value.trim() || 'input.mp4';
+    const out = $('cOut').value.trim() || 'output.mp4';
+    const v = $('cVcodec').value;
+    const crf = +$('cCrf').value;
+    const preset = $('cPreset').value;
+    const scale = $('cScale').value;
+    const a = $('cAcodec').value;
+    const fast = $('cFast').value === '1';
+    const gop = Math.max(1, +$('cGop').value || 1);
+    let args = ['ffmpeg', '-y', '-i', inp];
+
+    if (v === 'copy') args.push('-c:v', 'copy');
+    else {
+      args.push('-c:v', v);
+      if (v === 'libsvtav1') args.push('-crf', String(crf), '-preset', preset === 'medium' ? '6' : '8');
+      else if (v === 'libvpx-vp9') args.push('-crf', String(crf), '-b:v', '0', '-row-mt', '1');
+      else args.push('-crf', String(crf), '-preset', preset);
+      args.push('-g', String(gop));
+      if (scale) args.push('-vf', 'scale=' + scale);
+      args.push('-pix_fmt', 'yuv420p');
+    }
+
+    if (a === 'none') args.push('-an');
+    else if (a === 'copy') args.push('-c:a', 'copy');
+    else if (a === 'aac') args.push('-c:a', 'aac', '-b:a', '128k');
+    else args.push('-c:a', 'libopus', '-b:a', '96k');
+
+    if (fast && /\.mp4$/i.test(out)) args.push('-movflags', '+faststart');
+    args.push(out);
+    $('cOutCmd').textContent = args.map(x => /\s/.test(x) ? JSON.stringify(x) : x).join(' ');
+  }
+
+  ['bRes', 'bFps', 'bCodec', 'bHours', 'bCopies', 'bAudio'].forEach(id => {
+    $(id).addEventListener('input', calcBitrate);
+    $(id).addEventListener('change', calcBitrate);
+  });
+  ['nBitrate', 'nUsers', 'nMin', 'nPrice'].forEach(id => $(id).addEventListener('input', calcNetwork));
+  ['lCap', 'lEnc', 'lNet', 'lJit', 'lSrv', 'lDec', 'lRen', 'lBuf'].forEach(id => $(id).addEventListener('input', calcLatency));
+  ['cIn', 'cOut', 'cVcodec', 'cCrf', 'cPreset', 'cScale', 'cAcodec', 'cFast', 'cGop'].forEach(id => {
+    $(id).addEventListener('input', buildCmd);
+    $(id).addEventListener('change', buildCmd);
+  });
+
+  $('cCopy').addEventListener('click', () => {
+    const txt = $('cOutCmd').textContent;
+    const done = () => { $('cCopied').textContent = '已复制'; setTimeout(() => $('cCopied').textContent = '', 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done).catch(() => {});
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  });
+
+  calcBitrate();
+  calcNetwork();
+  calcLatency();
+  buildCmd();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ffmpeg.wasm 实验台 · 在浏览器里理解音视频处理</title>
+<meta name="description" content="用 ffmpeg.wasm 在浏览器本地完成转码、提取音频、裁剪、缩放、生成 GIF；同时理解 WebAssembly、Worker、MEMFS 与 FFmpeg 的处理链。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="index.html">首页</a>
+    <a href="solutions/">方案</a>
+    <a href="container/">容器</a>
+    <a href="codec/">编解码</a>
+    <a href="protocol/">协议</a>
+    <a href="hwaccel/">硬件</a>
+    <a href="ffmpeg/">FFmpeg</a>
+    <a href="gstreamer.html">GStreamer</a>
+    <a href="gb28181.html">GB28181</a>
+    <a href="player.html">播放器</a>
+    <a href="servers/">服务器</a>
+    <a href="wasm.html" class="cur">WASM</a>
+    <a href="lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:2.9rem 0 2.5rem">
+  <div class="wrap">
+    <h1>FFmpeg <em>in the Browser</em></h1>
+    <p>同一个 FFmpeg，被 Emscripten 编译成 WebAssembly，跑在浏览器 Worker 里：没有服务器、没有上传，文件只在本机内存中流转。用它亲手做一次转码、裁剪、抽音轨、生成 GIF——然后理解这背后发生了什么。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#playground">🧪 打开实验台</a>
+      <a class="btn btn-ghost" href="#why">先看原理</a>
+      <a class="btn btn-ghost" href="ffmpeg/">FFmpeg 深度页</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">WebAssembly</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">Worker</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MEMFS</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">本地处理 · 不上传</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">单线程 core</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">为什么能跑</a>
+    <a href="#playground">实验台</a>
+    <a href="#api">API 生命周期</a>
+    <a href="#limits">性能与边界</a>
+    <a href="#recipes">命令配方</a>
+    <a href="#privacy">隐私与安全</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>🧬 为什么 FFmpeg 能在浏览器里跑</h2>
+  <p class="lead">浏览器不认识 C 语言，但它认识 WebAssembly。Emscripten 把 FFmpeg 的 C 代码、libavformat/libavcodec/libavfilter 以及 x264、libvpx、Opus 等第三方库一起编译成一个 <code>.wasm</code> 模块；模块在 Web Worker 中运行，输入输出文件放在内存虚拟文件系统（MEMFS）里。</p>
+
+  <div class="flow">
+    <div class="node hi">你的页面<span>UI / 事件</span></div><span class="ar">→</span>
+    <div class="node">Worker<span>避免阻塞主线程</span></div><span class="ar">→</span>
+    <div class="node hi">WASM 模块<span>FFmpeg / libav*</span></div><span class="ar">↔</span>
+    <div class="node">MEMFS<span>虚拟文件系统</span></div><span class="ar">→</span>
+    <div class="node">输出 Blob<span>预览 / 下载</span></div>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>① Emscripten</h4>
+      <p class="small">把 C/C++ 编译为 wasm32，并提供 POSIX 风格的系统调用垫片（shim）：文件、线程、时钟、内存。FFmpeg 的 <code>avformat_open_input</code> 在 wasm 里读的不是磁盘，而是 MEMFS 里的字节。</p>
+    </div>
+    <div class="card">
+      <h4>② Worker</h4>
+      <p class="small">转码是 CPU 密集型任务。放进 Worker 后，主线程仍能响应点击、渲染进度；页面与 Worker 之间只传消息和文件字节，不共享 DOM。</p>
+    </div>
+    <div class="card">
+      <h4>③ MEMFS</h4>
+      <p class="small">一个建立在 WASM 线性内存中的内存文件系统。<code>writeFile('/input.mp4', bytes)</code> 把浏览器 File 变成 FFmpeg 眼中的普通文件；<code>readFile</code> 再把输出读回 JS。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">💡</span><span><b>它不是“云端转码”：</b>数据不会离开浏览器。首次点击“加载引擎”时，只会从本站加载 ffmpeg.js、ffmpeg-core.js 与约 30 MB 的 ffmpeg-core.wasm（已随仓库放在 <code>vendor/ffmpeg/</code>，无需联网）；之后所有像素运算都在本机完成。</span></div>
+
+  <h3>单线程 core 与多线程 core</h3>
+  <p>官方提供两种核心：<code>@ffmpeg/core</code>（单线程）与 <code>@ffmpeg/core-mt</code>（多线程）。多线程版依赖 <code>SharedArrayBuffer</code>，而浏览器只在<strong>跨源隔离</strong>（响应头 <code>Cross-Origin-Opener-Policy: same-origin</code> 与 <code>Cross-Origin-Embedder-Policy: require-corp</code>）下才开放它。GitHub Pages 不能自定义这些响应头，所以本站使用单线程 core：兼容性最好，速度慢一些。</p>
+  <pre class="code"><span class="cm">// 多线程版 LOAD 的差别（仅示意；本站未启用）</span>
+await ffmpeg.load({
+  coreURL: await toBlobURL(base + <span class="st">'/ffmpeg-core.js'</span>, <span class="st">'text/javascript'</span>),
+  wasmURL: await toBlobURL(base + <span class="st">'/ffmpeg-core.wasm'</span>, <span class="st">'application/wasm'</span>),
+  workerURL: await toBlobURL(base + <span class="st">'/ffmpeg-core.worker.js'</span>, <span class="st">'text/javascript'</span>)
+});
+<span class="cm">// 需要页面响应头：COOP: same-origin + COEP: require-corp</span></pre>
+</section>
+
+<section id="playground">
+  <h2>🧪 实验台 <span class="tag tag-p">本地处理 · 不上传</span></h2>
+  <p>第一次使用先点击“加载引擎”（约 30 MB，之后浏览器会缓存）。加载完成后可选择文件或直接生成一段测试视频。所有命令都显示在下方，方便对照 FFmpeg 语法。</p>
+
+  <div class="lab">
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem">
+      <span class="fstate" id="ffState"><span class="d"></span><span id="ffStateText">引擎未加载</span></span>
+      <button class="btn-mini" id="loadBtn">⚡ 加载引擎</button>
+      <button class="btn-mini" id="demoBtn">🎬 生成 3 秒测试视频</button>
+      <span class="small">单线程 core · 首次约 30 MB</span>
+    </div>
+
+    <div class="drop" id="drop">
+      <b>点击选择</b> 或把视频 / 音频 / 图片拖到这里<br>
+      <span class="small">建议 &lt; 100 MB；大文件受浏览器内存与 wasm32 地址空间限制</span>
+      <input type="file" id="fileInput" accept="video/*,audio/*,image/*" style="display:none">
+    </div>
+    <div id="fileInfo" class="small" style="margin:.5rem 0"></div>
+    <div id="inputPreview" style="margin:.7rem 0"></div>
+
+    <h4 style="margin-top:1rem">选择处理方式</h4>
+    <div class="preset-row" id="presetRow"></div>
+
+    <div id="customWrap" style="display:none;margin:.7rem 0">
+      <label class="small">自定义参数（用 <code>{in}</code> 表示输入文件、<code>{out}</code> 表示输出文件）</label>
+      <textarea id="customArgs" rows="3" style="width:100%;padding:.55rem;border:1px solid var(--border);border-radius:.4rem;font-family:var(--mono);font-size:.8rem;margin-top:.3rem">-i {in} -c:v libx264 -crf 28 -preset veryfast -c:a aac {out}</textarea>
+    </div>
+
+    <div style="margin:.8rem 0">
+      <div class="small">将执行：</div>
+      <pre class="code" id="cmd" style="margin:.3rem 0;white-space:pre-wrap">ffmpeg -y ...</pre>
+      <button class="btn btn-c" id="runBtn">▶ 开始处理</button>
+      <button class="btn-mini" id="clearBtn" style="margin-left:.4rem">清空日志</button>
+    </div>
+
+    <div class="ffbar"><i id="ffbar"></i></div>
+    <div class="small" id="progressText" style="min-height:1.2rem">等待开始</div>
+
+    <div id="outWrap" style="margin-top:1rem"></div>
+
+    <h4 style="margin-top:1.2rem">FFmpeg 日志（真实输出）</h4>
+    <pre class="code fflog" id="log" style="min-height:120px"></pre>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>实验台的定位：</b>用于学习命令、观察位流/容器/滤镜行为、做小文件实验。不要把它当作生产转码器：没有 GPU、没有多线程、文件大小受内存限制，速度通常比原生 FFmpeg 慢数倍。</span></div>
+</section>
+
+<section id="api">
+  <h2>🔌 API 生命周期：五步完成一次处理</h2>
+  <p>ffmpeg.wasm 的 API 很小：加载一次，然后把每次任务当成“写文件 → 执行 → 读文件”。理解这五步，你就能把任何 FFmpeg 命令搬进浏览器。</p>
+  <div class="flow vert">
+    <div class="node hi"><b>1. load()</b><span>加载并实例化 core，创建 Worker 与 MEMFS</span></div><span class="ar">↓</span>
+    <div class="node"><b>2. writeFile(name, bytes)</b><span>把 File/Blob 写进虚拟文件系统</span></div><span class="ar">↓</span>
+    <div class="node hi"><b>3. exec(args)</b><span>等价于命令行 ffmpeg，日志与进度通过事件回调</span></div><span class="ar">↓</span>
+    <div class="node"><b>4. readFile(name)</b><span>读出 Uint8Array，包成 Blob</span></div><span class="ar">↓</span>
+    <div class="node"><b>5. deleteFile / terminate</b><span>清理虚拟文件；释放 Worker 与内存</span></div>
+  </div>
+
+  <pre class="code"><span class="kw">import</span> { FFmpeg } <span class="kw">from</span> <span class="st">'@ffmpeg/ffmpeg'</span>;
+<span class="kw">import</span> { fetchFile, toBlobURL } <span class="kw">from</span> <span class="st">'@ffmpeg/util'</span>;
+
+<span class="kw">const</span> ffmpeg = <span class="kw">new</span> FFmpeg();
+ffmpeg.on(<span class="st">'log'</span>, ({ message }) =&gt; console.log(message));
+ffmpeg.on(<span class="st">'progress'</span>, ({ progress }) =&gt; console.log(progress));
+
+<span class="cm">// 1) 加载：core 与 wasm 通过 blob URL 注入，规避跨源 Worker 限制</span>
+<span class="cm">//    本站已把 core 放进 vendor/ffmpeg/，优先读本地；线上可选回退 CDN</span>
+<span class="kw">const</span> base = <span class="st">'vendor/ffmpeg'</span>;
+<span class="kw">await</span> ffmpeg.load({
+  coreURL: <span class="kw">await</span> toBlobURL(base + <span class="st">'/ffmpeg-core.js'</span>, <span class="st">'text/javascript'</span>),
+  wasmURL: <span class="kw">await</span> toBlobURL(base + <span class="st">'/ffmpeg-core.wasm'</span>, <span class="st">'application/wasm'</span>)
+});
+
+<span class="cm">// 2) 写入输入文件（浏览器 File 对象）</span>
+<span class="kw">await</span> ffmpeg.writeFile(<span class="st">'input.mp4'</span>, <span class="kw">await</span> fetchFile(file));
+
+<span class="cm">// 3) 执行：参数数组，不需要写 "ffmpeg" 本身</span>
+<span class="kw">await</span> ffmpeg.exec([
+  <span class="st">'-i'</span>, <span class="st">'input.mp4'</span>,
+  <span class="st">'-c:v'</span>, <span class="st">'libx264'</span>, <span class="st">'-crf'</span>, <span class="st">'23'</span>, <span class="st">'-pix_fmt'</span>, <span class="st">'yuv420p'</span>,
+  <span class="st">'-c:a'</span>, <span class="st">'aac'</span>, <span class="st">'-b:a'</span>, <span class="st">'128k'</span>,
+  <span class="st">'-movflags'</span>, <span class="st">'+faststart'</span>,
+  <span class="st">'output.mp4'</span>
+]);
+
+<span class="cm">// 4) 读回并生成可下载的 Blob</span>
+<span class="kw">const</span> data = <span class="kw">await</span> ffmpeg.readFile(<span class="st">'output.mp4'</span>);
+<span class="kw">const</span> url = URL.createObjectURL(<span class="kw">new</span> Blob([data.buffer], { type: <span class="st">'video/mp4'</span> }));
+
+<span class="cm">// 5) 清理</span>
+<span class="kw">await</span> ffmpeg.deleteFile(<span class="st">'input.mp4'</span>);
+<span class="kw">await</span> ffmpeg.deleteFile(<span class="st">'output.mp4'</span>);
+<span class="cm">// ffmpeg.terminate(); // 页面卸载或需要彻底释放时</span></pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>为什么用 toBlobURL？</h4>
+      <p class="small">Worker 内部要 importScripts(coreURL)。如果 URL 跨源，某些浏览器会因同源策略拒绝。先把 core.js/wasm 下载成 Blob，再生成同源 blob: URL，就能稳定实例化。</p>
+    </div>
+    <div class="card">
+      <h4>参数为什么是数组？</h4>
+      <p class="small"><code>exec(['-i','a.mp4','b.webm'])</code> 不做 shell 解析，空格、引号、通配符都不会被解释。滤镜字符串里的逗号、方括号要作为单个数组元素传入，避免被拆开。</p>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <h2>📉 性能、内存与能力边界</h2>
+  <table>
+    <thead><tr><th>维度</th><th>原生 FFmpeg</th><th>ffmpeg.wasm（单线程）</th><th>工程含义</th></tr></thead>
+    <tbody>
+      <tr><td>CPU</td><td>多核 + SIMD + 汇编优化</td><td>单核，部分 SIMD</td><td>同一 preset 下慢 3–10 倍；长视频不现实</td></tr>
+      <tr><td>GPU</td><td>NVENC/QSV/VAAPI…</td><td>无（WASM 内无 GPU 后端）</td><td>不能做硬件零拷贝；高分辨率很吃力</td></tr>
+      <tr><td>内存</td><td>可达数十 GB</td><td>wasm32 地址空间上限 4 GB，实际更小</td><td>大文件/多轨/4K 易 OOM</td></tr>
+      <tr><td>I/O</td><td>磁盘/网络流式</td><td>整文件进 MEMFS</td><td>需要一次性读入；超大文件会翻倍占用</td></tr>
+      <tr><td>线程</td><td>slice/frame 多线程</td><td>单线程 core</td><td>GitHub Pages 无 COOP/COEP，无法开 SAB</td></tr>
+      <tr><td>编码器</td><td>全部（含闭源/硬件）</td><td>编译进 core 的开源编码器</td><td>以 <code>-encoders</code> 实际输出为准</td></tr>
+      <tr><td>稳定性</td><td>生产级</td><td>实验/教学级</td><td>崩溃表现为 Worker 终止；需容错与超时</td></tr>
+    </tbody>
+  </table>
+  <h3>实测建议</h3>
+  <ul>
+    <li><b>文件：</b>1080p 30 秒以内、几十 MB 最稳；4K 或 10 分钟以上建议先裁剪。</li>
+    <li><b>编码器：</b><code>libx264 -preset ultrafast/veryfast</code> 明显快于 medium；<code>libvpx-vp9</code> 很慢，学习时优先用短片段。</li>
+    <li><b>滤镜：</b>scale/fps/trim 便宜；<code>loudnorm</code>、降噪、复杂 overlay 昂贵。</li>
+    <li><b>内存：</b>处理前关闭其他大页面；输出后及时 <code>deleteFile</code>，否则 MEMFS 会持续占用。</li>
+    <li><b>兼容性：</b>需要 <code>WebAssembly</code>、<code>Worker</code>、<code>Blob</code>；现代 Chrome/Edge/Firefox/Safari 均支持。</li>
+  </ul>
+  <div class="callout callout-i"><span class="ic">💡</span><span>本站已把 <code>@ffmpeg/core@0.12.6</code> 的 <code>ffmpeg-core.js</code> 与 <code>ffmpeg-core.wasm</code> 放进 <code>vendor/ffmpeg/</code>，页面默认读本地文件，因此离线也能用；若本地文件缺失或被拦截，脚本会自动回退到 unpkg CDN。自建站点时同理：把 core 放进自己的静态目录最稳妥。</span></div>
+</section>
+
+<section id="recipes">
+  <h2>🍳 命令配方与原理对照</h2>
+  <p>实验台里的每个预设都是一条真实命令。重点观察“输入 → 解码 → 滤镜 → 编码 → 封装”这条链在日志中的顺序。</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>任务</th><th>关键参数</th><th>背后发生了什么</th></tr></thead>
+    <tbody>
+      <tr><td>查看信息</td><td class="num">-i input</td><td>只打开输入并打印容器/流/编码参数，不产生输出（退出码非 0 是正常现象）</td></tr>
+      <tr><td>转 H.264 MP4</td><td class="num">-c:v libx264 -crf 23 -pix_fmt yuv420p -c:a aac -movflags +faststart</td><td>解码 → 可选滤镜 → x264 编码 → AAC 编码 → MP4 mux；faststart 把 moov 提前</td></tr>
+      <tr><td>转 WebM</td><td class="num">-c:v libvpx-vp9 -crf 32 -b:v 0 -c:a libopus</td><td>VP9 恒定质量（crf + b:v 0），Opus 音频，Matroska/WebM 封装</td></tr>
+      <tr><td>提取 MP3</td><td class="num">-vn -c:a libmp3lame -q:a 2</td><td>丢弃视频流，音频解码后用 LAME 重编码为 MP3</td></tr>
+      <tr><td>裁剪 5 秒</td><td class="num">-ss 0 -t 5</td><td>从指定时间开始取 5 秒；重新编码可保证从关键帧开始、时间戳连续</td></tr>
+      <tr><td>缩放到 720p</td><td class="num">-vf scale=-2:720</td><td>swscale 做像素格式/尺寸变换；-2 表示按比例且保证偶数（4:2:0 要求）</td></tr>
+      <tr><td>生成 GIF</td><td class="num">-vf fps=10,scale=480:-1:flags=lanczos -loop 0</td><td>抽帧 → 缩放 → GIF 编码；调色板优化可显著减小体积</td></tr>
+      <tr><td>抽取封面</td><td class="num">-ss 1 -frames:v 1 output.png</td><td>定位到 1 秒，解码一帧，PNG 编码</td></tr>
+      <tr><td>生成测试源</td><td class="num">-f lavfi -i testsrc2=... -f lavfi -i sine=...</td><td>用 lavfi 合成视频与正弦音频，不依赖外部文件，适合验证引擎</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>GIF 调色板优化（原生 / wasm 都适用）</summary>
+    <div class="bd">
+      <pre class="code">ffmpeg -i input.mp4 -vf <span class="st">"fps=12,scale=480:-1:flags=lanczos,palettegen"</span> palette.png
+ffmpeg -i input.mp4 -i palette.png -filter_complex \
+  <span class="st">"fps=12,scale=480:-1:flags=lanczos[x];[x][1:v]paletteuse"</span> output.gif</pre>
+      <p class="small">第一遍生成 256 色调色板，第二遍复用调色板。GIF 只有 256 色，渐变与阴影容易出现色带；这是格式本身的限制，不是编码器问题。</p>
+    </div>
+  </details>
+  <details class="b">
+    <summary><span class="ar">▶</span>为什么 wasm 里常用 -preset veryfast</summary>
+    <div class="bd">
+      <p class="small">x264 的 preset 控制搜索范围、参考帧、B 帧、lookahead 等。medium 在原生 CPU 上通常实时，但在单线程 wasm 中可能远慢于实时。veryfast/ultrafast 牺牲一些压缩率换取速度，适合“先跑通再优化”的学习场景。</p>
+    </div>
+  </details>
+</section>
+
+<section id="privacy">
+  <h2>🔒 隐私、安全与部署</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h4>数据边界</h4>
+      <p class="small">文件字节通过 <code>File.arrayBuffer()</code> 进入页面，经 Worker 消息传给 WASM 内存；没有 <code>fetch</code> 上传步骤。关闭标签页后，MEMFS 与 Blob 随进程释放。你可以在 DevTools 的 Network 面板验证：除了加载 <code>vendor/ffmpeg/</code> 里的脚本与 wasm（首次约 30 MB），没有任何媒体数据请求。</p>
+    </div>
+    <div class="card">
+      <h4>供应链边界</h4>
+      <p class="small">本站采用“自托管优先、CDN 兜底”：默认从同源的 <code>vendor/ffmpeg/</code> 读脚本与 wasm，版本已锁定（core 0.12.6 / ffmpeg 0.12.10 / util 0.12.1）；只有本地读取失败时才回退 unpkg。生产环境应完全移除回退分支，只信任自己的静态目录。</p>
+    </div>
+    <div class="card">
+      <h4>CSP 与 Worker</h4>
+      <p class="small">若站点启用严格 CSP，需要允许 <code>worker-src blob:</code>、<code>script-src blob:</code> 与 <code>wasm-unsafe-eval</code>。blob URL 是 ffmpeg.wasm 注入 core 的常用方式。</p>
+    </div>
+    <div class="card">
+      <h4>适合的落地场景</h4>
+      <p class="small">浏览器内预览转码、隐私敏感素材的本地处理、教学演示、离线小工具、上传前压缩。不适合长视频转码农场、4K 批量处理、需要 GPU 的实时直播。</p>
+    </div>
+  </div>
+  <div class="callout callout-tip"><span class="ic">✅</span><span><b>学习路径建议：</b>先用“查看信息”认识流与编码 → 用“裁剪 5 秒”理解时间戳 → 用“缩放 720p”理解像素格式 → 用“转 WebM”对比编码器差异 → 最后自定义参数，观察日志里的 <code>Video: h264 … yuv420p</code> 与 <code>Audio: aac …</code>。</span></div>
+</section>
+
+<div class="cross">
+  <div class="ico">🛠️</div>
+  <div class="bd">
+    <h4>把实验台的命令放回完整知识体系</h4>
+    <p>想理解 libav* 的对象模型、滤镜图与时间戳，去 FFmpeg 深度页；想理解编码器内部的预测/变换/量化，去编解码页。</p>
+    <div class="btns">
+      <a class="btn btn-pl" href="ffmpeg/">FFmpeg 深度 →</a>
+      <a class="btn btn-pl" href="codec/">编解码原理 →</a>
+      <a class="btn btn-pl" href="lab.html">实验室 →</a>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+</div>
+
+<footer><div class="wrap">liveinonetools · 音视频本体论 · <a href="https://github.com/yejinlei/liveinonetools">GitHub</a> · 浏览器内 FFmpeg 实验台</div></footer>
+
+<script src="main.js"></script>
+<script>
+(function () {
+  'use strict';
+  // 优先使用仓库内 vendor/ffmpeg（已随项目提供，无需联网）；
+  // 若本地文件缺失或被拦截，再回退到 CDN。
+  const LOCAL = 'vendor/ffmpeg';
+  const CDN = 'https://unpkg.com';
+  const URL_FFMPEG = LOCAL + '/ffmpeg.js';
+  const URL_UTIL = LOCAL + '/util.js';
+  const URL_CORE = LOCAL;
+  const CDN_FFMPEG = CDN + '/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js';
+  const CDN_UTIL = CDN + '/@ffmpeg/util@0.12.1/dist/umd/index.js';
+  const CDN_CORE = CDN + '/@ffmpeg/core@0.12.6/dist/umd';
+
+  const $ = s => document.querySelector(s);
+  const stateEl = $('#ffState'), stateText = $('#ffStateText');
+  const logEl = $('#log'), barEl = $('#ffbar'), progEl = $('#progressText');
+  const cmdEl = $('#cmd'), outWrap = $('#outWrap'), fileInfo = $('#fileInfo');
+  const inputPreview = $('#inputPreview'), drop = $('#drop'), fileInput = $('#fileInput');
+  const presetRow = $('#presetRow'), customWrap = $('#customWrap'), customArgs = $('#customArgs');
+  const runBtn = $('#runBtn'), loadBtn = $('#loadBtn'), demoBtn = $('#demoBtn');
+
+  const PRESETS = {
+    info: { label: '查看信息', out: '', mime: '', needsInput: true, args: ['-hide_banner', '-i', '{in}'] },
+    mp4: { label: '转 H.264 MP4', out: 'output.mp4', mime: 'video/mp4', needsInput: true,
+      args: ['-i', '{in}', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '{out}'] },
+    webm: { label: '转 WebM (VP9)', out: 'output.webm', mime: 'video/webm', needsInput: true,
+      args: ['-i', '{in}', '-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-c:a', 'libopus', '-b:a', '96k', '{out}'] },
+    mp3: { label: '提取 MP3', out: 'output.mp3', mime: 'audio/mpeg', needsInput: true,
+      args: ['-i', '{in}', '-vn', '-c:a', 'libmp3lame', '-q:a', '2', '{out}'] },
+    trim: { label: '裁剪前 5 秒', out: 'output.mp4', mime: 'video/mp4', needsInput: true,
+      args: ['-i', '{in}', '-ss', '0', '-t', '5', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '{out}'] },
+    scale: { label: '缩放到 720p', out: 'output.mp4', mime: 'video/mp4', needsInput: true,
+      args: ['-i', '{in}', '-vf', 'scale=-2:720', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '{out}'] },
+    gif: { label: '生成 GIF', out: 'output.gif', mime: 'image/gif', needsInput: true,
+      args: ['-i', '{in}', '-vf', 'fps=10,scale=480:-1:flags=lanczos', '-loop', '0', '{out}'] },
+    frame: { label: '抽取封面 PNG', out: 'output.png', mime: 'image/png', needsInput: true,
+      args: ['-i', '{in}', '-ss', '1', '-frames:v', '1', '{out}'] },
+    demo: { label: '测试源 → MP4', out: 'demo.mp4', mime: 'video/mp4', needsInput: false,
+      args: ['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=3', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k', '-shortest', '{out}'] },
+    custom: { label: '自定义参数', out: 'custom.mp4', mime: 'video/mp4', needsInput: true, custom: true, args: [] }
+  };
+
+  let engine = null, loaded = false, busy = false;
+  let inputFile = null, inputName = 'input.mp4', current = 'mp4';
+  let outputUrl = null, inputUrl = null;
+
+  function setState(kind, text) {
+    stateEl.className = 'fstate' + (kind ? ' ' + kind : '');
+    stateText.textContent = text;
+  }
+  function log(msg) {
+    const line = String(msg).replace(/\r/g, '');
+    logEl.textContent += line + '\n';
+    if (logEl.textContent.length > 120000) logEl.textContent = logEl.textContent.slice(-90000);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setProgress(p) {
+    const pct = Math.max(0, Math.min(100, p * 100));
+    barEl.style.width = pct.toFixed(1) + '%';
+    progEl.textContent = pct > 0 ? pct.toFixed(0) + '%' : '等待开始';
+  }
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = src; s.async = true;
+      s.onload = () => res();
+      s.onerror = () => rej(new Error('无法加载脚本：' + src));
+      document.head.appendChild(s);
+    });
+  }
+  async function loadLocalOrCdn(local, cdn, label) {
+    try { await loadScript(local); }
+    catch (e) {
+      log('⚠️ 本地 ' + label + ' 加载失败，回退 CDN…');
+      await loadScript(cdn);
+    }
+  }
+  async function blobUrlWithFallback(name, mime) {
+    try { return await toBlobURLSafe(URL_CORE + '/' + name, mime); }
+    catch (e) {
+      log('⚠️ 本地 ' + name + ' 读取失败，回退 CDN…');
+      return await toBlobURLSafe(CDN_CORE + '/' + name, mime);
+    }
+  }
+  async function toBlobURLSafe(url, mime) {
+    const { toBlobURL } = window.FFmpegUtil;
+    return toBlobURL(url, mime);
+  }
+  async function ensureLoaded() {
+    if (loaded) return;
+    if (!window.FFmpegWASM) await loadLocalOrCdn(URL_FFMPEG, CDN_FFMPEG, 'ffmpeg.js');
+    if (!window.FFmpegUtil) await loadLocalOrCdn(URL_UTIL, CDN_UTIL, 'util.js');
+    if (!window.FFmpegWASM) throw new Error('FFmpegWASM 未定义（本地与 CDN 均加载失败）');
+    const { FFmpeg } = window.FFmpegWASM;
+    engine = new FFmpeg();
+    engine.on('log', ({ message }) => log(message));
+    engine.on('progress', ({ progress }) => setProgress(progress || 0));
+    log('⏳ 正在实例化 ffmpeg-core.wasm（本地文件约 30 MB）…');
+    const coreURL = await blobUrlWithFallback('ffmpeg-core.js', 'text/javascript');
+    const wasmURL = await blobUrlWithFallback('ffmpeg-core.wasm', 'application/wasm');
+    await engine.load({ coreURL, wasmURL });
+    loaded = true;
+    setState('on', '引擎就绪');
+    log('✅ ffmpeg.wasm 已就绪（单线程 core）');
+  }
+
+  function splitArgs(s) {
+    const out = []; const re = /"([^"]*)"|'([^']*)'|(\S+)/g; let m;
+    while ((m = re.exec(s))) out.push(m[1] != null ? m[1] : (m[2] != null ? m[2] : m[3]));
+    return out;
+  }
+  function buildArgs(p) {
+    let args;
+    if (p.custom) args = splitArgs(customArgs.value);
+    else args = p.args.slice();
+    args = args.map(a => a.replace('{in}', inputName).replace('{out}', p.out));
+    if (p.out && !args.includes(p.out)) args.push(p.out);
+    return ['-y'].concat(args);
+  }
+  function updateCmd() {
+    const p = PRESETS[current];
+    cmdEl.textContent = 'ffmpeg ' + buildArgs(p).join(' ');
+  }
+  function renderPresets() {
+    presetRow.innerHTML = '';
+    Object.entries(PRESETS).forEach(([k, p]) => {
+      const b = document.createElement('button');
+      b.className = 'btn-mini' + (k === current ? ' on' : '');
+      b.textContent = p.label;
+      b.addEventListener('click', () => {
+        current = k;
+        customWrap.style.display = p.custom ? 'block' : 'none';
+        renderPresets(); updateCmd();
+      });
+      presetRow.appendChild(b);
+    });
+  }
+
+  function handleFile(f) {
+    if (!f) return;
+    inputFile = f;
+    const m = /\.([a-zA-Z0-9]{2,5})$/.exec(f.name);
+    inputName = 'input.' + (m ? m[1].toLowerCase() : 'bin');
+    fileInfo.innerHTML = '<b>' + f.name + '</b> · ' + (f.size / 1e6).toFixed(2) + ' MB · 虚拟文件名 <code>' + inputName + '</code>';
+    if (inputUrl) URL.revokeObjectURL(inputUrl);
+    inputUrl = URL.createObjectURL(f);
+    if (f.type.startsWith('video/')) inputPreview.innerHTML = '<video controls src="' + inputUrl + '"></video>';
+    else if (f.type.startsWith('audio/')) inputPreview.innerHTML = '<audio controls src="' + inputUrl + '" style="width:100%"></audio>';
+    else if (f.type.startsWith('image/')) inputPreview.innerHTML = '<img src="' + inputUrl + '" style="max-width:260px;border-radius:.5rem;border:1px solid var(--border)">';
+    else inputPreview.innerHTML = '<div class="callout callout-i"><span class="ic">📄</span><span>已选择文件，预览仅支持音视频与图片。</span></div>';
+    updateCmd();
+  }
+  function showOutput(name, mime) {
+    let media = '';
+    if (mime.startsWith('video/')) media = '<video controls src="' + outputUrl + '"></video>';
+    else if (mime.startsWith('audio/')) media = '<audio controls src="' + outputUrl + '" style="width:100%"></audio>';
+    else if (mime.startsWith('image/')) media = '<img src="' + outputUrl + '">';
+    outWrap.innerHTML = '<div class="card"><h4>输出 · ' + name + '</h4>' + media +
+      '<div style="margin-top:.6rem"><a class="btn btn-pl" download="' + name + '" href="' + outputUrl + '">⬇ 下载 ' + name + '</a></div></div>';
+  }
+
+  async function run() {
+    if (busy) return;
+    const p = PRESETS[current];
+    if (p.needsInput && !inputFile) {
+      log('⚠️ 请先选择一个媒体文件（或点击“生成 3 秒测试视频”）');
+      drop.classList.add('on');
+      return;
+    }
+    busy = true; runBtn.disabled = true; setProgress(0); outWrap.innerHTML = '';
+    try {
+      await ensureLoaded();
+      setState('busy', '处理中…');
+      if (p.needsInput) {
+        log('→ 写入 MEMFS：' + inputName + '（' + (inputFile.size / 1e6).toFixed(2) + ' MB）');
+        await engine.writeFile(inputName, await window.FFmpegUtil.fetchFile(inputFile));
+      }
+      if (p.out) { try { await engine.deleteFile(p.out); } catch (e) { } }
+      const args = buildArgs(p);
+      cmdEl.textContent = 'ffmpeg ' + args.join(' ');
+      log('$ ffmpeg ' + args.join(' '));
+      let code = 0;
+      try { code = await engine.exec(args); }
+      catch (e) { if (current !== 'info') throw e; }
+      if (typeof code === 'number' && code !== 0 && current !== 'info') throw new Error('ffmpeg 退出码 ' + code);
+      if (p.out) {
+        const data = await engine.readFile(p.out);
+        if (!data || !data.length) throw new Error('没有读到输出文件：' + p.out);
+        if (outputUrl) URL.revokeObjectURL(outputUrl);
+        outputUrl = URL.createObjectURL(new Blob([data.buffer], { type: p.mime }));
+        showOutput(p.out, p.mime);
+        log('✅ 输出 ' + p.out + ' · ' + (data.length / 1e6).toFixed(2) + ' MB');
+      }
+      setState('on', current === 'info' ? '信息已输出' : '完成');
+      setProgress(1);
+    } catch (err) {
+      log('❌ ' + (err && err.message ? err.message : err));
+      setState('err', '出错');
+    } finally {
+      if (p.needsInput) { try { await engine.deleteFile(inputName); } catch (e) { } }
+      if (p.out) { try { await engine.deleteFile(p.out); } catch (e) { } }
+      busy = false; runBtn.disabled = false;
+    }
+  }
+
+  drop.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('on'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('on'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('on');
+    handleFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', e => handleFile(e.target.files && e.target.files[0]));
+  customArgs.addEventListener('input', updateCmd);
+  runBtn.addEventListener('click', run);
+  $('#clearBtn').addEventListener('click', () => { logEl.textContent = ''; setProgress(0); });
+  loadBtn.addEventListener('click', async () => {
+    loadBtn.disabled = true;
+    setState('busy', '加载中…');
+    try { await ensureLoaded(); }
+    catch (err) { setState('err', '加载失败'); log('❌ ' + (err && err.message ? err.message : err)); log('提示：确认 vendor/ffmpeg/ 下的 ffmpeg.js、util.js、ffmpeg-core.js、ffmpeg-core.wasm 都在；若用 file:// 方式打开，请改用本地 HTTP 服务。'); }
+    finally { loadBtn.disabled = false; }
+  });
+  demoBtn.addEventListener('click', async () => {
+    if (busy) return;
+    current = 'demo'; customWrap.style.display = 'none'; renderPresets(); updateCmd(); await run();
+  });
+
+  renderPresets(); updateCmd(); setProgress(0);
+  log('提示：点击“加载引擎”会读取本站 vendor/ffmpeg/ 里的 ffmpeg-core（首条约 30 MB，之后浏览器缓存），随后所有处理均在本机完成，不会上传文件。');
+})();
+</script>
+</body>
+</html>

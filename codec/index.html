@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频与音频编码 · 预测、变换、量化、熵编码与码控</title>
+<meta name="description" content="用“临摹与批注”理解视频编码：帧内/帧间预测、DCT 与整数变换、量化、CABAC/CAVLC、I/P/B 帧与 GOP、profile/level、CBR/VBR/CRF、4:2:0，以及 H.264/HEVC/AV1/VP9 与 AAC/Opus/MP3/FLAC 的取舍。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/" class="cur">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>编码：把 746 Mbps 压到 4 Mbps，<br><em>靠的不是魔法</em></h1>
+    <p>视频编码像抄一本 300 页的书：你不会逐字重抄，而是写“和上一页一样，只有第 3 段改了 5 个字”。I 帧是原稿，P/B 帧是批注；DCT 把画面拆成 64 个音叉，量化负责“听不见的就别记”，熵编码再把剩下的符号换成最短的暗号。这一页把整条流水线拆开，每一步都给出真实参数和可验证的命令。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#pipeline">🔁 看完整流水线</a>
+      <a class="btn btn-ghost" href="#quant">🎚️ 拧一下 QP</a>
+      <a class="btn btn-ghost" href="#compare">拿编码器对比</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">H.264 / AVC</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">H.265 / HEVC</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">VP9 / AV1</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">AAC / Opus</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">CRF / CBR / VBR</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">压缩到底在压什么</a>
+    <a href="#pipeline">编码流水线</a>
+    <a href="#predict">预测：帧内与帧间</a>
+    <a href="#transform">变换：把画面拆成频率</a>
+    <a href="#quant">量化：唯一不可逆的一步</a>
+    <a href="#entropy">熵编码：CAVLC 与 CABAC</a>
+    <a href="#gop">I/P/B 帧与 GOP</a>
+    <a href="#profile">profile 与 level</a>
+    <a href="#rate">码控：CBR / VBR / CRF</a>
+    <a href="#chroma">色度采样 4:2:0</a>
+    <a href="#compare">H.264 / HEVC / VP9 / AV1</a>
+    <a href="#audio">AAC / Opus / MP3 / FLAC</a>
+    <a href="#quality">质量指标与验证</a>
+    <a href="#glossary">术语表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>📉 压缩到底在压什么：四种冗余</h2>
+  <p class="lead">一段 1080p30、4:2:0、8 bit 的原始视频，每秒要传 <code>1920 × 1080 × 12 × 30 = 746,496,000 bit</code>，约 <b>746 Mbps</b>。H.264 用 4 Mbps 就能给出可看的画面，压缩比约 <b>187 : 1</b>。这不是“把像素变少”，而是把画面里<strong>可预测、可忽略、可重复</strong>的部分换成更短的描述。</p>
+
+  <div class="grid-4">
+    <div class="card">
+      <h4>时间冗余</h4>
+      <p class="small">相邻两帧大部分相同。只传“哪里动了、动了多少”，就是帧间预测与运动矢量。</p>
+    </div>
+    <div class="card">
+      <h4>空间冗余</h4>
+      <p class="small">一块草地、一面墙，像素彼此高度相关。用左边/上边的像素预测当前块，只传残差。</p>
+    </div>
+    <div class="card">
+      <h4>统计冗余</h4>
+      <p class="small">小数值、零、重复的符号出现得多。用变长码或算术编码，让常见符号占更少比特。</p>
+    </div>
+    <div class="card">
+      <h4>视觉冗余</h4>
+      <p class="small">人眼对高频纹理与色度细节不敏感。量化直接把这些系数抹成 0，且不打算恢复。</p>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node hi">预测<span>减去“已知”</span></div><span class="ar">→</span>
+      <div class="node">变换<span>能量集中</span></div><span class="ar">→</span>
+      <div class="node hi">量化<span>丢掉细节</span></div><span class="ar">→</span>
+      <div class="node">熵编码<span>换成短码</span></div>
+    </div>
+    <figcaption>四步里只有量化是真正“丢信息”的；预测、变换、熵编码都是可逆的数学操作（在理想精度下）。</figcaption>
+  </div>
+
+  <p><b>有损与无损的分界：</b>H.264/HEVC/AV1/VP9 都是有损，量化后的系数不可能还原成原始像素；FLAC、ZIP 是无损，只去统计冗余。所以“把 H.264 转成 FLAC”没有意义，“把 MP4 转成 MKV”也不会变清晰。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>先记住一句话：</b>码率低不等于压缩好，可能是把细节量化没了；码率高也不等于画质好，可能是编码器不会找预测。判断画质要看内容、 preset、CRF 与主观感受，不能只看数字。</span></div>
+</section>
+
+<section id="pipeline">
+  <h2>🔁 编码流水线：一条带“回声”的流水线</h2>
+  <p>编码器不是单向流水线，而是一个<strong>闭环</strong>：它一边把残差编码成码流，一边在本地把同一份残差解码回来，得到“重建帧”，再用它预测下一帧。这个内部解码器叫<strong>重建环</strong>（reconstruction loop）。没有它，编码端和解码端的参考帧会逐渐分叉，误差越滚越大，也就是漂移（drift）。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 235" style="width:100%;height:auto" role="img" aria-label="视频编码闭环流水线">
+      <rect x="8" y="24" width="88" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="52" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#155e75">原始帧</text>
+      <text x="52" y="58" text-anchor="middle" font-size="8.5" fill="#155e75">YUV 4:2:0</text>
+
+      <rect x="104" y="24" width="88" height="42" rx="5" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="148" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">预测</text>
+      <text x="148" y="58" text-anchor="middle" font-size="8.5" fill="#5b21b6">帧内 / 帧间</text>
+
+      <rect x="200" y="24" width="88" height="42" rx="5" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="244" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">残差 e</text>
+      <text x="244" y="58" text-anchor="middle" font-size="8.5" fill="#92400e">原始 − 预测</text>
+
+      <rect x="296" y="24" width="88" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="340" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">变换</text>
+      <text x="340" y="58" text-anchor="middle" font-size="8.5" fill="#047857">DCT / 整数</text>
+
+      <rect x="392" y="24" width="88" height="42" rx="5" fill="#fff1f2" stroke="#fda4af"/>
+      <text x="436" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9f1239">量化 Q</text>
+      <text x="436" y="58" text-anchor="middle" font-size="8.5" fill="#9f1239">QP 控制</text>
+
+      <rect x="488" y="24" width="88" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="532" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#155e75">熵编码</text>
+      <text x="532" y="58" text-anchor="middle" font-size="8.5" fill="#155e75">CABAC / CAVLC</text>
+
+      <rect x="584" y="24" width="168" height="42" rx="5" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="668" y="42" text-anchor="middle" font-size="10.5" font-weight="700" fill="#334155">码流</text>
+      <text x="668" y="58" text-anchor="middle" font-size="8.5" fill="#475569">SPS / PPS / slice</text>
+
+      <line x1="96" y1="45" x2="102" y2="45" stroke="#94a3b8"/>
+      <line x1="192" y1="45" x2="198" y2="45" stroke="#94a3b8"/>
+      <line x1="288" y1="45" x2="294" y2="45" stroke="#94a3b8"/>
+      <line x1="384" y1="45" x2="390" y2="45" stroke="#94a3b8"/>
+      <line x1="480" y1="45" x2="486" y2="45" stroke="#94a3b8"/>
+      <line x1="576" y1="45" x2="582" y2="45" stroke="#94a3b8"/>
+
+      <rect x="392" y="112" width="88" height="42" rx="5" fill="#fff1f2" stroke="#fda4af"/>
+      <text x="436" y="130" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9f1239">反量化</text>
+      <text x="436" y="146" text-anchor="middle" font-size="8.5" fill="#9f1239">Q⁻¹</text>
+
+      <rect x="296" y="112" width="88" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="340" y="130" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">反变换</text>
+      <text x="340" y="146" text-anchor="middle" font-size="8.5" fill="#047857">IDCT</text>
+
+      <rect x="200" y="112" width="88" height="42" rx="5" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="244" y="130" text-anchor="middle" font-size="10.5" font-weight="700" fill="#92400e">重建帧</text>
+      <text x="244" y="146" text-anchor="middle" font-size="8.5" fill="#92400e">+ 预测</text>
+
+      <rect x="104" y="112" width="88" height="42" rx="5" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="148" y="130" text-anchor="middle" font-size="10.5" font-weight="700" fill="#5b21b6">参考帧</text>
+      <text x="148" y="146" text-anchor="middle" font-size="8.5" fill="#5b21b6">DPB 缓冲</text>
+
+      <line x1="436" y1="66" x2="436" y2="110" stroke="#9f1239" stroke-dasharray="4 3"/>
+      <line x1="384" y1="133" x2="392" y2="133" stroke="#94a3b8"/>
+      <line x1="288" y1="133" x2="296" y2="133" stroke="#94a3b8"/>
+      <line x1="192" y1="133" x2="200" y2="133" stroke="#94a3b8"/>
+      <line x1="148" y1="112" x2="148" y2="68" stroke="#7c3aed" stroke-dasharray="4 3"/>
+      <text x="154" y="98" font-size="8.5" fill="#5b21b6">参考帧回灌</text>
+
+      <text x="8" y="182" font-size="9.5" fill="#475569">① 编码器内部也跑一遍解码：量化 → 反量化 → 反变换 → 加回预测。</text>
+      <text x="8" y="202" font-size="9.5" fill="#475569">② 只有重建帧与解码器逐比特一致，帧间预测才不会漂移（drift）。</text>
+      <text x="8" y="222" font-size="9.5" fill="#475569">③ 重建后还要过环路滤波（H.264 去块 / HEVC 的 SAO），再放进参考帧缓冲。</text>
+    </svg>
+  </div>
+
+  <p>真正决定码率的顺序是：<b>预测越准 → 残差越小 → 变换后非零系数越少 → 量化后更容易全零 → 熵编码越省</b>。所以编码器的核心竞争力往往在预测（运动估计、块划分），而不是熵编码。</p>
+</section>
+
+<section id="predict">
+  <h2>🧩 预测：帧内“补墙”，帧间“找相同段落”</h2>
+  <p class="lead">帧内预测像补一面墙：你只有左边和上边的砖，就按纹理方向一块块猜过去；帧间预测像在两页书里找相同的段落：找到了，就只记“从上一页第 3 行搬过来，向右移了 4 个像素”。预测不是压缩本身，而是<strong>把要编码的数据变少</strong>。</p>
+
+  <h3>帧内预测：用邻居猜当前块</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>标准</th><th>亮度模式</th><th>色度模式</th><th>块尺寸</th></tr></thead>
+      <tbody>
+        <tr><td>H.264</td><td>4×4 有 9 种（V/H/DC + 6 种对角）；16×16 有 4 种（V/H/DC/Plane）</td><td>4 种（DC/V/H/Plane）</td><td>宏块 16×16，子块 4×4</td></tr>
+        <tr><td>HEVC</td><td>35 种：Planar、DC + 33 个角度</td><td>沿用亮度或独立选择</td><td>CU 8–64，PU 可 2N×2N / N×N</td></tr>
+        <tr><td>AV1</td><td>13 种：DC/V/H/Paeth/Smooth + 8 个方向；另有 CfL、调色板</td><td>可从亮度派生（CfL）</td><td>块 4×4 到 128×128</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">H.264 的 4×4 模式用 13 个相邻像素生成预测；HEVC 的 33 个角度以 1/32 像素精度指向参考边。模式越多，编码器要试的组合越多，耗时也越长——这就是“压缩率换 CPU”的第一处体现。</p>
+
+  <h3>帧间预测：运动矢量与亚像素</h3>
+  <p>帧间预测在参考帧里搜索最相似的块，把位置差写成<strong>运动矢量（MV）</strong>。H.264 的亮度 MV 精度是 <b>1/4 像素</b>（6 抽头插值），色度是 <b>1/8 像素</b>；HEVC、AV1 也以 1/4 亮度精度为主。搜索范围越大、参考帧越多，越可能找到好匹配，但计算量也成倍上涨。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>块划分决定“贴合度”</h4>
+      <p class="small">H.264 宏块 16×16，可切成 16×8、8×16、8×8，再细分为 8×4、4×8、4×4。HEVC 用 64×64 CTU 四叉树，CU 最小 8×8；AV1 最大 128×128 超级块。小块贴合运动边界，但头和 MV 的开销更大。</p>
+    </div>
+    <div class="card">
+      <h4>Skip / Merge 是免费午餐</h4>
+      <p class="small">当某块与邻居运动一致，HEVC 的 merge 模式只传一个索引，不传 MV；H.264 的 P_Skip 连残差都不传。静态背景里大量块走这条路，码率自然降下来。</p>
+    </div>
+  </div>
+
+  <pre class="code"># x264 的运动估计相关参数（越大越慢、通常越好）
+ffmpeg -i in.y4m -c:v libx264 -preset slow \
+  -me umh -subme 7 -ref 3 -bf 3 -g 48 out.mp4
+
+# 看每个帧的类型与大小，感受 I/P/B 的差距
+ffprobe -select_streams v -show_frames \
+  -show_entries frame=pict_type,pkt_size -of csv in.mp4 | head -20</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>一个常见误解：</b>“运动矢量就是物体的真实运动”。不是。它只是“哪块像素最省比特”的匹配结果，可能指向完全无关的区域。编码器优化的是率失真，不是物理真值。</span></div>
+</section>
+
+<section id="transform">
+  <h2>🎹 变换：把 8×8 块拆成 64 个音叉</h2>
+  <p>一块 8×8 的像素，可以看成 64 个不同频率“音叉”的叠加：左上角是平坦的直流分量，越往右下频率越高。DCT 做的事情，就是算出每个音叉响多大。自然画面的大部分能量集中在低频，高频系数通常很小——这给量化提供了“下手的地方”。</p>
+
+  <p>H.264 的 4×4 变换核心只有 1 和 2，全部用加法和移位完成，不需要浮点，避免不同平台产生细微差异：</p>
+
+  <pre class="code">H.264 4×4 整数变换核心矩阵 H：
+
+ 1   1   1   1
+ 2   1  -1  -2
+ 1  -1  -1   1
+ 1  -2   2  -1
+
+Y = H · X · Hᵀ      （X 为 4×4 残差块）
+反变换只需转置与移位，整数运算可逐比特复现</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>标准</th><th>变换尺寸</th><th>类型</th><th>要点</th></tr></thead>
+      <tbody>
+        <tr><td>H.264</td><td>4×4；High profile 可自适应 8×8</td><td>整数 DCT 近似</td><td>4×4 只用 1/2 系数；8×8 改善平坦区域</td></tr>
+        <tr><td>HEVC</td><td>4/8/16/32</td><td>整数 DCT；4×4 帧内亮度用 DST-VII</td><td>大块变换适合 4K 平坦区域，残差边界更少</td></tr>
+        <tr><td>VP9</td><td>4/8/16/32</td><td>DCT / ADST</td><td>ADST 更适合预测残差的分布</td></tr>
+        <tr><td>AV1</td><td>4/8/16/32/64</td><td>DCT / ADST / Identity 组合</td><td>变换类型可逐块切换，含翻转与转置</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>为什么变换有效：</b>一个平坦的 8×8 块，DCT 后只有左上角 DC 系数非零，其余 63 个接近 0；量化后全变 0，熵编码几乎不花比特。反过来，强纹理块的高频系数很大，压缩就难——这也是“草地、毛发、雨滴”比“天空、墙面”更吃码率的原因。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>变换本身不丢信息：</b>理想精度的 DCT + IDCT 可以完全重建。真正丢信息的是下一步量化。变换的作用是把“难压缩的像素”变成“容易量化的系数”。</span></div>
+</section>
+
+<section id="quant">
+  <h2>🎚️ 量化：唯一不可逆的一步</h2>
+  <p class="lead">量化像抄写时的“四舍五入”：把每个系数除以一个步长，取整，再乘回去。步长越大，省下的比特越多，细节也丢得越多。H.264 的 QP 范围是 <b>0–51</b>，步长近似 <code>2^((QP−4)/6)</code>：<strong>QP 每加 6，步长翻倍</strong>，码率大致减半。</p>
+
+  <div data-lazy-viz data-viz="quant" data-opts='{"qp":26,"preset":"edge"}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>QP</th><th>近似步长</th><th>效果</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td class="num">22</td><td class="num">8</td><td>细节丰富，码率高</td><td>高质量点播 / 中间母版</td></tr>
+        <tr><td class="num">26</td><td class="num">13</td><td>平衡</td><td>x264 CRF 23 附近的常见区间</td></tr>
+        <tr><td class="num">32</td><td class="num">26</td><td>平坦区域开始出现块效应</td><td>低码率直播</td></tr>
+        <tr><td class="num">40</td><td class="num">64</td><td>细节明显丢失</td><td>极低码率 / 监控缩略流</td></tr>
+        <tr><td class="num">51</td><td class="num">224</td><td>几乎只剩轮廓</td><td>仅用于极端场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>量化不是简单“除以步长”：编码器通常保留一个<strong>死区</strong>（dead zone），把接近 0 的系数直接归零，因为小幅值系数的编码成本可能高于它带来的画质收益。随后率失真优化（RDO）会比较“多花这些比特能换来多少失真下降”，再决定取舍。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>量化矩阵</h4>
+      <p class="small">H.264/HEVC 可以传缩放矩阵，对不同频率用不同步长：低频保护、高频重压。默认通常是平坦矩阵；JPEG 里那张“左上小、右下大”的表就是经典例子。</p>
+    </div>
+    <div class="card">
+      <h4>不同标准的 QP 尺度</h4>
+      <p class="small">H.264/HEVC 的 QP 是 0–51；AV1 的 <code>base_q_idx</code> 是 0–255；VP9 的 <code>cq-level</code> 是 0–63。跨编码器比较“QP 26”没有意义，要比 CRF 或实际码率 + 质量指标。</p>
+    </div>
+  </div>
+</section>
+
+<section id="entropy">
+  <h2>🔐 熵编码：把符号换成最短的暗号</h2>
+  <p>量化之后，我们得到一堆“多少、在哪里、连续几个零”的符号。熵编码负责把它们写成比特。它不改变画质，只改变“表达同样的信息要花多少比特”。这就是为什么同样的 QP，换 CABAC 就能省码率。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>CAVLC：查表换码</h4>
+      <p class="small">H.264 Baseline 使用。先编码 <code>coeff_token</code>（非零系数总数 + 尾随 ±1 的个数），再编码每个 level、<code>total_zeros</code> 与 <code>run_before</code>。实现简单、功耗低，但压缩效率略差。</p>
+    </div>
+    <div class="card">
+      <h4>CABAC：算术区间</h4>
+      <p class="small">H.264 Main/High 使用，HEVC 只保留 CABAC。它根据上下文为每个二进制决策估计概率，把整个 slice 映射到 [0,1) 区间中的一个数。常见测试下比 CAVLC 省 <b>约 9–14%</b> 码率，代价是串行依赖、难并行。</p>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="flow">
+      <div class="node">语法元素<span>mb_type / mv / coeff</span></div><span class="ar">→</span>
+      <div class="node hi">二值化<span>一元 / 定长 / 指数哥伦布</span></div><span class="ar">→</span>
+      <div class="node">上下文选择<span>邻居与已编码符号</span></div><span class="ar">→</span>
+      <div class="node hi">算术编码<span>区间细分</span></div><span class="ar">→</span>
+      <div class="node">比特流</div>
+    </div>
+  </div>
+
+  <p>H.264 的语法元素大量使用指数哥伦布码 <code>ue(v)</code> / <code>se(v)</code>：数值越小，码字越短。例如 <code>ue</code> 编码 0 是 <code>1</code>（1 bit），1 是 <code>010</code>（3 bit），2 是 <code>011</code>。这和“常用词用短缩写”的直觉一致。AV1 则使用多符号算术编码，VP9 使用布尔编码器，思路相同：让高概率符号占更少区间。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>熵编码不能救回量化丢掉的信息。</b>它只是把“已经决定要传的符号”写得更省。QP 从 26 调到 40，熵编码再强也补不回细节；反过来，QP 很低但熵编码差，文件会不必要地大。</span></div>
+</section>
+
+<section id="gop">
+  <h2>🔑 I/P/B 帧与 GOP：钥匙帧与补丁帧</h2>
+  <p class="lead">GOP 像一串“钥匙 + 补丁”：I 帧是钥匙，能独立开门；P 帧是“在上一把钥匙基础上打补丁”；B 帧是“同时参考前后两把钥匙的补丁”。想跳到某一帧，必须先找到它之前最近的钥匙，再把中间的补丁全部贴上——这就是为什么长 GOP 的随机访问代价高。</p>
+
+  <div data-lazy-viz data-viz="gop" data-opts='{"gop":48,"bframes":3,"fps":25,"frames":48}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>帧型</th><th>参考谁</th><th>能否独立解码</th><th>码率占比（经验）</th></tr></thead>
+      <tbody>
+        <tr><td><b>I</b></td><td>只用帧内预测</td><td>是（IDR 还清空参考缓冲）</td><td>通常是 P 帧的数倍</td></tr>
+        <tr><td><b>P</b></td><td>前面的 I/P</td><td>否</td><td>中等</td></tr>
+        <tr><td><b>B</b></td><td>前后双向</td><td>否</td><td>通常最低，但增加延迟</td></tr>
+        <tr><td><b>IDR</b></td><td>不使用任何旧参考</td><td>是，且重置 DPB</td><td>比普通 I 更“干净”，也更贵</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>算 GOP 的秒数：</b><code>GOP 秒 = keyint / fps</code>。25 fps 下 <code>-g 48</code> 是 1.92 秒，<code>-g 50</code> 正好 2 秒，<code>-g 250</code> 是 10 秒。直播通常 1–2 秒一个关键帧，点播可以用 5–10 秒换更低码率。拖动时平均要从关键帧解 <code>GOP/2</code> 帧，GOP 越长，seek 越慢。</p>
+
+  <pre class="code"># 固定 2 秒 GOP（25 fps），并禁止场景切换插入额外关键帧
+ffmpeg -i in.mp4 -c:v libx264 -g 50 -keyint_min 50 -sc_threshold 0 out.mp4
+
+# 低延迟直播：关闭 B 帧与前瞻
+ffmpeg -i in.mp4 -c:v libx264 -tune zerolatency -g 50 -bf 0 out.mp4</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>B 帧的延迟账：</b>连续 3 个 B 帧时，解码器要等后续参考帧到达才能输出，显示延迟约 <code>(bframes + 1)</code> 帧；25 fps 下约 160 ms。视频会议、云游戏通常把 B 帧设为 0，就是为了这 100 多毫秒。</span></div>
+</section>
+
+<section id="profile">
+  <h2>🎓 profile 与 level：工具箱与限高杆</h2>
+  <p><strong>profile</strong> 决定“允许用哪些工具”，像驾照的准驾车型；<strong>level</strong> 决定“最大能开多快”，给出分辨率、帧率、码率的上限。两者组合写成 <code>High@L4.1</code>：工具集是 High，上限是 Level 4.1。解码器只要看到这个标签，就能判断自己能不能接。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>标准</th><th>profile</th><th>关键能力</th><th>常见场景</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3">H.264</td><td>Baseline（66）</td><td>无 B 帧、CAVLC、8 bit 4:2:0</td><td>老设备、视频会议</td></tr>
+        <tr><td>Main（77）</td><td>B 帧、CABAC、8 bit 4:2:0</td><td>早期广播、机顶盒</td></tr>
+        <tr><td>High（100）</td><td>8×8 变换、缩放矩阵、8 bit 4:2:0</td><td>当今最通用的点播/直播</td></tr>
+        <tr><td rowspan="2">HEVC</td><td>Main（1）</td><td>8 bit 4:2:0</td><td>4K 直播、硬件解码</td></tr>
+        <tr><td>Main 10（2）</td><td>10 bit 4:2:0</td><td>HDR、广色域</td></tr>
+        <tr><td>AV1</td><td>Main（0）/ High（1）</td><td>8/10 bit，4:2:0 为主</td><td>网页视频、免专利分发</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>level 的数字是可验证的：</b>H.264 Level 3.1 的 MaxFS（最大帧尺寸）是 3600 个宏块、MaxMBPS 是 108000 宏块/秒——<code>1280×720</code> 正好 3600 块，30 fps 正好 108000，所以 720p30 卡在 3.1 的边界。Level 4.0 是 8192 块 / 245760 块每秒，<code>1920×1080</code> 为 8160 块，30 fps 为 244800，刚好通过。Level 5.1 的 36864 块 / 983040 块每秒，覆盖 4K30。超过上限，部分硬件解码器会直接拒绝。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"H.264 Annex B：SPS / PPS / IDR 起始码（截取示例）","bytes":"00 00 00 01 67 64 00 1F 00 00 00 01 68 00 00 00 01 65 88 84","fields":[{"name":"start_code","start":0,"end":3,"bits":"32 bit","note":"Annex B 的 4 字节起始码 0x00000001。广播/TS 里也常见 3 字节 0x000001。"},{"name":"NAL header (SPS)","start":4,"end":4,"bits":"8 bit","note":"0x67 = 0110 0111：forbidden_zero_bit=0，nal_ref_idc=3，nal_unit_type=7（SPS）。"},{"name":"profile_idc","start":5,"end":5,"bits":"8 bit","note":"0x64 = 100，即 High profile。Baseline 是 66，Main 是 77。"},{"name":"constraint_set_flags","start":6,"end":6,"bits":"8 bit","note":"0x00：未置位任何约束标志，表示不限制为 Baseline/Main 的子集。"},{"name":"level_idc","start":7,"end":7,"bits":"8 bit","note":"0x1F = 31，即 Level 3.1。常见 4.0 是 40，4.1 是 41。本示例只截取到 level_idc；真实 SPS 后面还有 seq_parameter_set_id、chroma_format_idc 等字段。"},{"name":"start_code + PPS","start":8,"end":12,"bits":"32 + 8 bit","note":"新起始码后 0x68 = type 8（PPS），携带量化与熵编码选择等参数。"},{"name":"start_code + IDR","start":13,"end":17,"bits":"32 + 8 bit","note":"0x65 = type 5（IDR slice）。IDR 会清空参考帧列表，是 seek 的安全起点。"},{"name":"slice payload","start":18,"end":19,"bits":"示例","note":"后续是 RBSP 与实际的宏块数据，长度随画面变化。"}],"hint":"用 ffprobe -show_streams 可直接看到 profile=High、level=31，不必手工拆 SPS。"}'></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>profile/level 写错会直接导致“能解但不给解”：</b>例如把 10-bit HDR 标成 High（8 bit），或把 4K60 标成 Level 4.1。转码时显式指定 <code>-profile:v high -level 4.1</code>，比让编码器自动猜更稳。</span></div>
+</section>
+
+<section id="rate">
+  <h2>🎛️ 码控：CBR / VBR / CRF，三个不同的旋钮</h2>
+  <p>码控决定“每一帧分多少比特”。它不改变编码工具，只改变 QP 的分配策略。理解三种模式，你就能解释“为什么直播码率是平的、点播文件码率是波动的”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>模式</th><th>目标</th><th>码率曲线</th><th>典型参数</th></tr></thead>
+      <tbody>
+        <tr><td><b>CBR</b></td><td>恒定码率，缓冲不溢出</td><td>平直，简单画面浪费比特</td><td><code>-b:v 4M -minrate 4M -maxrate 4M -bufsize 8M -x264-params nal-hrd=cbr</code></td></tr>
+        <tr><td><b>VBR / ABR</b></td><td>平均码率接近目标</td><td>随内容波动</td><td><code>-b:v 4M -maxrate 6M -bufsize 12M</code></td></tr>
+        <tr><td><b>CRF</b></td><td>恒定质量因子，不管码率</td><td>复杂画面自动升高</td><td><code>-crf 23</code>（x264 默认）</td></tr>
+        <tr><td><b>CQP</b></td><td>每帧固定 QP</td><td>码率完全由内容决定</td><td><code>-qp 24</code>，一般只用于测试</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="formula">目标码率 ≈ bpp × 宽 × 高 × 帧率　　（bpp = bits per pixel，含亮度与色度）</div>
+  <p>例如 <code>bpp = 0.1</code>、1080p30：<code>0.1 × 1920 × 1080 × 30 = 6,220,800 bit/s ≈ 6.22 Mbps</code>。0.05 bpp 约 3.11 Mbps，0.15 bpp 约 9.33 Mbps。这个估算比“拍脑袋定 4M”可靠，但最终仍要看内容复杂度与质量指标。</p>
+
+  <pre class="code"># 恒定质量（点播最常用）
+ffmpeg -i in.mp4 -c:v libx264 -preset slow -crf 23 out.mp4
+
+#  capped CRF：质量优先，但给码率设上限（直播常用）
+ffmpeg -i in.mp4 -c:v libx264 -preset medium -crf 21 \
+  -maxrate 6M -bufsize 12M out.mp4
+
+# 两遍 ABR：先分析再编码，码率分布更合理
+ffmpeg -i in.mp4 -c:v libx264 -b:v 4M -pass 1 -an -f null -
+ffmpeg -i in.mp4 -c:v libx264 -b:v 4M -pass 2 -c:a aac -b:a 128k out.mp4</pre>
+
+  <p><b>CRF 的数字怎么选：</b>18 通常接近视觉无损，23 是 x264 默认的平衡点，28 开始明显省码率但细节下降。CRF 越低画质越好、文件越大；它不是“百分比”，也不能跨编码器直接比较（x265 的 CRF 28 与 x264 的 CRF 23 不能等同）。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>VBV 缓冲是什么：</b>它模拟解码器的输入缓冲。<code>bufsize</code> 太小会让码率被强行压平、画质抖动；通常取 <code>maxrate × 1–2 秒</code>。CBR 直播里，<code>bufsize</code> 与 <code>nal-hrd=cbr</code> 要一起设，否则“标称 CBR”并不恒定。</span></div>
+</section>
+
+<section id="chroma">
+  <h2>🎨 色度采样 4:2:0：人眼对颜色更迟钝</h2>
+  <p class="lead">视网膜上负责亮度的细胞多、负责颜色的少，所以“把颜色分辨率砍一半”肉眼几乎察觉不到。4:2:0 就是每 2×2 个像素共享一组 Cb/Cr：亮度全保留，色度在水平和垂直方向都减半。这也是报纸彩印“颜色套印可以糊一点”的现代版。</p>
+
+  <div data-lazy-viz data-viz="chroma" data-opts='{}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>采样</th><th>8 bit 每像素比特</th><th>1080p30 原始码率</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td>4:4:4</td><td class="num">24 bpp</td><td class="num">≈ 1493 Mbps</td><td>演播室、绿幕抠像、无损母版</td></tr>
+        <tr><td>4:2:2</td><td class="num">16 bpp</td><td class="num">≈ 995 Mbps</td><td>专业采集、10 bit 中间片</td></tr>
+        <tr><td>4:2:0</td><td class="num">12 bpp</td><td class="num">≈ 746 Mbps</td><td>H.264/HEVC/AV1 消费级默认</td></tr>
+        <tr><td>4:1:1</td><td class="num">18 bpp</td><td class="num">≈ 1120 Mbps</td><td>早期 DV、部分硬件采集</td></tr>
+        <tr><td>4:2:0 10 bit</td><td class="num">15 bpp</td><td class="num">≈ 933 Mbps</td><td>HDR、HEVC Main 10</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>工程上的三条硬约束：</b>① 4:2:0 的宽高必须是偶数，奇数尺寸会直接编码失败；② 浏览器最稳的像素格式是 <code>yuv420p</code>（8 bit），10 bit 需要 Main 10 与硬件/浏览器支持；③ 色彩空间与范围要写对，BT.709 的 limited range（16–235）被误标成 full range（0–255），画面会发灰或死黑。</p>
+
+  <pre class="code"># 统一转成浏览器最兼容的 8 bit 4:2:0
+ffmpeg -i in.mov -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" \
+  -c:v libx264 -crf 23 -c:a aac -b:a 128k out.mp4
+
+# 看像素格式与色彩标签
+ffprobe -show_streams -show_entries stream=pix_fmt,color_space,color_range,color_transfer</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“颜色不对”不一定是编码问题：</b>先查 <code>color_space</code>、<code>color_range</code>、<code>color_primaries</code>。容器里的 <code>colr</code> box 与码流里的 VUI 必须一致；两处冲突时，不同播放器会做不同选择，于是“同一个文件在不同浏览器里颜色不一样”。</span></div>
+</section>
+
+<section id="compare">
+  <h2>⚔️ H.264 / HEVC / VP9 / AV1：怎么选</h2>
+  <p>四个编码器的目标相同：在同样的主观质量下用更少比特。差异在于工具集、专利、硬件支持与编码成本。下表里的压缩率是<strong>公开测试中的常见区间</strong>，真实收益取决于内容、preset 与调参，不能当成固定折扣。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>H.264 / AVC</th><th>H.265 / HEVC</th><th>VP9</th><th>AV1</th></tr></thead>
+      <tbody>
+        <tr><td>标准化 / 年份</td><td>ITU-T H.264，2003</td><td>ITU-T H.265，2013</td><td>Google，2013</td><td>AOMedia，2018</td></tr>
+        <tr><td>最大编码块</td><td>宏块 16×16</td><td>CTU 64×64</td><td>超级块 64×64</td><td>超级块 128×128</td></tr>
+        <tr><td>变换尺寸</td><td>4×4 / 8×8</td><td>4–32</td><td>4–32</td><td>4–64</td></tr>
+        <tr><td>熵编码</td><td>CAVLC / CABAC</td><td>CABAC</td><td>布尔编码</td><td>多符号算术编码</td></tr>
+        <tr><td>同质量码率（常见测试）</td><td>基准</td><td>约省 40–50%</td><td>约省 30–40%</td><td>比 HEVC 再省 20–30%</td></tr>
+        <tr><td>专利</td><td>有专利池</td><td>有多个专利池</td><td>免专利</td><td>免专利（AOMedia）</td></tr>
+        <tr><td>编码速度</td><td>最快，生态最成熟</td><td>慢于 H.264</td><td>较慢</td><td>最慢（SVT-AV1 已大幅改善）</td></tr>
+        <tr><td>解码支持</td><td>几乎全覆盖</td><td>新设备广泛，老浏览器弱</td><td>Chrome/Firefox/Edge 好，Safari 较晚</td><td>新浏览器与部分硬件，Safari 视版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># H.264（兼容性优先）
+ffmpeg -i in.mp4 -c:v libx264 -preset slow -crf 23 -profile:v high -level 4.1 \
+  -c:a aac -b:a 128k out_h264.mp4
+
+# HEVC（4K / HDR，Apple 生态建议加 hvc1 tag）
+ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 28 -tag:v hvc1 \
+  -c:a aac -b:a 128k out_hevc.mp4
+
+# VP9（WebM，免费）
+ffmpeg -i in.mp4 -c:v libvpx-vp9 -crf 32 -b:v 0 -row-mt 1 -c:a libopus out_vp9.webm
+
+# AV1（SVT-AV1，编码快于 libaom）
+ffmpeg -i in.mp4 -c:v libsvtav1 -preset 6 -crf 35 -c:a libopus out_av1.mkv</pre>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>要“谁都能播”</h4>
+      <p class="small">H.264 High + AAC 仍是网页与安防的通用解。兼容性带来的运维成本，往往低于省下的那点带宽。</p>
+    </div>
+    <div class="card">
+      <h4>要“4K HDR / 省带宽”</h4>
+      <p class="small">HEVC Main 10 的硬件解码覆盖好，适合电视、机顶盒、手机；注意专利授权与 <code>hvc1</code> 标签。</p>
+    </div>
+    <div class="card">
+      <h4>要“免专利 + 新浏览器”</h4>
+      <p class="small">VP9/AV1 适合网页分发。AV1 的编码成本高，点播可以先编一次；实时直播要算清 CPU 账。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>不要只看“省多少”</b>：HEVC 省 40% 带宽，但如果被迫转码、软解、或付出专利费，总成本可能更高。工程决策要算“带宽 + 算力 + 兼容 + 授权”四笔账。</span></div>
+</section>
+
+<section id="audio">
+  <h2>🎧 音频编码：AAC / Opus / MP3 / FLAC</h2>
+  <p>音频压缩利用的是人耳的<strong>掩蔽效应</strong>：一个强音旁边的小声音你听不见，干脆不编码。AAC、MP3、Opus 都基于 MDCT（改进离散余弦变换）与心理声学模型；FLAC 则完全不同，它只做无损的线性预测与熵编码。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>编码</th><th>类型 / 核心</th><th>帧长</th><th>典型码率</th><th>专利与场景</th></tr></thead>
+      <tbody>
+        <tr><td><b>AAC-LC</b></td><td>有损，MDCT + 心理声学</td><td>1024 采样/帧（48 kHz → 21.33 ms）</td><td>96–128 kbps 立体声</td><td>有专利；MP4/HLS/浏览器最通用</td></tr>
+        <tr><td><b>HE-AAC</b></td><td>AAC + SBR（v1）/ PS（v2）</td><td>同上，SBR 扩展高频</td><td>32–64 kbps 立体声</td><td>低码率流媒体、老设备兼容</td></tr>
+        <tr><td><b>Opus</b></td><td>有损，SILK + CELT 混合</td><td>2.5–60 ms 可配，内部 48 kHz</td><td>6–510 kbps（RFC 6716）</td><td>免专利；WebRTC 默认，语音/音乐都能打</td></tr>
+        <tr><td><b>MP3</b></td><td>有损，MDCT</td><td>1152 采样/帧（44.1 kHz → 26.12 ms）</td><td>32–320 kbps</td><td>专利已过期；遗留兼容</td></tr>
+        <tr><td><b>FLAC</b></td><td>无损，LPC + Rice 编码</td><td>可变块，常见 4096 采样</td><td>约为 WAV 的 50–70%</td><td>免专利；母版归档、音乐分发</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>听感上的“透明码率”：</b>常见测试里，AAC-LC 立体声约 128 kbps、Opus 约 64 kbps 就能接近透明；MP3 通常要到 192–256 kbps。Opus 在低码率与抗丢包上优势明显，所以 WebRTC 选它；AAC 胜在生态与硬件支持，所以 HLS/MP4 选它。</p>
+
+  <pre class="code"># AAC-LC 128k（MP4 / HLS 通用）
+ffmpeg -i in.mp4 -c:a aac -b:a 128k -ar 48000 out_aac.mp4
+
+# Opus 64k（WebRTC / WebM 常用）
+ffmpeg -i in.wav -c:a libopus -b:a 64k -application audio out_opus.webm
+
+# MP3 192k（老设备）
+ffmpeg -i in.wav -c:a libmp3lame -b:a 192k out.mp3
+
+# FLAC 无损（压缩级别 0–12，8 是常用折中）
+ffmpeg -i in.wav -c:a flac -compression_level 8 out.flac</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>AAC 的“帧”不是“一秒钟”：</b>1024 个采样在 48 kHz 下只有 21.33 ms，一秒约 46.9 帧。音频时间戳通常以采样数为单位（timescale = 采样率），这也是容器里音频轨道 mdhd 常见 48000 的原因。</span></div>
+</section>
+
+<section id="quality">
+  <h2>📏 质量指标与验证：别只凭眼睛</h2>
+  <p>“看起来差不多”不能写进验收标准。工程上用三类指标：像素误差（PSNR）、结构相似度（SSIM）、感知质量（VMAF）。它们各有盲区，最稳的做法是<strong>指标 + 抽帧主观对比</strong>。</p>
+
+  <div class="formula">PSNR = 10 · log₁₀(255² / MSE)　（8 bit 视频）</div>
+  <p>PSNR 40 dB 左右通常算“不错”，45 dB 以上接近透明；但它对模糊与块效应不敏感，对轻微整体偏移又过度惩罚。SSIM 看亮度、对比度、结构三部分，取值 0–1，越接近 1 越好。VMAF 用机器学习模型预测主观评分，范围 0–100，业内常以 <b>93 左右</b>作为 1080p 的透明参考线（不是绝对标准）。</p>
+
+  <pre class="code"># 计算 PSNR / SSIM（要求同分辨率、同帧率）
+ffmpeg -i enc.mp4 -i ref.y4m -lavfi "[0:v][1:v]ssim" -f null -
+ffmpeg -i enc.mp4 -i ref.y4m -lavfi "[0:v][1:v]psnr" -f null -
+
+# 计算 VMAF（需要 libvmaf 编译支持）
+ffmpeg -i enc.mp4 -i ref.mp4 -lavfi libvmaf -f null -
+
+# 逐帧看关键帧与帧类型，定位画质突变
+ffprobe -select_streams v -show_frames \
+  -show_entries frame=pict_type,pkt_size -of csv enc.mp4 | head -30</pre>
+
+  <p><b>BD-rate</b>（Bjøntegaard Delta rate）用来比较两个编码器：在相同质量下，平均码率相差多少百分比。BD-rate 为 <b>−30%</b> 表示“同等质量下省 30% 码率”。它依赖测试序列、质量指标与拟合方式，论文里的数字不能直接搬到你的业务内容上。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别用 PSNR 选 preset：</b>高 PSNR 可能来自“模糊但误差小”，观感反而更差。先定业务场景（人脸、文字、运动、暗场），再用对应素材做 A/B，指标只作为辅助。</span></div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>容易混淆的点</th></tr></thead>
+      <tbody>
+        <tr><td>残差</td><td>原始块减去预测块得到的数据</td><td>不是“误差图像”，而是变换前的差值</td></tr>
+        <tr><td>宏块 / CTU</td><td>H.264 的 16×16 编码单元；HEVC 的 64×64 树单元</td><td>块越大越省头信息，但边界贴合更粗</td></tr>
+        <tr><td>运动矢量</td><td>当前块指向参考帧位置的偏移</td><td>不是物理运动，是率失真最优的匹配</td></tr>
+        <tr><td>QP</td><td>量化参数，控制步长与码率</td><td>QP+6 ≈ 步长翻倍；不同标准尺度不同</td></tr>
+        <tr><td>CABAC</td><td>基于上下文的自适应二进制算术编码</td><td>只在 H.264 Main/High 与 HEVC 中可用</td></tr>
+        <tr><td>CAVLC</td><td>H.264 的变长码表熵编码</td><td>简单省电，效率低于 CABAC</td></tr>
+        <tr><td>GOP</td><td>两个关键帧之间的帧序列</td><td>GOP 越长，seek 越慢，但通常更省码率</td></tr>
+        <tr><td>IDR</td><td>清空参考缓冲的 I 帧</td><td>普通 I 帧不一定能安全 seek</td></tr>
+        <tr><td>CRF</td><td>x264/x265 的恒定质量因子</td><td>不是百分比，也不能跨编码器直接比</td></tr>
+        <tr><td>BD-rate</td><td>同质量下的平均码率差异</td><td>负值才表示“更省”</td></tr>
+        <tr><td>MDCT</td><td>音频用的改进离散余弦变换，带 50% 重叠</td><td>与视频 DCT 目的相同，处理的是时间样本</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span><a href="../index.html">首页</a> · <a href="../container/">容器</a> · <a href="../protocol/">协议</a> · 标准：ITU-T H.264 / H.265 · AOMedia AV1</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>

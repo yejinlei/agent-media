@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FFmpeg 深度剖析 · 从 AVFrame 到 filter graph 的完整链路</title>
+<meta name="description" content="用“进出口公司”理解 FFmpeg：libavformat/libavcodec/libavutil/libavfilter/libswscale/libswresample 分层，AVFormatContext 到 AVFrame 的数据流，PTS/DTS 与 time_base，转码与转封装的本质区别，filter graph、常用命令配方、CRF、ffprobe 排错与源码目录。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/" class="cur">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="../servers/">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>FFmpeg：一条命令背后，<br><em>五层流水线</em></h1>
+    <p>很多人把 FFmpeg 当成“格式转换器”。它更像一家进出口公司：libavformat 是报关行，负责拆箱与装箱；libavcodec 是翻译，把压缩码流翻译成像素和采样；libavfilter 是加工车间；libswscale / libswresample 负责换尺码和调音；libavutil 管后勤。看懂这条流水线，你才会明白 <code>-c copy</code> 为什么快，而某些滤镜为什么比转码还慢。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#layers">🏭 看六个库分工</a>
+      <a class="btn btn-ghost" href="#objects">📦 跟一帧走一遍</a>
+      <a class="btn btn-ghost" href="#recipes">拿命令配方</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">libavformat</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">libavcodec</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">AVFrame</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">PTS / DTS</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">filter graph</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">CRF</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<aside class="toc">
+  <h4>本页目录</h4>
+  <nav>
+    <a href="#why">它到底是什么</a>
+    <a href="#layers">六个库的分工</a>
+    <a href="#objects">数据流与核心对象</a>
+    <a href="#timestamp">时间戳：PTS / DTS</a>
+    <a href="#remux">转码与转封装</a>
+    <a href="#filter">滤镜与 filter graph</a>
+    <a href="#recipes">常用命令配方</a>
+    <a href="#rate">码率、CRF 与质量</a>
+    <a href="#probe">ffprobe 排错</a>
+    <a href="#source">源码目录导读</a>
+    <a href="#wasm">浏览器端 FFmpeg</a>
+    <a href="#glossary">术语与坑表</a>
+  </nav>
+</aside>
+
+<main>
+
+<section id="why">
+  <h2>🧭 它到底是什么：一个“翻译 + 流水线”，不是格式转换器</h2>
+  <p class="lead">把 FFmpeg 想成一家进出口公司：客户拿来一个 MKV 集装箱，里面装着 H.265 的货；公司可以只换集装箱（转封装），也可以把货拆出来、翻译成另一种语言、再按新规格装箱（转码）。真正决定成本的是你让它做了哪几步，而不是你敲了多长的命令。</p>
+  <p>它由一组 C 库和三个命令行工具组成。库可以被你的程序直接调用（VLC、OBS、Chrome 的很多能力都来自它），命令行工具只是这套库的一层“现成外壳”。所以学会命令之后，再往回看 API，你会发现参数名几乎一一对应。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>ffmpeg</h4>
+      <p class="small">执行转码、转封装、滤镜、推流、切片。它是“总调度”，自己不实现具体编码，只负责把解封装、解码、滤镜、编码、封装串起来。</p>
+    </div>
+    <div class="card">
+      <h4>ffprobe</h4>
+      <p class="small">只读不写，输出容器、流、包、帧的元数据。它像体检报告：不治病，但能告诉你码流的结构、时间戳、关键帧和真实帧率。</p>
+    </div>
+    <div class="card">
+      <h4>ffplay</h4>
+      <p class="small">一个极简播放器，基于 SDL。排错时用它验证“这条流到底能不能解”，比在业务播放器里猜快得多。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>先看清楚你手里的版本。</b>执行 <code>ffmpeg -version</code>，注意第一行的版本号，以及下方 <code>--enable-libx264</code>、<code>--enable-nvenc</code>、<code>--enable-libx265</code> 这类编译开关。同一个命令在不同发行版上失败，八成不是命令写错，而是这个构建根本没编进对应编码器。第三方构建的具体能力以官方文档和构建日志为准。</span></div>
+</section>
+
+<section id="layers">
+  <h2>🏭 六个库的分工：报关、翻译、搬运、加工、换尺码、调音</h2>
+  <p class="lead">FFmpeg 的“分层”不是为了好看，而是为了让你可以只更换其中一层。只想换容器，就别碰解码器；只想改分辨率，就别碰封装。每一层都有自己的核心类型和生命周期，混用这些层，是内存泄漏和花屏的常见起点。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>库</th><th>生活化角色</th><th>职责</th><th>核心类型 / 入口</th></tr></thead>
+      <tbody>
+        <tr><td><b>libavformat</b></td><td>报关行</td><td>识别并读写容器（MP4、MKV、TS、FLV、RTSP、HLS），把文件/网络拆成一条条流</td><td><code>AVFormatContext</code>、<code>AVStream</code>、<code>av_read_frame</code></td></tr>
+        <tr><td><b>libavcodec</b></td><td>翻译</td><td>压缩码流与原始像素/采样之间的转换，注册编解码器、解析 extradata</td><td><code>AVCodecContext</code>、<code>AVPacket</code>、<code>AVFrame</code></td></tr>
+        <tr><td><b>libavutil</b></td><td>后勤</td><td>内存、字典、数学、时间基、像素格式描述、日志、错误码</td><td><code>av_malloc</code>、<code>AVDictionary</code>、<code>av_rescale_q</code></td></tr>
+        <tr><td><b>libavfilter</b></td><td>加工车间</td><td>缩放、裁剪、叠加、去噪、变速、混音，多输入多输出的图结构</td><td><code>AVFilterGraph</code>、<code>avfilter_graph_parse2</code></td></tr>
+        <tr><td><b>libswscale</b></td><td>换尺码</td><td>像素格式转换（YUV420P ↔ NV12 ↔ RGB）与图像缩放</td><td><code>SwsContext</code>、<code>sws_scale</code></td></tr>
+        <tr><td><b>libswresample</b></td><td>调音台</td><td>采样率、声道布局、样本格式转换与重采样</td><td><code>SwrContext</code>、<code>swr_convert</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>依赖关系：越靠下越“基础”</h3>
+  <div class="tree">
+    <span class="k">libavdevice</span> <span class="note">（采集：dshow / v4l2 / avfoundation）</span>
+    <div class="l"><span class="k">libavformat</span> <span class="note">容器与协议</span></div>
+    <div class="l"><span class="k">libavcodec</span> <span class="note">编解码</span></div>
+    <div class="l"><span class="k">libavfilter</span> <span class="note">滤镜图，内部会调用 swscale / swresample</span></div>
+    <div class="l"><span class="k">libswscale</span> <span class="note">像素转换</span></div>
+    <div class="l"><span class="k">libswresample</span> <span class="note">音频重采样</span></div>
+    <div class="l last"><span class="k">libavutil</span> <span class="note">所有库的公共底座</span></div>
+  </div>
+
+  <p>用命令行时，这些层被 <code>-c:v</code>（编码器）、<code>-vf</code>（滤镜）、<code>-f</code>（容器/协议）分别控制。用 API 时，你必须自己把它们串起来：打开输入 → 找流 → 打开解码器 → 读包 → 解码 → 处理 → 编码 → 写包 → 收尾。少任何一步，输出就会是空文件或坏文件。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“装了 FFmpeg 就什么都能转”是误解。</b>容器支持、编码器支持、协议支持是三张不同的表。比如容器能写 AV1，不代表你的构建里有 libaom 或 libsvtav1；能解 H.265，不代表能编 H.265。先用 <code>ffmpeg -encoders</code>、<code>ffmpeg -decoders</code>、<code>ffmpeg -formats</code> 确认，再写命令。</span></div>
+</section>
+
+<section id="objects">
+  <h2>📦 数据流：从总调度单到一张“写满备注的画布”</h2>
+  <p class="lead"><b>AVFormatContext</b> 是搬家公司的总调度单：这趟活从哪来、有几件家具、每件多重。<b>AVStream</b> 是每件家具的清单：它是视频还是音频、用的什么时间基。<b>AVCodecContext</b> 是说明书：怎么拆、怎么装。<b>AVPacket</b> 是还没拆的压缩包裹，<b>AVFrame</b> 则是拆开后铺在桌上的画布——上面不只有像素，还有格式、宽高、时间戳和一行行“备注”（linesize、色彩信息）。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"一个 AVPacket 到一帧 AVFrame 的旅程","actors":["输入","解封装","解码","滤镜 / 编码","封装"],"steps":[{"from":0,"to":1,"label":"av_read_frame() 读包","color":"#7c3aed","detail":"从文件或网络读出一个 AVPacket。它可能属于视频流，也可能属于音频流，必须按 stream_index 分流。"},{"from":1,"to":2,"label":"send_packet / receive_frame","color":"#0891b2","detail":"把压缩包送进解码器；解码器可能一次吐出 0 帧或多帧，所以要循环 receive_frame，直到返回 EAGAIN。"},{"from":2,"to":3,"label":"AVFrame 进入滤镜","color":"#10b981","detail":"此时才是未压缩的像素或采样。缩放、叠加、混音都在这一层；改完再交给编码器或直接消费。"},{"from":3,"to":4,"label":"编码后写包","color":"#f59e0b","detail":"编码器把 AVFrame 压回 AVPacket，封装器按时间戳交错写入。注意：写包前通常要 av_packet_rescale_ts。"},{"from":4,"to":0,"label":"下一个包 / 收尾","color":"#e11d48","detail":"循环直到 EOF，然后 flush 解码器与编码器，最后 av_write_trailer 写完索引。漏掉 flush 会丢尾部帧。"}]}'></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>对象</th><th>一句话理解</th><th>谁分配</th><th>生命周期要点</th></tr></thead>
+      <tbody>
+        <tr><td><code>AVFormatContext</code></td><td>整个容器的总上下文</td><td><code>avformat_alloc_context</code> / <code>avformat_open_input</code></td><td>结束用 <code>avformat_close_input</code>；不要手动 free 内部 streams</td></tr>
+        <tr><td><code>AVStream</code></td><td>容器里的一条流（视频/音频/字幕）</td><td>由 libavformat 创建</td><td>只借用，不拥有；流参数从 <code>codecpar</code> 读</td></tr>
+        <tr><td><code>AVCodecParameters</code></td><td>流的“裸参数”：编码、宽高、extradata</td><td>libavformat 填充</td><td>建解码器时用 <code>avcodec_parameters_to_context</code> 拷进去</td></tr>
+        <tr><td><code>AVCodecContext</code></td><td>解码器/编码器的工作实例</td><td><code>avcodec_alloc_context3</code></td><td>打开后要 <code>avcodec_free_context</code>；flush 用 send NULL</td></tr>
+        <tr><td><code>AVPacket</code></td><td>压缩数据包 + 时间戳</td><td><code>av_packet_alloc</code></td><td>每次用完 <code>av_packet_unref</code>，否则缓冲会越积越多</td></tr>
+        <tr><td><code>AVFrame</code></td><td>解码后的画布/音频缓冲</td><td><code>av_frame_alloc</code></td><td>用 <code>av_frame_unref</code> 复用；跨线程要 <code>av_frame_ref</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>最小解码循环（省略错误处理）</h3>
+  <pre class="code">#include &lt;libavformat/avformat.h&gt;
+#include &lt;libavcodec/avcodec.h&gt;
+
+AVFormatContext *fmt = NULL;
+avformat_open_input(&amp;fmt, path, NULL, NULL);
+avformat_find_stream_info(fmt, NULL);
+
+int v = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+const AVCodec *dec = avcodec_find_decoder(fmt-&gt;streams[v]-&gt;codecpar-&gt;codec_id);
+AVCodecContext *ctx = avcodec_alloc_context3(dec);
+avcodec_parameters_to_context(ctx, fmt-&gt;streams[v]-&gt;codecpar);
+avcodec_open2(ctx, dec, NULL);
+
+AVPacket *pkt = av_packet_alloc();
+AVFrame  *frm = av_frame_alloc();
+while (av_read_frame(fmt, pkt) &gt;= 0) {
+    if (pkt-&gt;stream_index == v) {
+        avcodec_send_packet(ctx, pkt);
+        while (avcodec_receive_frame(ctx, frm) == 0) {
+            /* 这里拿到的是未压缩帧：frm-&gt;data[] / linesize[] / pts */
+            av_frame_unref(frm);
+        }
+    }
+    av_packet_unref(pkt);
+}</pre>
+  <p class="small">这段代码对应命令行里的“解封装 + 解码”。它不包含缩放、编码、封装——那些是后续几个库的事。把每一步单独跑通，比一上来写完整转码器更容易定位问题。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>AVFrame 为什么有 <code>data[8]</code> 和 <code>linesize[8]</code>？</b>因为 YUV 常被拆成多个平面（Y、U、V 各一块），每块的行宽可能为了对齐而大于图像宽度。<b>linesize 不是 width</b>。按 width 逐行拷贝，画面会斜；按 linesize 偏移才是正确姿势。音频则常见多个声道平面，平面数超过 8 时用 <code>extended_data</code>。</span></div>
+</section>
+
+<section id="timestamp">
+  <h2>⏱️ 时间戳：PTS 是“上映时间”，DTS 是“装车时间”</h2>
+  <p class="lead">视频帧不是按拍摄顺序到达的。B 帧要参考后面的帧才能解码，所以“送到解码器的顺序”和“显示给观众的顺序”不一样。DTS（Decoding Time Stamp）是装车顺序，PTS（Presentation Time Stamp）是上映顺序。time_base 则是这把尺子的刻度：同样写 25，刻度是 1/25 秒还是 1/90000 秒，含义差 3600 倍。</p>
+
+  <div class="formula">t(秒) = pts × time_base.num / time_base.den　　·　　换算：av_rescale_q(pts, src_tb, dst_tb)</div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>概念</th><th>含义</th><th>典型值 / 注意点</th></tr></thead>
+      <tbody>
+        <tr><td><code>time_base</code></td><td>时间单位的分数表示，如 1/1000 表示每个刻度 1 毫秒</td><td>不同容器/流各不相同；MP4 每个 track 自声明 timescale，TS/RTP 常用 90 kHz</td></tr>
+        <tr><td><code>PTS</code></td><td>这一帧应该被显示的时刻</td><td>有 B 帧时 PTS 与 DTS 不等；没有 B 帧时通常相等</td></tr>
+        <tr><td><code>DTS</code></td><td>这一帧应该被送进解码器的时刻</td><td>必须单调不减，否则解码器/封装器会报错</td></tr>
+        <tr><td><code>AV_NOPTS_VALUE</code></td><td>“没有时间戳”的哨兵值</td><td>定义为 <code>INT64_MIN</code>（0x8000000000000000），不能用 0 代替</td></tr>
+        <tr><td><code>avoid_negative_ts</code></td><td>封装时如何处理负时间戳</td><td>常见取值 auto / disabled / make_non_negative / make_zero，具体以官方文档为准</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>最容易被忽略的是“时间基换算”。解封装拿到的是流时间基，编码器可能要求另一套，封装器又要一套。直接把 <code>pkt-&gt;pts</code> 原样赋给输出，短片段没事，长片段就会漂移、音画不同步，甚至出现负时间戳导致 MP4 无法写索引。</p>
+
+  <pre class="code">// 把输入流时间基换算成输出流时间基（写包前的标准动作）
+av_packet_rescale_ts(pkt, in_stream-&gt;time_base, out_stream-&gt;time_base);
+
+// 只做时间换算，不碰数据
+int64_t us = av_rescale_q(pkt-&gt;pts, in_stream-&gt;time_base, AV_TIME_BASE_Q);
+
+// 比较两个不同时间基的时刻
+av_compare_ts(a, tb_a, b, tb_b);
+
+# 命令行里显式处理负时间戳（示例）
+ffmpeg -i in.ts -c copy -avoid_negative_ts make_zero out.mp4</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>负时间戳从哪来？</b>切片、拼接、屏幕录制、以及带 B 帧的流，起点可能小于 0。MP4 的某些版本对负值不友好，于是 muxer 会把整条时间线平移。副作用是“开头几帧时间对不上”或“音画差几十毫秒”。先看 <code>ffprobe -show_packets</code> 的 <code>pts_time</code> 是否从负数开始，再决定要不要加 <code>-avoid_negative_ts</code>。</span></div>
+
+  <p class="small">另外注意：新版 FFmpeg 用 <code>-fps_mode</code> 替代了旧的 <code>-vsync</code>；两者语义相近但参数值不同。写脚本时先确认版本，不要照抄五年前的博客。相关帧类型与 GOP 的细节，可以配合 <a href="../codec/">编解码页</a> 一起看。</p>
+</section>
+
+<section id="remux">
+  <h2>🚢 转码与转封装：换箱子，还是拆箱重装</h2>
+  <p class="lead">转封装像海关只换集装箱：货不动，只把 MKV 的箱子换成 MP4 的箱子，几分钟的视频几秒就完成，画质一字节不差。转码像海关把货拆出来、逐件检查、翻译标签、再按新规格重新装箱：耗时、耗 CPU，画质会变，但能改编码、分辨率、码率。两者最大的区别不是命令长度，而是“有没有经过解码器和编码器”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>转封装（-c copy）</th><th>转码（重新编码）</th></tr></thead>
+      <tbody>
+        <tr><td>经过的层</td><td>libavformat 读出 → libavformat 写入</td><td>解封装 → 解码 → 滤镜 → 编码 → 封装</td></tr>
+        <tr><td>CPU / 耗时</td><td>很低，通常远快于实时</td><td>高，取决于编码器、分辨率、preset</td></tr>
+        <tr><td>画质</td><td>无损（码流原样搬运）</td><td>有损（除非用无损编码）</td></tr>
+        <tr><td>能改什么</td><td>容器、封装参数、部分元数据、时间戳</td><td>编码格式、分辨率、帧率、码率、像素格式、音轨</td></tr>
+        <tr><td>常见用途</td><td>MKV→MP4、TS→MP4、抽流、快速剪辑</td><td>网页兼容、压缩体积、统一规格、加滤镜</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"MP4 ftyp box：转封装真正会重写的东西","bytes":"00 00 00 20 66 74 79 70 69 73 6F 6D 00 00 02 00 69 73 6F 6D 69 73 6F 32 61 76 63 31 6D 70 34 31","fields":[{"name":"box size","start":0,"end":3,"bits":"32 bit","note":"0x00000020 = 32 字节，表示整个 ftyp box 的长度（含 8 字节头）。MP4 里所有 box 都以“长度 + 类型”开头。"},{"name":"box type","start":4,"end":7,"bits":"4 字符","note":"ASCII 的 ftyp，表示 File Type Box。它就是“集装箱标签”，告诉播放器这是 MP4 家族。"},{"name":"major brand","start":8,"end":11,"bits":"4 字符","note":"isom，主品牌。不同封装器会写 mp42、avc1、M4V 等，影响播放器对特性的判断。"},{"name":"minor version","start":12,"end":15,"bits":"32 bit","note":"0x00000200，品牌版本号，通常只是提示信息。"},{"name":"compatible brands","start":16,"end":31,"bits":"4×4 字符","note":"isom / iso2 / avc1 / mp41：声明本文件兼容这些品牌。转封装时 muxer 会重写这一段，但不会改箱子里的 H.264 码流。"}],"hint":"点击图例逐个查看：换容器时，改的是这些“标签”，不是视频数据本身。"}'></div>
+
+  <pre class="code"># 只换箱子：MKV → MP4，码流原样
+ffmpeg -i in.mkv -c copy out.mp4
+
+# 视频原样，音频转 AAC（常见于网页兼容）
+ffmpeg -i in.mkv -c:v copy -c:a aac -b:a 128k out.mp4
+
+# 只保留需要的流，并加 faststart（把索引挪到文件头，边下边播）
+ffmpeg -i in.mkv -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart out.mp4</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>-c copy 不等于“万能兼容”。</b>容器对编码有白名单：MP4 放 H.264/H.265/AV1 通常没问题，放某些老编码或非标准 tag 就可能失败；TS 对 B 帧和负时间戳更敏感；从 MKV 抽字幕到 MP4 需要额外的字幕处理。失败时先看 muxer 的报错，再决定“换容器”还是“重编码”。</span></div>
+</section>
+
+<section id="filter">
+  <h2>🎛️ 滤镜与 filter graph：传送带上的工位</h2>
+  <p class="lead">滤镜不是“加个特效”这么简单，它是一条传送带：每一帧从一端进来，经过若干工位，从另一端出去。<code>-vf</code> 是单进单出的简易传送带；<code>-filter_complex</code> 则允许你把传送带分叉、合并、甚至接上第二路输入——比如把台标叠在视频上，或者把两路音频混在一起。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>写法</th><th>适用</th><th>特点</th></tr></thead>
+      <tbody>
+        <tr><td><code>-vf "scale=1280:-2,fps=25"</code></td><td>单路视频、简单串联</td><td>逗号表示顺序；<code>-2</code> 表示按比例算高度并保证偶数</td></tr>
+        <tr><td><code>-af "aresample=48000"</code></td><td>单路音频</td><td>等价于只处理音频的 <code>-vf</code></td></tr>
+        <tr><td><code>-filter_complex "[0:v][1:v]overlay=10:10[v]"</code></td><td>多输入/多输出、分叉合并</td><td>方括号是标签，必须用 <code>-map</code> 把结果接出去</td></tr>
+        <tr><td><code>-filter_complex "[0:v]split=2[a][b];[a]scale=1280:-2[x];[b]scale=640:-2[y]"</code></td><td>一源多档（ABR 阶梯）</td><td><code>split</code> 复制帧；分号分隔滤镜链</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 缩放 + 固定帧率 + 锐化，给网页一个稳妥的 720p
+ffmpeg -i in.mp4 -vf "scale=1280:-2,fps=25,unsharp=5:5:0.6" -c:v libx264 -crf 22 out.mp4
+
+# 加水印：第二路是 PNG（用 -i 输入），overlay 把 logo 叠到右下角
+ffmpeg -i in.mp4 -i logo.png \
+  -filter_complex "[1:v]scale=120:-1[logo];[0:v][logo]overlay=W-w-20:H-h-20[v]" \
+  -map "[v]" -map 0:a? -c:v libx264 -crf 22 -c:a copy out.mp4
+
+# 两路音频混音，并统一采样率
+ffmpeg -i a.mp4 -i b.m4a \
+  -filter_complex "[0:a]aresample=48000[a0];[1:a]aresample=48000[a1];[a0][a1]amix=inputs=2:duration=longest[a]" \
+  -map 0:v -map "[a]" -c:v copy -c:a aac out.mp4</pre>
+
+  <p class="small"><b>顺序有性能含义：</b>先 <code>fps</code> 降帧、再 <code>scale</code> 降分辨率，比反过来少处理很多帧。硬件解码得到的帧通常是 GPU 格式，直接进 <code>scale</code> 可能失败，需要 <code>hwdownload,format=nv12</code> 下载回系统内存（细节见 <a href="../hwaccel/">硬件加速页</a>）。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么滤镜有时比转码还慢？</b>因为滤镜运行在未压缩帧上。1080p 一帧 YUV420 约 3 MB，25 fps 就是每秒 75 MB 的搬运量；复杂滤镜还会反复读写。能用编码器参数解决的事（码率、preset），不要用重滤镜去“补救”。</span></div>
+</section>
+
+<section id="recipes">
+  <h2>🍳 常用命令配方：切片、截图、录屏、推流、拼接、抽音轨</h2>
+  <p>下面这些命令不是背下来的，而是从“输入 → 处理 → 输出”推出来的。注意参数位置：写在 <code>-i</code> 前的是“输入选项”，写在后面的是“输出选项”。位置错了，参数就会作用到另一个文件上。</p>
+
+  <div class="tabs">
+    <button class="tab on" data-t="cut">切片与剪辑</button>
+    <button class="tab" data-t="shot">截图与录屏</button>
+    <button class="tab" data-t="push">推流与编码</button>
+    <button class="tab" data-t="join">拼接与音轨</button>
+  </div>
+  <div class="tab-pnl on" data-p="cut">
+    <pre class="code"># 快速切片：-ss 在 -i 前 = 先跳到附近关键帧，可能不准，但很快
+ffmpeg -ss 00:01:00 -to 00:02:00 -i in.mp4 -c copy out.mp4
+
+# 精确切片：-ss 在 -i 后 = 解码到该时刻再切，慢，但帧准
+ffmpeg -i in.mp4 -ss 00:01:00 -t 00:01:00 -c:v libx264 -crf 20 -c:a aac out.mp4
+
+# 切成 HLS：4 秒一片，GOP 与切片对齐，避免每片都从非关键帧开始
+ffmpeg -i in.mp4 -c:v libx264 -crf 20 -g 100 -keyint_min 100 -sc_threshold 0 \
+  -f hls -hls_time 4 -hls_playlist_type vod \
+  -hls_segment_filename "seg%03d.ts" index.m3u8</pre>
+    <p class="small"><code>-c copy</code> 只能切在关键帧上；要“指哪切哪”，就得重编码。<code>-g</code> 与 <code>-hls_time</code> 不匹配时，切片器会等下一个关键帧，实际时长会漂。</p>
+  </div>
+  <div class="tab-pnl" data-p="shot">
+    <pre class="code"># 截一张图（-frames:v 1 明确只要一帧）
+ffmpeg -ss 00:00:05 -i in.mp4 -frames:v 1 -q:v 2 shot.jpg
+
+# 截第 100 帧（select 的逗号要转义）
+ffmpeg -i in.mp4 -vf "select=eq(n\,100)" -fps_mode vfr shot.png
+
+# Windows 录屏（gdigrab）
+ffmpeg -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset ultrafast -pix_fmt yuv420p screen.mp4
+
+# Windows 摄像头 + 麦克风（设备名先用 -list_devices true 查）
+ffmpeg -f dshow -i video="Camera" -f dshow -i audio="Microphone" \
+  -c:v libx264 -preset veryfast -c:a aac cam.mp4
+
+# Linux / macOS
+ffmpeg -f x11grab -video_size 1920x1080 -framerate 30 -i :0.0 screen.mp4
+ffmpeg -f avfoundation -i "1:0" -c:v libx264 -preset veryfast mac.mp4</pre>
+    <p class="small">录屏最常见的失败是“设备名不存在”和“没有权限”。先列设备，再录；不要照抄别人的 <code>"Camera"</code>。</p>
+  </div>
+  <div class="tab-pnl" data-p="push">
+    <pre class="code"># 本地文件按实时速度推到 RTMP（-re 很重要，否则会瞬间灌满缓冲区）
+ffmpeg -re -i in.mp4 -c:v libx264 -preset veryfast -tune zerolatency \
+  -b:v 2M -maxrate 2M -bufsize 4M -c:a aac -ar 48000 -f flv \
+  rtmp://host/live/stream?key=SECRET
+
+# 推到 SRT（streamid 的写法由服务端访问控制决定）
+ffmpeg -re -i in.mp4 -c copy -f mpegts "srt://host:8890?streamid=publish:live/stream"
+
+# 转 H.265，并加 hvc1 tag 以兼容 Apple 生态
+ffmpeg -i in.mp4 -c:v libx265 -crf 28 -preset medium -tag:v hvc1 -c:a copy out.mp4
+
+# 两遍编码：第一遍只分析，第二遍才写文件（Windows 用 NUL，Unix 用 /dev/null）
+ffmpeg -i in.mp4 -c:v libx264 -b:v 2M -pass 1 -an -f mp4 NUL
+ffmpeg -i in.mp4 -c:v libx264 -b:v 2M -pass 2 -c:a aac -b:a 128k out.mp4</pre>
+    <p class="small">推流卡顿先查三件事：<code>-re</code> 有没有加、上行带宽够不够、关键帧间隔是否过长（GOP 过长会让首屏等待变久）。</p>
+  </div>
+  <div class="tab-pnl" data-p="join">
+    <pre class="code"># 同规格文件拼接：用 concat demuxer，速度最快
+# list.txt 里每行写：file 'part1.mp4'
+ffmpeg -f concat -safe 0 -i list.txt -c copy joined.mp4
+
+# 规格不同：用 concat 滤镜，先统一分辨率/帧率/像素格式
+ffmpeg -i a.mp4 -i b.mp4 -filter_complex \
+  "[0:v]scale=1280:720,fps=25,format=yuv420p[v0];[1:v]scale=1280:720,fps=25,format=yuv420p[v1];[v0][v1]concat=n=2:v=1:a=0[v]" \
+  -map "[v]" -c:v libx264 -crf 22 out.mp4
+
+# 只抽音轨，不重编码
+ffmpeg -i in.mp4 -vn -c:a copy audio.m4a
+
+# 换掉视频里的音轨
+ffmpeg -i video.mp4 -i newaudio.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -shortest out.mp4</pre>
+    <p class="small">concat demuxer 要求编码参数一致（分辨率、profile、时间基）；只要有一项不同，就会出现花屏或音画错位。宁可用 concat 滤镜重编码，也不要赌。</p>
+  </div>
+</section>
+
+<section id="rate">
+  <h2>💰 码率、CRF 与质量：给编码器一个“精细度预算”</h2>
+  <p class="lead">码率是“每秒愿意花多少字节”，CRF 是“告诉编码器你能接受多大失真”。固定码率像给画家规定“每小时必须用完一盒颜料”，不管画面难易；CRF 像给画家一个精细度档位，简单的画面少花颜料，复杂的画面多花一点。直播更关心“带宽可预测”，点播更关心“同体积下更好看”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>模式</th><th>怎么定码率</th><th>优点</th><th>代价 / 适用</th></tr></thead>
+      <tbody>
+        <tr><td><b>CBR</b></td><td>每秒尽量恒定，靠 buffer 约束</td><td>网络友好、可预测</td><td>复杂画面质量下降；直播/硬件编码常用</td></tr>
+        <tr><td><b>VBR</b></td><td>按画面复杂度波动</td><td>同码率下质量更好</td><td>峰值不可控；点播、离线转码</td></tr>
+        <tr><td><b>ABR</b></td><td>给一个目标平均码率</td><td>介于两者之间</td><td>需要 <code>-maxrate</code> / <code>-bufsize</code> 兜底</td></tr>
+        <tr><td><b>CRF</b></td><td>固定质量，码率随画面变化</td><td>省心、质量稳定</td><td>码率不可预测；点播、归档</td></tr>
+        <tr><td><b>CQP</b></td><td>固定量化参数</td><td>实现简单</td><td>码率波动大；研究/特殊场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="formula">文件大小(GB) ≈ 码率(Mbps) × 时长(s) ÷ 8 ÷ 1024</div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>分辨率 / 帧率</th><th>H.264 经验码率</th><th>H.265 经验码率</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>720p / 25</td><td class="num">2–4 Mbps</td><td class="num">1–2.5 Mbps</td><td>网页与移动端常见起点</td></tr>
+        <tr><td>1080p / 25</td><td class="num">4–8 Mbps</td><td class="num">2.5–5 Mbps</td><td>内容复杂度影响很大</td></tr>
+        <tr><td>1080p / 50–60</td><td class="num">6–12 Mbps</td><td class="num">4–8 Mbps</td><td>运动画面、游戏直播偏高</td></tr>
+        <tr><td>4K / 25–30</td><td class="num">15–30 Mbps</td><td class="num">8–18 Mbps</td><td>以上均为经验区间，不是标准，以实测为准</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"># 点播：质量优先，CRF 20（x264 常用 18–23，0 为无损，范围 0–51）
+ffmpeg -i in.mp4 -c:v libx264 -crf 20 -preset slow -c:a aac -b:a 128k out.mp4
+
+# 直播：给 CRF 加一个码率上限，既稳又不过度占带宽
+ffmpeg -re -i in.mp4 -c:v libx264 -preset veryfast -tune zerolatency \
+  -crf 22 -maxrate 2500k -bufsize 5000k -c:a aac -f flv rtmp://host/live/key
+
+# 硬件编码常常没有 CRF，改用码率 + 质量参数（以各编码器文档为准）
+ffmpeg -i in.mp4 -c:v h264_nvenc -preset p5 -tune hq -b:v 4M -maxrate 6M out.mp4</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>CRF 不是“越小越好”。</b>x264 的 CRF 18 附近常被当作“视觉无损”的经验值，再往下文件会迅速变大；x265 的 CRF 标尺与 x264 并不等价，不能直接照搬同一个数字。直播场景里，<code>-maxrate</code> 和 <code>-bufsize</code> 缺失，会让码率尖峰撞上网络瓶颈，表现为卡顿而非画质差。</span></div>
+</section>
+
+<section id="probe">
+  <h2>🩺 ffprobe 排错：先体检，再开药</h2>
+  <p class="lead">ffprobe 不负责修复，它只负责把“这套码流到底长什么样”摊开给你看。它像体检报告：容器格式、每条流的编码、真实帧率、时间戳、关键帧位置、码率是否写在头部，全部可以打印。排错时先做体检，能避免 80% 的盲目重编码。</p>
+
+  <pre class="code"># 容器 + 所有流的概览（JSON 便于脚本处理）
+ffprobe -v error -show_format -show_streams -of json in.mp4
+
+# 只看视频关键字段
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,profile,level,width,height,pix_fmt,r_frame_rate,avg_frame_rate,bit_rate \
+  -of default=noprint_wrappers=1 in.mp4
+
+# 看前 10 个包的时间戳（PTS / DTS 是否从负值开始、是否跳变）
+ffprobe -v error -select_streams v:0 -show_packets \
+  -show_entries packet=pts_time,dts_time,duration_time,flags \
+  -read_intervals "%+#10" in.mp4
+
+# 数帧、看帧类型与关键帧
+ffprobe -v error -select_streams v:0 -count_frames \
+  -show_entries stream=nb_read_frames -of default=nw=1 in.mp4
+ffprobe -v error -select_streams v:0 -show_frames \
+  -show_entries frame=key_frame,pict_type,pts_time -of csv in.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>症状</th><th>ffprobe 看什么</th><th>可能结论</th></tr></thead>
+      <tbody>
+        <tr><td>播放花屏 / 绿屏</td><td><code>profile</code>、<code>level</code>、<code>pix_fmt</code>、extradata 是否存在</td><td>profile 超出播放器能力；SPS/PPS 缺失或带内未重复</td></tr>
+        <tr><td>音画不同步</td><td><code>pts_time</code> / <code>dts_time</code> 的起始值与跳变</td><td>时间基换算错；音频起始偏移；B 帧重排异常</td></tr>
+        <tr><td>帧率忽高忽低</td><td><code>r_frame_rate</code> 与 <code>avg_frame_rate</code></td><td>可变帧率（VFR）；录屏/摄像头常见</td></tr>
+        <tr><td>时长不对</td><td><code>duration</code>、<code>start_time</code></td><td>容器头未写时长；拼接后时间线未重置</td></tr>
+        <tr><td>码率显示为空</td><td><code>bit_rate</code></td><td>容器没写；用 <code>-count_frames</code> 或实际文件大小反推</td></tr>
+        <tr><td>无法 seek</td><td><code>key_frame</code> 分布；MP4 是否有 moov</td><td>关键帧过少；moov 在文件尾部且未 faststart</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>“文件能解，网络有问题；文件都解不了，封装或编码有问题。”</b>这是排错的分水岭。先用 <code>ffmpeg -i in.mp4 -f null -</code> 完整解一遍（不写输出），观察报错与速度；再回到网络层抓包。不要在“到底是流坏了还是网坏了”这个问题上猜。</span></div>
+</section>
+
+<section id="source">
+  <h2>🗂️ 源码目录导读：从哪读，先读什么</h2>
+  <p>FFmpeg 源码不算“优雅教科书”，但结构很直白：一个库一个目录，入口在 <code>fftools/</code>。不要从 <code>libavcodec/h264dec.c</code> 开始啃，那里是全库最复杂的部分之一；先看 <code>doc/examples/</code>，把 API 的调用顺序跑通，再回头读实现。</p>
+
+  <div class="tree">
+    <span class="k">ffmpeg/</span>
+    <div class="l"><span class="k">libavformat/</span> <span class="note">容器与协议：mov.c(MP4) matroska.c mpegts.c rtsp.c hls.c</span></div>
+    <div class="l"><span class="k">libavcodec/</span> <span class="note">编解码：h264*.c hevcdec.c aacenc.c libx264.c</span></div>
+    <div class="l"><span class="k">libavfilter/</span> <span class="note">滤镜：vf_scale.c vf_overlay.c vf_fps.c af_amix.c</span></div>
+    <div class="l"><span class="k">libswscale/</span> <span class="note">像素格式与缩放</span></div>
+    <div class="l"><span class="k">libswresample/</span> <span class="note">音频重采样</span></div>
+    <div class="l"><span class="k">libavutil/</span> <span class="note">frame.c dict.c mem.c opt.c mathematics.c</span></div>
+    <div class="l"><span class="k">libavdevice/</span> <span class="note">采集设备：dshow / v4l2 / avfoundation</span></div>
+    <div class="l"><span class="k">doc/examples/</span> <span class="note">官方最小示例：demuxing_decoding.c / remuxing.c / muxing.c</span></div>
+    <div class="l last"><span class="k">fftools/</span> <span class="note">命令行入口：ffmpeg.c / ffprobe.c / ffplay.c（老版本在根目录）</span></div>
+  </div>
+
+  <p class="small">推荐阅读顺序：<code>demuxing_decoding.c</code>（怎么读包、解码）→ <code>remuxing.c</code>（怎么不做解码直接换容器）→ <code>muxing.c</code>（怎么编码并写出）→ <code>filtering_video.c</code>（滤镜图怎么搭）。读完这四个，再看 <code>fftools/ffmpeg.c</code> 的调度逻辑，就不会迷路。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>API 会变，博客不会。</b>旧的 <code>avcodec_decode_video2</code> 已被 send/receive 模型取代；<code>AVCodecContext.channels</code> 在新版本里逐步让位给 <code>ch_layout</code>；<code>-vsync</code> 也改成了 <code>-fps_mode</code>。照抄老代码前，先对照你本地头文件的版本与官方文档。</span></div>
+</section>
+
+<section id="wasm">
+  <h2>🌐 浏览器端 FFmpeg：把工厂搬进沙箱</h2>
+  <p>ffmpeg.wasm 是把 FFmpeg 用 Emscripten 编译成 WebAssembly，让浏览器里也能做转码、截图、抽音轨。它像把整座工厂装进一个集装箱：能跑，但没有起重机（硬件加速），燃油（内存）也有限。典型情况下它跑在单线程或受限的多线程环境里，1080p 长视频会比桌面端慢很多。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>浏览器端（ffmpeg.wasm）</th><th>服务端（原生 FFmpeg）</th></tr></thead>
+      <tbody>
+        <tr><td>隐私</td><td>文件不出本机，适合敏感素材</td><td>需要上传，考虑加密与生命周期</td></tr>
+        <tr><td>性能</td><td>受限：无 GPU 编码、内存上限、线程支持依赖跨源隔离</td><td>可用多核、SIMD、NVENC/QSV/VAAPI</td></tr>
+        <tr><td>体积</td><td>核心 wasm 包较大，首次加载慢</td><td>无前端体积负担</td></tr>
+        <tr><td>适用</td><td>短视频裁剪、截图、格式小转换</td><td>长视频、批量转码、直播</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">想把浏览器端跑起来，还要处理 COOP/COEP 响应头（多线程依赖 SharedArrayBuffer）、内存上限与文件系统挂载。具体 API 与包结构随版本变化，<strong>以官方文档为准</strong>。本站的 <a href="../wasm.html">WASM 实验页</a> 有可直接上手的演示与限制说明。</p>
+
+  <div class="cross">
+    <span class="ico">🌐</span>
+    <div class="bd">
+      <h4>在浏览器里真的跑一次 FFmpeg</h4>
+      <p>不用装环境，选一个文件、点一个预设，就能看到 wasm 版的转码、截图与日志输出。</p>
+      <div class="btns"><a class="btn btn-pl" href="../wasm.html">打开 WASM 实验室 →</a></div>
+    </div>
+  </div>
+</section>
+
+<section id="glossary">
+  <h2>📖 术语与坑表</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语 / 参数</th><th>一句话解释</th><th>最容易踩的坑</th></tr></thead>
+      <tbody>
+        <tr><td>demux / mux</td><td>拆容器 / 装容器</td><td>以为 mux 会重新编码；其实只写封装</td></tr>
+        <tr><td>extradata</td><td>编码器需要的带外参数（如 SPS/PPS）</td><td>转封装时丢了 extradata，播放器黑屏</td></tr>
+        <tr><td>time_base</td><td>时间刻度</td><td>把不同流的时间戳直接混用</td></tr>
+        <tr><td>GOP</td><td>两个关键帧之间的距离</td><td>切片/seek/首屏都受它影响</td></tr>
+        <tr><td><code>-c copy</code></td><td>码流原样搬运</td><td>容器不兼容时仍会失败，不是万能</td></tr>
+        <tr><td><code>-crf</code></td><td>固定质量、码率浮动</td><td>直播直接用 CRF，码率尖峰打爆上行</td></tr>
+        <tr><td><code>-preset</code></td><td>编码速度/压缩率的权衡档位</td><td>ultrafast 文件大；placebo 慢到不可用</td></tr>
+        <tr><td><code>-movflags +faststart</code></td><td>把 MP4 索引挪到文件头</td><td>长视频转完才加，等于重写一遍文件</td></tr>
+        <tr><td><code>-map</code></td><td>显式选择输出哪些流</td><td>不写 -map 时默认只挑“最佳”一条，音轨会丢</td></tr>
+        <tr><td><code>AV_NOPTS_VALUE</code></td><td>无时间戳哨兵</td><td>当成 0 用，导致时间线错乱</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">最后一句实用建议：把复杂命令拆成“能验证的小步”。先 <code>-c copy</code> 验证容器，再验证解码，再加滤镜，最后才上编码参数。每一步都用 ffprobe 看一眼，比对着一条 300 字符的命令猜要快得多。</p>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer style="border-top:1px solid var(--border);padding:2rem 0;margin-top:2rem">
+  <div class="wrap small" style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <span>© 2026 liveinonetools · 音视频本体论研究站</span>
+    <span>参考：FFmpeg 官方文档 / doc/examples · 版本差异以官方文档为准</span>
+  </div>
+</footer>
+
+<script src="../main.js"></script>
+</body>
+</html>
