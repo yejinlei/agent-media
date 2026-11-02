@@ -56,6 +56,7 @@
   <nav>
     <a href="#intuition">浏览器为什么能本地解析</a>
     <a href="#lab">分析台</a>
+    <a href="#usage">使用指南与实战示例</a>
     <a href="#container">容器解析原理</a>
     <a href="#codec">码流解析原理</a>
     <a href="#protocol">协议解析原理</a>
@@ -187,6 +188,91 @@
   </div>
 
   <div class="callout callout-i"><span class="ic">💡</span><span><b>怎么用：</b>先用内置示例确认页面工作正常，再拖入自己的文件。想看某个 box 的原始字节，直接在 box 树上点击它的名字；高亮色块对应右下角的字段图例。</span></div>
+</section>
+
+<section id="usage">
+  <h2>🧭 使用指南与实战示例 <span class="tag tag-c">从真实文件到字节</span></h2>
+  <p class="lead">内置示例让你知道“解析成功长什么样”，但真正的价值是把<strong>自己手上的文件</strong>拆开。这一节回答三个问题：字节从哪里来、按什么顺序看、看到什么算正常。</p>
+
+  <h3>第一步：拿到要解析的字节</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>① 本地文件：直接拖</h4>
+      <p class="small">手上有 MP4 / TS / FLV / MKV？拖到容器页即可。想验证 MP4 是否 faststart：看 box 树里 <code>moov</code> 在 <code>mdat</code> 之前还是之后。</p>
+    </div>
+    <div class="card">
+      <h4>② 用 ffprobe / ffmpeg 导出字节</h4>
+      <p class="small">想看 SPS？先让 FFmpeg 把参数集吐出来，再把 hex 粘到码流页：</p>
+      <pre class="code"><span class="cm"># 1) 找到 avcC / SPS 的十六进制</span>
+ffprobe -v error -show_streams -select_streams v input.mp4
+
+<span class="cm"># 2) 或从 MP4 里抽出 Annex B 的 SPS 原始字节</span>
+ffmpeg -i input.mp4 -c:v copy -bsf:v trace_headers -f null - 2&gt;&amp;1 | findstr /C:"Sequence Parameter Set"</pre>
+    </div>
+    <div class="card">
+      <h4>③ 用 Wireshark 抓网络报文</h4>
+      <p class="small">选中一个 RTP 包 → 右键 Copy → Bytes → Hex Stream，得到 <code>80 60 ...</code> 形式的十六进制，粘到协议页。SIP / RTSP 则选 Follow → TCP Stream，复制文本。</p>
+    </div>
+  </div>
+
+  <h3>第二步：按“从外到内”的顺序看结果</h3>
+  <div class="flow vert">
+    <div class="node hi"><b>先看格式判定</b><span>容器页顶部的徽章：识别成什么格式、有没有早停</span></div><span class="ar">↓</span>
+    <div class="node"><b>再看结构骨架</b><span>MP4 看 box 树层级；TS 看 PAT/PMT 有几条流；FLV 看 tag 序列</span></div><span class="ar">↓</span>
+    <div class="node"><b>然后看轨道参数</b><span>分辨率、时长、帧率、码率；异常值（0、负数、超大）是排查重点</span></div><span class="ar">↓</span>
+    <div class="node"><b>最后点字节验证</b><span>点 box 树节点看 hex，对照字段图例确认解析没有读偏</span></div>
+  </div>
+
+  <h3>三个常见实战场景</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>场景</th><th>用什么功能</th><th>看什么字段</th><th>怎么判断</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>直播卡顿排查</b></td>
+          <td>容器页（TS）+ 协议页（RTP/RTCP）</td>
+          <td>CC 错误计数、PCR 间隔、RTCP 丢包率与抖动</td>
+          <td>CC 连续但 PCR 间隔忽大忽小 → 上游时钟问题；CC 断 → 丢包</td>
+        </tr>
+        <tr>
+          <td><b>播放器黑屏 / 花屏</b></td>
+          <td>码流页（SPS / hvcC）</td>
+          <td>profile/level、宽高、chroma_format_idc、bit_depth</td>
+          <td>解码器不支持该 profile（如 High 10）→ 转码为 High 4:2:0 8bit</td>
+        </tr>
+        <tr>
+          <td><b>点播起播慢</b></td>
+          <td>容器页（MP4 box 树）</td>
+          <td>moov 相对 mdat 的位置、stco/stsz 是否完整</td>
+          <td>moov 在文件尾 → 需要 <code>-movflags +faststart</code> 重封装</td>
+        </tr>
+        <tr>
+          <td><b>国标对接失败</b></td>
+          <td>协议页（SIP / SDP）</td>
+          <td>起始行方法、CSeq、Authorization、SDP 的 m=/y=/a=rtpmap</td>
+          <td>对照 <a href="gb28181.html">GB28181 页</a> 的注册/点播流程逐字段核对</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>把“看不懂”变成“看得懂”的三个技巧</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>对照法</h4>
+      <p class="small">先点内置示例，看“健康数据”的数值范围（如 TS 的 CC 从 0 到 15 循环），再用同样的角度看自己的文件。差异通常就是问题所在。</p>
+    </div>
+    <div class="card">
+      <h4>最小化法</h4>
+      <p class="small">文件太大或太复杂时，用 <code>ffmpeg -i in.mp4 -t 2 -c copy out.mp4</code> 截取前两秒，再拖进来解析。结构不变，但干扰少得多。</p>
+    </div>
+    <div class="card">
+      <h4>交叉验证法</h4>
+      <p class="small">本页结果与 <code>ffprobe</code> / <code>mediainfo</code> 对照。两边数值一致，说明解析可信；不一致时先怀疑时间单位（timescale）换算。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>没有“标准答案”的心态：</b>分析器告诉你的是“字节长什么样”，不是“哪里错了”。把字段值与<a href="#container">下一节的原理</a>对照，自己得出“这个值合理/不合理”，才是用分析器的正确姿势。</span></div>
 </section>
 
 <section id="container">
