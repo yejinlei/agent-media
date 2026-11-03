@@ -1252,6 +1252,45 @@ candidate:842163049 1 udp 1862270975 203.0.113.5 61722 typ srflx
   </div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>排查顺序不要颠倒：</b>先看 SDP 有没有共同编码（谈不成），再看 <code>selected pair</code> 是哪一类（通不了），最后看 DTLS 指纹与 SRTP 统计（锁不上/搬不动）。在 <code>chrome://webrtc-internals</code> 里，这三类信息分别落在 SDP、ICE candidate pair、transport 统计三块，不要混着看。</span></div>
+
+  <h3>WebRTC Hello World：浏览器侧最小可用链路</h3>
+  <p>分层表讲的是"各层做什么"，但工程上你真正写的只有 <b>15 行左右</b>——PDF 里反复出现的那串 API 就是这条链路：</p>
+  <pre class="code"><span class="cm">// 1. PeerConnection（含 ICE 服务器）</span>
+<span class="kw">const</span> pc = <span class="kw">new</span> RTCPeerConnection({
+  iceServers: [
+    { urls: <span class="st">'stun:stun.l.google.com:19302'</span> },
+    { urls: <span class="st">'turn:your.domain.com:3478'</span>, username: <span class="st">'alice'</span>, credential: <span class="st">'secret'</span> }
+  ]
+});
+
+<span class="cm">// 2. 本地媒体轨道（摄像头）</span>
+<span class="kw">const</span> stream = <span class="kw">await</span> navigator.mediaDevices.getUserMedia({ video: <span class="kw">true</span>, audio: <span class="kw">true</span> });
+stream.getTracks().forEach(t =&gt; pc.addTrack(t, stream));
+
+<span class="cm">// 3. Offer/Answer（一侧 createOffer → setLocalDesc → 发给对端；对端 createAnswer → setLocalDesc → 发回）</span>
+<span class="kw">const</span> offer = <span class="kw">await</span> pc.createOffer();
+<span class="kw">await</span> pc.setLocalDescription(offer);
+sendToPeer(JSON.stringify(pc.localDescription)); <span class="cm">// 信令通道：WebSocket / 云信 / 任何能收发的</span>
+
+<span class="cm">// 对端收到 offer 后：</span>
+<span class="kw">await</span> pc.setRemoteDescription(receivedOffer);
+<span class="kw">const</span> answer = <span class="kw">await</span> pc.createAnswer();
+<span class="kw">await</span> pc.setLocalDescription(answer);
+sendToPeer(JSON.stringify(pc.localDescription));
+
+<span class="cm">// 4. ICE 候选：每来一个就发（Trickle ICE，主流浏览器默认）</span>
+pc.onicecandidate = e =&gt; { <span class="kw">if</span> (e.candidate) sendToPeer(JSON.stringify({ candidate: e.candidate })); };
+
+<span class="cm">// 5. 接收对端的 Answer + 候选</span>
+onMessage = <span class="kw">async</span> (msg) =&gt; {
+  <span class="kw">if</span> (msg.answer) <span class="kw">await</span> pc.setRemoteDescription(msg.answer);
+  <span class="kw">if</span> (msg.candidate) <span class="kw">await</span> pc.addIceCandidate(msg.candidate);
+};
+
+<span class="cm">// 6. 远程流挂到 video</span>
+pc.ontrack = e =&gt; { video.srcObject = e.streams[0]; video.play(); };</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>为什么"每来一个候选就发"更好：</b>老教程会等 <code>onicegatheringstatechange = complete</code> 才一次性发全部候选（trickle off）。现在主流浏览器都支持 Trickle ICE，逐候选发——尤其在弱网 / 移动网络 / TURN 中继场景，协商速度能快几百毫秒。</span></div>
 </section>
 
 <section id="quic-moq">
