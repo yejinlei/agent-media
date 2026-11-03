@@ -80,10 +80,20 @@
     <div class="toc-group"><span>WebRTC</span> 全家桶（穿洞/加锁）</div>
     <a href="#webrtc">WebRTC：打洞与上锁</a>
     <a href="#webrtc-stack">WebRTC 协议栈全图</a>
+    <a href="#signaling">信令层选型</a>
+    <a href="#jsep">JSEP 状态机</a>
+    <a href="#sdp-full">SDP 完整结构</a>
+    <a href="#simulcast">Simulcast / RID</a>
+    <a href="#media-mech">UDP 媒体机制</a>
+    <a href="#srtp">SRTP / SRTCP 加密</a>
+    <a href="#sctp-dcep">SCTP / DCEP</a>
+    <a href="#dtls-vs-tls">DTLS vs TLS</a>
     <a href="#nat">NAT 四种类型：哪些能互穿</a>
     <a href="#stun">STUN：一眼看穿我长什么样</a>
     <a href="#turn">TURN：实在不行就让服务器代转</a>
     <a href="#ice-detail">ICE 连通性检查：从候选到一条路</a>
+    <a href="#webrtc-api-states">连接状态三件套</a>
+    <a href="#webrtc-core">实现内核：Chromium / Pion</a>
     <a href="#webrtc-faq">WebRTC 排障实战</a>
 
     <div class="toc-group"><span>边缘</span> 未来 · 国标</div>
@@ -264,6 +274,7 @@
       <tbody>
         <tr><td><code>0xBEDE</code></td><td>RFC 8285 单字节头</td><td>1 字节里高 4 位是 id、低 4 位是 length−1；id=0 表示填充，id=15 保留</td><td>音频电平、视频朝向、TRCC 序号等短扩展</td></tr>
         <tr><td><code>0x1000–0x100F</code></td><td>RFC 8285 双字节头</td><td>先 16 位 id，再 8 位 length（字节数）；低 4 位留给应用自定义</td><td>需要更大 id 或更长数据的扩展</td></tr>
+        <tr><td><code>abs-send-time</code>（id=3，单字节头）</td><td>RFC 8285</td><td>24 位 NTP 时间戳，发送端填自己发出这包的时刻</td><td><b>TWCC 的配套件</b>：接收端靠它算排队延迟，送给发送端做拥塞控制</td></tr>
         <tr><td>其他值</td><td>由具体规范或厂商定义</td><td>接收端不认识的扩展，可以按 length 整段跳过，不影响主载荷</td><td>私有元数据、实验性字段</td></tr>
       </tbody>
     </table>
@@ -1361,6 +1372,39 @@ pc.ontrack = e =&gt; { video.srcObject = e.streams[0]; video.play(); };</pre>
   </div>
 </section>
 
+<section id="simulcast">
+  <h2>📡 Simulcast / RID：一路推多路，SFU 按需选</h2>
+  <p class="lead">会议里 5 个人每人 1080p 直推，上行和服务器带宽都吃不消。Simulcast 的答案是：发送端<strong>同时编好几路不同码率/分辨率的流</strong>，SFU（转发服务器）不看内容、只按每个接收方的带宽挑一路转过去。核心是 SDP 里两个新行：<code>a=rid</code>（给每路命名并声明方向）与 <code>a=simulcast</code>（列出哪几路可选）。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>一句话理解：</b>HLS 的"多码率"是服务器先存好几份，播放器自己挑；Simulcast 是发送端当场编好几份，<b>中间的 SFU</b> 替接收方挑。两者都是"给不同观众不同画质"，但 Simulcast 延迟低、可动态切换、且只在 WebRTC 会议里存在。</span></div>
+
+  <h3>SDP 里长什么样</h3>
+  <pre class="code"><span class="cm"># offer 端：声明两路，分别叫 h 与 m，方向是 send（我发给你）</span>
+m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99
+a=rid:h send           <span class="cm"># 高清 1080p 那路，RID 标识符 "h"</span>
+a=rid:m send           <span class="cm"># 中等 720p 那路，RID "m"</span>
+a=simulcast:send h;m   <span class="cm"># 我同时发 h 和 m；分号分隔 = 可选，逗号 = 必须同时</span>
+<span class="cm"># 实际每路用不同 SSRC，但共用同一 m= 行、同一 BUNDLE、同一 DTLS</span></pre>
+  <p><code>a=rid</code> 的值可以是 <code>send</code> 或 <code>recv</code>；<code>a=simulcast</code> 用 <code>; </code> 和 <code>, </code> 表达"任选其一 / 全要"。answer 端回一句 <code>a=simulcast:recv h;m</code> 表示"我接受，你发 h 和 m 我按需选"。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>为什么不是"多码率 HLS"</h4>
+      <p class="small">HLS 多码率是<strong>静态清单</strong>，切换有秒级延迟、要重新拉流；Simulcast 的码率、分辨率、帧率在<strong>同一会话内随时可调</strong>，SFU 收到 <code>RID</code> 或 <code>RTP header extension</code>（<code>a=extmap</code> 里声明）就知道"该把这路转给谁"。</p>
+    </div>
+    <div class="card">
+      <h4>编码器要吃三份力</h4>
+      <p class="small">同一场景编 1080p + 720p + 360p，CPU 开销接近单路 3 倍。所以 Simulcast 只在<strong>发端是电脑/强手机</strong>时用；摄像头直推（弱端）常退化为单路 + 服务器转码。</p>
+    </div>
+    <div class="card">
+      <h4>与 SVC 的取舍</h4>
+      <p class="small">SVC（AV1/VP9/可伸缩 H.265）是<strong>一码流自带分层</strong>，发端只编 1 份，SFU 裁掉增强层即可。Simulcast 是<strong>多份独立码流</strong>，兼容老编码器但费资源。新编码优先 SVC，老 H.264 只能用 Simulcast。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>工程要点：</b>① <code>a=simulcast</code> 与 <code>a=rid</code> 必须成对出现，只有一方声明会协商失败；② 用 <code>RtpEncodingParameters</code>（JS 里 <code>addTransceiver</code> 的 <code>encodings</code> 数组）按路设 <code>maxBitrate/maxFramerate/scaleResolutionDownBy</code>；③ SFU 看 <code>abs-send-time</code> + <code>TWCC</code> 判断每路到每个接收方的带宽，动态切路——这就是"会议里别人不卡、只有你在动"的优化原理。</span></div>
+</section>
+
 <section id="media-mech">
   <h2>⚡ UDP 媒体机制：NACK / RTX / FEC / JitterBuffer / NetEQ</h2>
   <p class="lead">WebRTC 媒体路径首选 UDP——快、无连接、丢包不影响其他包。但 UDP 天生不可靠，WebRTC 一整套"在 UDP 上逼近 TCP 可靠性但不牺牲实时性"的工具链：</p>
@@ -1370,8 +1414,9 @@ pc.ontrack = e =&gt; { video.srcObject = e.streams[0]; video.play(); };</pre>
       <thead><tr><th>机制</th><th>解决什么问题</th><th>工程上的意义</th></tr></thead>
       <tbody>
         <tr><td><b>NACK</b> (RFC 4585 RTPFB)</td><td>接收端报告丢了哪些 seq 号</td><td>接收端每 100-200 ms 汇总一次丢包</td></tr>
-        <tr><td><b>RTX</b> (RFC 5562)</td><td>发送端给丢包换个 SSRC 重发</td><td>RTX SSRC 通常是 (原始 SSRC + 1)；需要 SDP 里 a=ssrc-group:FID</td></tr>
+        <tr><td><b>RTX</b> (RFC 4588)</td><td>发送端给丢包换个 SSRC 重发</td><td>RTX SSRC 通常是 (原始 SSRC + 1)；需要 SDP 里 a=ssrc-group:FID；重传包载荷头 2 字节记原序号 OSN</td></tr>
         <tr><td><b>FEC</b> (ULPFEC / FlexFEC)</td><td>发送端用异或/多项式附加冗余包</td><td>Chrome 支持 FlexFEC 但默认关；带宽多的时候 10-20% 冗余显著降低丢包敏感度</td></tr>
+        <tr><td><b>RED 音频冗余</b> (RFC 2198)</td><td>把上一个音频包的原样拷贝随新包一起发</td><td>音频包小，冗余代价低；丢 1 包能立即用副本顶替。SDP 里声明 <code>red</code>/<code>red+ulpfec</code> 载荷；适合弱网语音</td></tr>
         <tr><td><b>JitterBuffer</b></td><td>把到包按 seq 重排、缓存几百 ms 再解码</td><td>视频 ~300 ms，音频 ~500 ms；缓冲太长增加延迟，太短声音花屏</td></tr>
         <tr><td><b>NetEQ</b></td><td>音频抖动缓冲 + 丢包隐藏</td><td>NetEQ 有 PLC（Packet Loss Concealment）算法；丢包率 <5% 时听不出来</td></tr>
         <tr><td><b>拥塞控制</b> (GCC / BBR / SCReAM)</td><td>根据 TWCC/REMB 反馈自适应降码率</td><td>GCC 是 WebRTC 首选；REMB（旧版）已被 TWCC 取代</td></tr>
@@ -2262,6 +2307,16 @@ const pc = new RTCPeerConnection({
   <div data-lazy-viz data-viz="seq" data-opts='{"title":"ICE 连通性检查：host→srflx→relay + prflx 发现","actors":["A（controlling 端）","B（controlled 端）"],"steps":[{"from":0,"to":1,"label":"host↔host：双方同网段时直接过","detail":"1000ms 超时；双向检查成功就锁定，结束 ICE。","color":"#7c3aed"},{"from":0,"to":1,"label":"srflx↔srflx：跨 NAT 但防火墙放行 UDP","detail":"此时如果 A 的 srflx 是 203.0.113.5:36000，B 的 NAT 允许来自该地址的入站，就通了。","color":"#0891b2"},{"from":1,"to":0,"label":"B 检查时发现 prflx：从 A 的 srflx 来的包","detail":"B 记下 \"我看到 A 的地址是 203.0.113.5:36000\"，生成 prflx 候选，插入 check list 前面。","color":"#f59e0b"},{"from":0,"to":1,"label":"relay↔relay：所有直连都失败时才走","detail":"TURN 中继成本最高，只在 Symmetric NAT + 严格防火墙时才是最后唯一通路。","color":"#e11d48"}]}'></div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>ICE restart 的触发源：</b>① 浏览器检测到本机 IP 变化（WiFi 切 5G）；② WebSocket 信令重新拉起；③ 手动调用 <code>pc.restartIce()</code>。触发后候选会重新收集一遍，selected pair 可能换一条——这是 WebRTC 在移动网络下保持通话的关键机制。</span></div>
+
+  <h3>Step 6：Consent freshness——连接建立后还得"续命"</h3>
+  <p>ICE 不是"检查完就完事"。NAT 映射表会老化：路由器如果超过一段时间（常见 30 秒～5 分钟）没看到这个五元组的流量，就会把映射删掉。为了让连接保持"新鲜"，WebRTC 按 <b>RFC 7675</b> 在 selected pair 上定期发 <b>STUN Binding Request（带 USE-CANDIDATE 与新 ufrag）</b> 作为保活：</p>
+  <ul>
+    <li><b>默认间隔</b>：连接空闲后每 15 秒发一次（<code>STUN keepalive interval</code>），比 NAT 老化时间短得多。</li>
+    <li><b>双向都要发</b>：两端各自发，各自刷新自己那一侧的映射。</li>
+    <li><b>收到对端保活</b>：就证明"对方还活着、这条五元组还通"。</li>
+    <li><b>超过 <code>consent timeout</code>（默认 30 秒）没收到</b>：ICE 认为连接"失去 consent"，状态转 <code>disconnected</code> → 触发 ICE restart。这就是"通话到一半突然断，几秒后自己又恢复"的底层原因之一。</li>
+  </ul>
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>为什么有时抓包看不到保活包：</b>如果媒体（SRTP）一直在流动，浏览器会"借"媒体包的发送顺带完成保活，不额外发 STUN；只有媒体静止时（比如只有画面没有声音、或双方都静音）才会看到独立的 STUN 保活包。抓包看到 <code>STUN Binding Request</code> 周期性出现，是"连接健康"的好信号，不是异常。</span></div>
 </section>
 
 <section id="webrtc-faq">
