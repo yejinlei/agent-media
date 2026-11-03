@@ -64,6 +64,8 @@ aside.toc{position:sticky;top:calc(var(--nav-h) + 1rem);align-self:flex-start;ma
 .toc a{display:block;padding:.38rem .62rem;font-size:.84rem;color:var(--muted);border-left:2px solid transparent;margin-bottom:.05rem;border-radius:0 .25rem .25rem 0;transition:.12s}
 .toc a:hover{color:var(--p-d);background:var(--p-l)}
 .toc a.on{color:var(--p-d);font-weight:600;border-left-color:var(--p);background:var(--p-l)}
+.toc-group{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:#94a3b8;font-weight:700;padding:.8rem .62rem .3rem;border-bottom:1px dashed #e2e8f0;margin:1.1rem 0 .2rem}
+.toc-group span{background:var(--p-l);color:var(--p-d);padding:.08rem .4rem;border-radius:3px;font-size:.64rem;letter-spacing:.06em}
 main{min-width:0}
 section{margin-bottom:3.2rem;scroll-margin-top:calc(var(--nav-h) + 1rem)}
 section h2{font-size:1.62rem;font-weight:700;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:2px solid var(--border);display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
