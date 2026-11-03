@@ -62,6 +62,8 @@
     <a href="#flv">HTTP-FLV</a>
     <a href="#gateway">MediaMTX 网关配方</a>
     <a href="#latency">延迟与画质对比</a>
+    <a href="#mse">浏览器为什么不认 RTSP</a>
+    <a href="#players">三大播放库：HLS.js / mpegts.js / Shaka</a>
     <a href="#security">HTTPS、CORS 与自动播放</a>
     <a href="#trouble">排错表</a>
     <a href="#glossary">术语表</a>
@@ -373,6 +375,122 @@ docker run -d --name mediamtx \
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>想真正降延迟，按这个顺序改：</b>① 关闭编码器的 B 帧与 lookahead（<code>zerolatency</code>）；② 缩短 GOP 到 1 秒；③ 降低网关缓存；④ 选 WHEP 而不是 HLS；⑤ 最后才考虑换硬件。顺序错了，钱花了效果也不明显。</span></div>
+</section>
+
+<section id="mse">
+  <h2>🔬 浏览器为什么不认 RTSP：MSE 是唯一入口</h2>
+  <p class="lead">浏览器<strong>不会说任何"实时媒体协议"</strong>——RTSP、RTMP、SRT、RIST，浏览器一概不懂。它的世界里只有两条路能让 <code>&lt;video&gt;</code> 吃到媒体：<strong>原生支持的几个封装（MP4/WebM/HLS.m3u8）</strong>和<strong>MSE（Media Source Extensions）</strong>。HLS / HTTP-FLV / DASH 本质上都是"用 MSE 把浏览器不认识的格式喂给它认识的解码器"。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 180" role="img" aria-label="浏览器里三条媒体通路">
+      <rect x="20" y="20" width="215" height="56" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="127" y="40" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">原生支持（有限）</text>
+      <text x="127" y="58" text-anchor="middle" font-size="10" fill="#64748b">MP4 / WebM / HLS.m3u8</text>
+
+      <rect x="280" y="20" width="215" height="56" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="387" y="40" text-anchor="middle" font-size="13" font-weight="700" fill="#0e7490">MSE（万能入口）</text>
+      <text x="387" y="58" text-anchor="middle" font-size="10" fill="#64748b">HLS / FLV / DASH 分块喂进去</text>
+
+      <rect x="540" y="20" width="200" height="56" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="640" y="40" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">WebRTC（独立栈）</text>
+      <text x="640" y="58" text-anchor="middle" font-size="10" fill="#64748b">SRTP 进硬件解码器，不经 MSE</text>
+
+      <rect x="20" y="100" width="720" height="56" rx="6" fill="#fff1f2" stroke="#fda4af"/>
+      <text x="380" y="122" text-anchor="middle" font-size="13" font-weight="700" fill="#9f1239">浏览器不认：RTSP / RTMP / SRT / RIST</text>
+      <text x="380" y="140" text-anchor="middle" font-size="10" fill="#64748b">必须经过网关转封装，变成上方任意一种</text>
+    </svg>
+    <figcaption>浏览器三条媒体通路：原生（支持面有限）、MSE（万能但自己拉分片）、WebRTC（独立的实时栈）。没有任何一条直接通向 RTSP 或 RTMP。</figcaption>
+  </div>
+
+  <h3>MSE 的核心三步</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>① MediaSource</h4>
+      <p class="small">把 <code>&lt;video&gt;</code> 接到一个空盒子上：<code>video.srcObject = mediaSource</code>。盒子有事件（ended / bufferupdate）让 JS 知道什么时候该喂下一块。</p>
+    </div>
+    <div class="card">
+      <h4>② SourceBuffer.appendBuffer</h4>
+      <p class="small">JS 拉到分片字节后，调用 <code>sb.appendBuffer(uint8array)</code> 塞进去。浏览器内部的 demuxer（MP4/WebM 等）解出样本、排好 PTS，放进播放缓冲。</p>
+    </div>
+    <div class="card">
+      <h4>③ 循环 fetch → append</h4>
+      <p class="small">库（HLS.js / mpegts.js / Shaka）负责整个循环：拉 playlist → 拉分片 → append → 追帧 → 处理错误。工程上你几乎不会直接写 MSE，而是选一个库。</p>
+    </div>
+  </div>
+
+  <pre class="code"><span class="cm"># 极简 MSE 使用片段（仅示意，生产请用库）</span>
+<span class="kw">const</span> ms = <span class="kw">new</span> MediaSource();
+video.srcObject = ms;
+ms.onsourceopen = <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> sb = ms.addSourceBuffer(<span class="st">'video/mp4; codecs="avc1.42E01E"'</span>);
+  <span class="cm">// 拉到分片后塞进去</span>
+  <span class="kw">const</span> seg = <span class="kw">await</span> fetch(<span class="st">'/seg001.m4s'</span>).then(r =&gt; r.arrayBuffer());
+  sb.appendBuffer(<span class="kw">new</span> Uint8Array(seg));
+  sb.onupdateend = () =&gt; { video.play(); };
+};</pre>
+
+  <h3>MSE 的四个硬限制</h3>
+  <ol>
+    <li><b>只能解浏览器支持的编码</b>：H.264（avc1）/VP8/VP9/AV1/AAC/Opus。浏览器不认的编码即使字节喂进去也会报错。</li>
+    <li><b>iOS Safari 限制最严</b>：WKWebView 里 MSE 对 FLV 支持有限、对某些编码不支持。要支持 iOS 就优先 WHEP 或原生 HLS。</li>
+    <li><b>多视频轨道（多机位）需要 SourceBuffer 拼接</b>：比 HLS 原生的多码率切换复杂得多。</li>
+    <li><b>字节对齐要靠库自己保证</b>：FLV / TS 的边界错误会让浏览器整个 SourceBuffer 损坏，库必须做边界探测和坏包丢弃。</li>
+  </ol>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么说 WHEP 不是 MSE 方案：</b>WebRTC 的 SRTP 进的是浏览器的 <b>硬件解码器</b>（VideoEncodeAccelerator / VDA），完全绕过 MSE。这也是它延迟更低、CPU 占用更低的原因之一。</span></div>
+</section>
+
+<section id="players">
+  <h2>📚 三大播放库：HLS.js / mpegts.js / Shaka Player</h2>
+  <p class="lead">浏览器不认 RTSP，但开源社区把"MSE 拉分片"这件事做成了稳定的库。三个最常见，各自有强项：</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>库</th><th>主打</th><th>能力</th><th>体积（gzip）</th><th>iOS Safari</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><b>HLS.js</b></td><td>HLS（最流行）</td><td>ABR、Low Latency、多音轨、字幕；几乎覆盖所有 HLS 特性</td><td>~50 KB</td><td><span class="badge-ok">好</span>（Safari 原生 HLS 时 HLS.js 会自动让浏览器接管）</td><td>直播 + 点播、需要 HLS 全套特性</td></tr>
+        <tr><td><b>mpegts.js</b>（曾 flv.js）</td><td>HTTP-FLV + MPEG-TS</td><td>低延迟 FLV、TS 解复用、追帧；轻量</td><td>~25 KB</td><td><span class="badge-warn">中</span>（iOS Safari 不支持 MSE 播 FLV，需降级原生 HLS 或 WHEP）</td><td>国内直播（FLV 延迟低、CDN 支持好）、不需要复杂 ABR</td></tr>
+        <tr><td><b>Shaka Player</b></td><td>DASH（其次 HLS）</td><td>DASH 全套：多码率/多音轨/DRM（Widevine）/字幕</td><td>~80 KB</td><td><span class="badge-ok">好</span></td><td>点播、需要 DRM、DASH 为主</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>播放器选型决策树（一句话版）</h3>
+  <div class="flow" style="margin:1rem 0">
+    <div class="node hi">你的流是 HLS 还是 FLV？<span>→ 决定用哪个库家族</span></div><span class="ar">→</span>
+    <div class="node">HLS → HLS.js 优先</div><span class="ar">→</span>
+    <div class="node hi">需要 DRM？<span>→ Widevine/FairPlay</span></div><span class="ar">→</span>
+    <div class="node">是 → Shaka Player</div><span class="ar">→</span>
+    <div class="node">否 → HLS.js（足够）</div><span class="ar">→</span>
+    <div class="node hi">目标有大量 iOS？<span>→ Safari 不认 FLV 的 MSE</span></div><span class="ar">→</span>
+    <div class="node">是 → 网关同时给 HLS，iOS 用原生，其他用 mpegts.js</div>
+  </div>
+
+  <h3>ABR（自适应码率）算法简介</h3>
+  <p>HLS.js / Shaka 的 ABR 不是"看当前带宽"那么简单，而是权衡三个信号：</p>
+  <ul>
+    <li><b>带宽估算</b>：基于最近 N 个分片的下载时间 → 粗估网络速度</li>
+    <li><b>缓冲占用</b>：如果 buffer 已 <b>2× 分片时长</b> 以上 → 可以升档；如果 buffer 快空了 → 立即降档</li>
+    <li><b>切换惩罚</b>：频繁升降档会让画质抖动。先进的算法会引入"惯性"（往好方向慢，往坏方向快）。</li>
+  </ul>
+  <p>mpegts.js（FLV）通常没有完整 ABR——因为 HTTP-FLV 是一条长连接，拉的就是单一码率的流。想做自适应就得靠网关（MediaMTX 支持多码率 WHEP/HLS）或播放器在上层做码率切换。</p>
+
+  <pre class="code"><span class="cm"># HLS.js 最小接入</span>
+<span class="kw">import</span> Hls <span class="kw">from</span> <span class="st">'hls.js'</span>;
+<span class="kw">const</span> hls = <span class="kw">new</span> Hls({
+  lowLatencyMode: <span class="kw">true</span>,   <span class="cm"># LL-HLS 模式</span>
+  liveSyncDurationCount: <span class="num">3</span>,   <span class="cm"># 直播同步窗口</span>
+});
+hls.loadSource(<span class="st">'https://host/live.m3u8'</span>);
+hls.attachMedia(video);
+hls.on(Hls.Events.MANIFEST_PARSED, () =&gt; video.play());
+
+<span class="cm"># mpegts.js 最小接入</span>
+<span class="kw">import</span> mpegts <span class="kw">from</span> <span class="st">'mpegts.js'</span>;
+<span class="kw">const</span> player = mpegts.createPlayer({ type: <span class="st">'flv'</span>, url: <span class="st">'http://host/live.flv'</span> });
+player.attachMediaElement(video);
+player.load();
+player.play();</pre>
 </section>
 
 <section id="security">

@@ -64,6 +64,10 @@
     <a href="#transport">UDP 与 TCP 两种传法</a>
     <a href="#playback">录像回放与下载</a>
     <a href="#cascade">级联与跨域</a>
+    <a href="#ptz">PTZ 与预置位：转动摄像头</a>
+    <a href="#intercom">语音对讲与广播</a>
+    <a href="#recordinfo">录像查询 RecordInfo</a>
+    <a href="#faq">对接实战 FAQ</a>
     <a href="#gateway">网关与工程落地</a>
     <a href="#debug">抓包与排错</a>
     <a href="#code">最小代码示例</a>
@@ -488,6 +492,135 @@ y=0123456789</pre>
     </div>
   </div>
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>级联排错先看三样：</b>下级平台是否用<strong>平台类型 ID</strong>注册成功、上级目录里有没有通道、以及上级点播时 SDP 里的收流地址是否可达。三者缺一，画面都不会出现。</span></div>
+</section>
+
+<section id="ptz">
+  <h2>🎥 PTZ 与预置位：转动摄像头</h2>
+  <p class="lead">云台控制是"给摄像头发一组方向指令"——不是 SIP 报文，而是塞在 SIP <code>MESSAGE</code> 里的 XML。比喻成"给保安发微信：左转 30°，向上 15°，变焦 2 倍"。指令按 MANSCDP 格式编码，摄像头执行完会回一份 <code>200 OK</code>（成功）或 <code>403 Forbidden</code>（不支持）。</p>
+
+  <pre class="code"><span class="cm"># PTZ 方向控制（Pant / Tilt / Zoom）</span>
+<span class="cm"># MESSAGE 请求体，发往设备 DeviceID@域名</span>
+&lt;Control&gt;
+  &lt;CmdType&gt;DeviceControl&lt;/CmdType&gt;
+  &lt;SN&gt;300&lt;/SN&gt;                              <span class="cm"><!-- 请求序号，每次加 1 --></span>
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;PTZCmd&gt;A5 0F 01 64 00 00 03 &lt;/PTZCmd&gt;    <span class="cm"><!-- 核心：16 进制字节串 --></span>
+&lt;/Control&gt;
+
+<span class="cm"># 摄像头回 200 OK（XML body）</span>
+&lt;Control&gt;
+  &lt;CmdType&gt;DeviceControl&lt;/CmdType&gt;
+  &lt;SN&gt;300&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;Result&gt;OK&lt;/Result&gt;
+&lt;/Control&gt;</pre>
+
+  <h3>PTZCmd 字节的分段含义</h3>
+  <p><code>A5 0F 01 64 00 00 03</code> 共 7 个字节，是最常见的"方向 + 速度"组合：</p>
+  <div class="bitfield">
+    <span class="bf" style="flex:.7"><b>0xA5</b><i>首字节：命令头，固定值</i></span>
+    <span class="bf" style="flex:.7"><b>0x0F</b><i>字节 2：命令类型<br/>0x01=方向控制<br/>0x03=预置位设置<br/>0x04=调用预置位<br/>0x09=巡航起始<br/>0x0B=巡航终止<br/>0x0E=看守位设置</i></span>
+    <span class="bf" style="flex:.7"><b>0x01</b><i>字节 3：方向编码<br/>0x01=上 / 0x02=下<br/>0x04=左 / 0x08=右<br/>0x10=变倍+/0x20=变倍-<br/>可多方向按位或</i></span>
+    <span class="bf" style="flex:.7"><b>0x64</b><i>字节 4：水平速度 0-255<br/>0x64=100=中速</i></span>
+    <span class="bf" style="flex:.7"><b>0x00</b><i>字节 5：垂直速度 0-255</i></span>
+    <span class="bf" style="flex:.7"><b>0x00</b><i>字节 6：变倍速度 0-15</i></span>
+    <span class="bf" style="flex:.7"><b>0x03</b><i>字节 7：校验/结束</i></span>
+  </div>
+
+  <h3>预置位与巡航</h3>
+  <p>预置位就是"先让摄像头转到一个好位置，记下来；下次一个命令让它回到这里"。设置用 <code>CmdType=DeviceControl</code> + <code>PTZCmd=A5 0F 03 …</code>（命令类型 0x03=预置位设置），调用用 <code>PTZCmd=A5 0F 04 …</code>（命令类型 0x04=预置位调用）。预置位编号从 1 开始。</p>
+  <p>巡航是"在几个预置位之间按顺序来回巡逻"：先设置好几个预置位，再发巡航起始/终止指令（命令类型 0x09 / 0x0B），摄像头自己在巡航时间内循环。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>方向是"持续"的：</b>发了"左转"指令后，摄像头会持续左转，直到你发"停止"（方向字节全 0x00）或发相反方向指令。做网页 UI 时一定要在 <code>mouseup</code> 里发停止指令，否则用户松手了摄像头还在转。</span></div>
+</section>
+
+<section id="intercom">
+  <h2>🎤 语音对讲与广播</h2>
+  <p class="lead">对讲就是平台和摄像头互相"打电话"——媒体流方向是双向的：摄像头把现场声音往平台送，平台把麦的声音发回摄像头（让它的喇叭响）。广播是"平台单方面喊话"，摄像头只要接收不需要回应——像校园广播，校长讲话，全体喇叭都响。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"语音对讲（双向）与广播（单向）","actors":["平台","设备"],"steps":[{"from":0,"to":1,"label":"INVITE（对讲）→ SDP 里 a=sendrecv，设备也回 sendrecv","color":"#7c3aed"},{"from":1,"to":0,"label":"200 OK + SDP 确认双向 RTP/音频","color":"#10b981"},{"from":0,"to":1,"label":"平台 AAC-LC 音频 RTP → 设备","color":"#0891b2"},{"from":1,"to":0,"label":"设备 G.711 音频 RTP → 平台","color":"#0891b2"},{"from":0,"to":1,"label":"BYE 挂断","color":"#e11d48"}]}'></div>
+
+  <h3>对讲 vs 广播的本质差别</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>对讲（双向）</h4>
+      <p class="small">用 SIP INVITE + <code>a=sendrecv</code>（或 <code>a=sendonly</code> / <code>a=recvonly</code> 的组合），SDP 里双方都声明自己的音频能力（G.711A 最常见）。平台 AAC-LC 通常没问题，但设备侧大多只原生支持 G.711——平台必须在发送前转码。</p>
+    </div>
+    <div class="card">
+      <h4>广播（单向）</h4>
+      <p class="small">可以用 INVITE 也可以用 SIP <code>NOTIFY</code>（MANSBROADCAST）。SDP 里只出现 <code>a=sendonly</code>。<b>关键是"多个设备同时收听"：</b>平台把同一条音频流发给每台设备，每台设备的 SIP 会话独立。</p>
+    </div>
+  </div>
+
+  <h3>对讲常见的三个坑</h3>
+  <ol>
+    <li><b>G.711 vs AAC 的转码</b>：设备侧几乎都只原生 G.711（μ-law 或 A-law），浏览器采到的是 AAC 或 PCM。平台必须用 ffmpeg 转。<code>ffmpeg -f alsa -i hw:0 -acodec pcm_mulaw -ar 8000 -ac 1 …</code></li>
+    <li><b>端口与 NAT</b>：对讲是双向 RTP，设备 NAT 后平台能不能直接打进设备端口，取决于 NAT 类型。Symmetric NAT 下通常要走 TURN 中继。</li>
+    <li><b>回声消除</b>：摄像头喇叭在现场同时放平台音频又被自己的麦采回来，会让平台听到回音。WebRTC 的 AEC（Acoustic Echo Cancellation）可以缓解，但对讲场景下距离近必须平台侧也要做一次 AEC。</li>
+  </ol>
+</section>
+
+<section id="recordinfo">
+  <h2>📜 录像查询 RecordInfo：我什么时候录过什么</h2>
+  <p class="lead">点播和回放是"假设你知道有录像"。但平台其实必须先问"这台设备有哪些录像文件、时间戳是多少、存了多久"——这就靠 <code>RecordInfo</code> 查询。像查快递单之前先看"哪天发了什么包裹"。</p>
+
+  <h3>MESSAGE 里的查询 XML</h3>
+  <pre class="code"><span class="cm"># 向设备查询录像，时间窗口 2026-11-01 00:00:00 ~ 2026-11-02 23:59:59</span>
+<span class="cm"># SIP MESSAGE 请求体，发往设备 DeviceID@域名</span>
+&lt;Query&gt;
+  &lt;CmdType&gt;RecordInfo&lt;/CmdType&gt;
+  &lt;SN&gt;150&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;StartTime&gt;2026-11-01T00:00:00Z&lt;/StartTime&gt;
+  &lt;EndTime&gt;2026-11-02T23:59:59Z&lt;/EndTime&gt;
+  &lt;Secrecy&gt;0&lt;/Secrecy&gt;                 <span class="cm"><!-- 0=普通录像，1=加密/保密 --></span>
+  &lt;Type&gt;all&lt;/Type&gt;                      <span class="cm"><!-- all/alarm/manual → 全部/报警/手动触发 --></span>
+&lt;/Query&gt;</pre>
+
+  <h3>设备的响应</h3>
+  <p>设备回 <code>200 OK</code>，body 是一份 <code>RecordInfo</code> 列表。当录像很多时，设备会分批返回，每次返回一个 <code>SumNum</code>（总条数）和当前批次。</p>
+
+  <pre class="code"><span class="cm"># 200 OK，body 示例</span>
+&lt;Response&gt;
+  &lt;CmdType&gt;RecordInfo&lt;/CmdType&gt;
+  &lt;SN&gt;150&lt;/SN&gt;
+  &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+  &lt;SumNum&gt;128&lt;/SumNum&gt;                <span class="cm"><!-- 总共有 128 条 --></span>
+  &lt;RecordList Num="3"&gt;               <span class="cm"><!-- 本次回 3 条 --></span>
+    &lt;Item&gt;
+      &lt;DeviceID&gt;34020000001320000001&lt;/DeviceID&gt;
+      &lt;StartTime&gt;2026-11-01T08:00:00Z&lt;/StartTime&gt;
+      &lt;EndTime&gt;2026-11-01T12:00:00Z&lt;/EndTime&gt;
+      &lt;Secrecy&gt;0&lt;/Secrecy&gt;
+      &lt;Type&gt;alarm&lt;/Type&gt;
+      &lt;File&gt;&lt;URI&gt;rtsp://192.168.1.64/live/001&lt;/URI&gt;&lt;/File&gt;
+    &lt;/Item&gt;
+    …
+  &lt;/RecordList&gt;
+&lt;/Response&gt;</pre>
+
+  <p><b>拿到 RecordInfo 列表之后怎么播放：</b>对每个 Item 再发一次 INVITE，SDP 的 <code>y=</code> 行换成回放的 SSRC，Subject 换成该 Item 的 StartTime（格式有差异）。设备回 200 OK 并开始推对应时间段的媒体流。如果要拖放，就再发一条带 <code>a=range</code> 或 Subject 带新时间戳的 INFO/INVITE。</p>
+</section>
+
+<section id="faq">
+  <h2>🩺 对接实战 FAQ：8 个必踩的坑</h2>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>现象</th><th>最可能的层</th><th>检查点</th><th>修复</th></tr></thead>
+      <tbody>
+        <tr><td>注册失败，平台看不到设备</td><td>SIP（注册）</td><td>① 设备 <code>Register</code> 是否发出（Wireshark 抓 5060）；② 平台是否回 200 OK；③ 设备密码 / 账号匹配；④ NAT 后 Via 是否是公网可达 IP</td><td>抓包确认 Register/200 OK 往返；设备侧开 NAT keepalive（15s 间隔）；在平台手动添一条设备</td></tr>
+        <tr><td>平台发起点播，设备立即回 401 / 403 / 404</td><td>SIP（鉴权或路由）</td><td>① 401=未授权→检查 realm/nonce/response；② 403=禁止→Subject 或 DeviceID 格式不对；③ 404=找不到→Catalog 里没有该 DeviceID/ChannelID</td><td>检查 Subject 格式（通道号:时长）；设备类型码；Catalog 是否拉到该通道</td></tr>
+        <tr><td>INVITE 200 OK 正常，但媒体收不到（RTP 包 0 个）</td><td>RTP / NAT</td><td>① <code>m=video PORT</code> 里的端口是不是平台真正在监听的端口；② c= 行里的 IP 是内网还是公网；③ NAT 是否允许设备 UDP 进平台</td><td>SDP 里写公网可达 IP 与端口；防火墙放行 UDP 15000-20000 动态区间；设备侧开 NAT keepalive</td></tr>
+        <tr><td>有 RTP 包但全黑屏，几帧后出画面（约 1-3 秒）</td><td>PS / GOP</td><td>设备正在 GOP 中间，必须等下一个 I 帧才能解。GOP=30fps 2 秒 → 最长等 2 秒</td><td>点播 INVITE 时带参数要求设备强制 I 帧；低延迟场景 GOP 尽量短（1-2 秒）</td></tr>
+        <tr><td>画面出来了，但音画不同步（音频比视频慢或快几秒）</td><td>PTS / PS 时钟</td><td>① PS 里 PTS 是否单调递增；② 接收端时钟基准；③ 转码时 PTS/DTS 是否被改坏</td><td>抓包看 PS pack header 的 SCR 与 PES 的 PTS/DTS；用 GStreamer 或 ffmpeg 重封装时设 <code>-copytb 0</code></td></tr>
+        <tr><td>TCP 主动传输模式下设备连不上平台（平台端口 9527）</td><td>TCP 连接</td><td>① 设备是否支持 <code>a=connection:new</code>（RFC 4145 主动）；② 防火墙放行 9527；③ 设备 NAT 后能否打到平台内网 IP</td><td>换 UDP 传输；平台在公网放一个可达 IP；查设备手册是否支持 TCP 主动</td></tr>
+        <tr><td>级联后上级能看到目录但点播失败</td><td>级联</td><td>① 下级给上级的通道 ID 是否正确映射；② 下级在收到上级 INVITE 后是否向原设备发起了转发 INVITE；③ 媒体流能否穿越下级 NAT</td><td>下级平台日志查 INVITE 转发；下级 NAT keepalive；媒体直接直连（不经下级转发）</td></tr>
+        <tr><td>设备长时间不上线，拉 Catalog 超时</td><td>SIP 保活</td><td>① 平台是否收到 <code>MESSAGE</code> 心跳；② 设备是否按规范每 60 秒发一次；③ NAT 超时导致会话断</td><td>设备设 keepalive=60s；平台 NAT 表超时设大于 90s；平台主动发 <code>MESSAGE</code> 检测</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>排障起手式：</b>先在设备/平台同网段的 PC 上抓包（tcpdump / Wireshark），看 SIP 信令全不全（Register → Catalog → INVITE → 200 OK → RTP）。信令齐全但无媒体 → NAT；信令缺失 → 地址/鉴权问题。别猜，先抓包。</span></div>
 </section>
 
 <section id="gateway">

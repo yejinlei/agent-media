@@ -67,6 +67,15 @@
     <a href="#path">推拉流路径图</a>
     <a href="#ops">端口 / CORS / ICE / 鉴权</a>
     <a href="#links">与国标、播放器衔接</a>
+    <a href="#topology">链路全景图</a>
+    <a href="#srs-conf">SRS 生产配置</a>
+    <a href="#srs-api">SRS API / WebHook</a>
+    <a href="#zlm-deep">ZLM 配置与国标</a>
+    <a href="#mediamtx-deep">MediaMTX 深入</a>
+    <a href="#history">nginx-rtmp 与历史</a>
+    <a href="#cluster">集群与边缘</a>
+    <a href="#record">录制与截图</a>
+    <a href="#monitor">监控与排障 FAQ</a>
   </nav>
 </aside>
 
@@ -433,6 +442,956 @@ docker run -d --name srs \
       </div>
     </div>
   </div>
+</section>
+
+<section id="topology">
+  <h2>🗺️ 链路全景：一台服务器站在哪三个工位之间</h2>
+  <p class="lead">把直播链路想成一条跨城快递线：主播是发货人，源站是城市总仓，边缘是小区驿站，观众是收件人。总仓负责拆包、换单、留底；驿站只负责把同一批货分给附近的人。绝大多数“服务器配置问题”，其实是把总仓的活交给了驿站，或者反过来。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 920 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="推流端到播放端的服务器链路与协议转换点">
+      <defs>
+        <marker id="topo-ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,1 L7,4 L0,7 Z" fill="#7c3aed"/>
+        </marker>
+      </defs>
+      <text x="16" y="24" font-size="13" font-weight="700" fill="#0f172a">一条直播流的四个工位：协议在源站换车，边缘只负责分发</text>
+      <text x="16" y="44" font-size="10.5" fill="#64748b">端口为常见默认值；同一路流可以同时从源站或边缘以多种协议出口</text>
+
+      <rect x="16" y="60" width="170" height="110" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="30" y="82" font-size="12" font-weight="700" fill="#5b21b6">① 推流端</text>
+      <text x="30" y="102" font-size="10.5" fill="#334155">OBS / 摄像头 / FFmpeg</text>
+      <text x="30" y="120" font-size="10.5" fill="#334155">硬件编码器 / 手机</text>
+      <text x="30" y="144" font-size="10" fill="#64748b">只负责采集与编码</text>
+      <text x="30" y="160" font-size="10" fill="#64748b">不关心谁来观看</text>
+
+      <rect x="248" y="60" width="230" height="110" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <circle cx="256" cy="68" r="10" fill="#0891b2"/>
+      <text x="256" y="72" font-size="11" font-weight="700" fill="#fff" text-anchor="middle">A</text>
+      <text x="274" y="82" font-size="12" font-weight="700" fill="#0e7490">② 源站 Origin</text>
+      <text x="274" y="101" font-size="10.5" fill="#334155">SRS / ZLMediaKit</text>
+      <text x="274" y="119" font-size="10.5" fill="#334155">收流 + 鉴权 + 留底</text>
+      <text x="274" y="137" font-size="10" fill="#64748b">解封装，再转成 TS / FLV / RTP</text>
+      <text x="274" y="155" font-size="10" fill="#64748b">出口只此一份，再复制给边缘</text>
+
+      <rect x="540" y="60" width="180" height="110" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <circle cx="548" cy="68" r="10" fill="#10b981"/>
+      <text x="548" y="72" font-size="11" font-weight="700" fill="#fff" text-anchor="middle">B</text>
+      <text x="566" y="82" font-size="12" font-weight="700" fill="#047857">③ 边缘 Edge</text>
+      <text x="566" y="101" font-size="10.5" fill="#334155">从源站回源</text>
+      <text x="566" y="119" font-size="10.5" fill="#334155">缓存一个 GOP</text>
+      <text x="566" y="137" font-size="10" fill="#64748b">按观众数水平扩容</text>
+      <text x="566" y="155" font-size="10" fill="#64748b">只转发，不重复转码</text>
+
+      <rect x="782" y="60" width="122" height="110" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="796" y="82" font-size="12" font-weight="700" fill="#92400e">④ 播放端</text>
+      <text x="796" y="102" font-size="10.5" fill="#334155">浏览器 / App</text>
+      <text x="796" y="120" font-size="10.5" fill="#334155">电视墙 / 大屏</text>
+      <text x="796" y="144" font-size="10" fill="#64748b">只认 HLS / FLV</text>
+      <text x="796" y="160" font-size="10" fill="#64748b">或 WHEP</text>
+
+      <line x1="186" y1="116" x2="240" y2="116" stroke="#7c3aed" stroke-width="2" marker-end="url(#topo-ar)"/>
+      <text x="218" y="103" font-size="8" fill="#5b21b6" text-anchor="middle">RTMP / SRT</text>
+      <text x="218" y="136" font-size="7.5" fill="#64748b" text-anchor="middle">1935 / 10080</text>
+
+      <line x1="478" y1="116" x2="532" y2="116" stroke="#0891b2" stroke-width="2" marker-end="url(#topo-ar)"/>
+      <text x="509" y="103" font-size="8" fill="#0e7490" text-anchor="middle">RTMP / SRT</text>
+      <text x="509" y="136" font-size="7.5" fill="#64748b" text-anchor="middle">回源 1935</text>
+
+      <line x1="720" y1="116" x2="774" y2="116" stroke="#10b981" stroke-width="2" marker-end="url(#topo-ar)"/>
+      <text x="751" y="103" font-size="8" fill="#047857" text-anchor="middle">HLS / FLV</text>
+      <text x="751" y="136" font-size="7.5" fill="#64748b" text-anchor="middle">8080 / WHEP</text>
+
+      <rect x="16" y="205" width="888" height="170" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="32" y="230" font-size="12" font-weight="700" fill="#92400e">协议转换发生在哪？三个标记点，各有各的边界</text>
+
+      <text x="32" y="256" font-size="11" font-weight="700" fill="#5b21b6">A · 源站内部</text>
+      <text x="32" y="278" font-size="10" fill="#334155">RTSP/RTP → 解封装 → 压缩帧</text>
+      <text x="32" y="298" font-size="10" fill="#334155">压缩帧 → TS（HLS）/ FLV tag / RTP</text>
+      <text x="32" y="318" font-size="10" fill="#334155">时间戳保留，不做重新编码</text>
+      <text x="32" y="342" font-size="9.5" fill="#64748b">同一帧可以被三种出口共用</text>
+      <text x="32" y="360" font-size="9.5" fill="#64748b">CPU 主要花在解封装与切片上</text>
+
+      <line x1="320" y1="245" x2="320" y2="382" stroke="#e2e8f0" stroke-width="1"/>
+
+      <text x="344" y="256" font-size="11" font-weight="700" fill="#047857">B · 边缘出口</text>
+      <text x="344" y="278" font-size="10" fill="#334155">回源：RTMP 1935 / SRT 10080</text>
+      <text x="344" y="298" font-size="10" fill="#334155">出口：HLS 8080 / HTTP-FLV 8080</text>
+      <text x="344" y="318" font-size="10" fill="#334155">WebRTC：8889 + UDP 8189</text>
+      <text x="344" y="342" font-size="9.5" fill="#64748b">边缘只换“最后一公里”的包装</text>
+      <text x="344" y="360" font-size="9.5" fill="#64748b">不向源站重复拉同一路流</text>
+
+      <line x1="632" y1="245" x2="632" y2="382" stroke="#e2e8f0" stroke-width="1"/>
+
+      <text x="656" y="256" font-size="11" font-weight="700" fill="#92400e">C · 播放端</text>
+      <text x="656" y="278" font-size="10" fill="#334155">浏览器不认 RTSP，也不认裸 RTMP</text>
+      <text x="656" y="298" font-size="10" fill="#334155">WebRTC 需要 ICE 候选可达</text>
+      <text x="656" y="318" font-size="10" fill="#334155">HLS 需要正确的 MIME 与 CORS</text>
+      <text x="656" y="342" font-size="9.5" fill="#64748b">首帧慢，多半卡在 GOP 或缓冲</text>
+      <text x="656" y="360" font-size="9.5" fill="#64748b">黑屏先查请求，再查解码</text>
+
+      <text x="16" y="404" font-size="10" fill="#64748b">小规模部署可以把 ②③ 合并成一台“源站兼边缘”；只要观众数超过单机出口带宽，就必须把边缘拆出去。</text>
+    </svg>
+    <figcaption>源站是唯一“换包装”的地方，边缘只复制成品；把转封装塞到边缘，会让每台边缘都重复吃 CPU。</figcaption>
+  </div>
+
+  <h3>每一跳的“协议账”</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>链路</th><th>谁终止会话</th><th>常见协议 / 默认端口</th><th>这一跳该盯的指标</th><th>典型故障</th></tr></thead>
+      <tbody>
+        <tr><td>推流端 → 源站</td><td>源站</td><td>RTMP 1935 / SRT 10080 / RTSP 554 / WHIP 443</td><td>上行丢包、推送码率、握手耗时</td><td>推流 key 错、UDP 未放行、vhost 不匹配</td></tr>
+        <tr><td>源站内部</td><td>源站自己</td><td>RTP / FLV tag / TS 切片</td><td>单流 CPU、切片耗时、GOP 缓存命中</td><td>切片写盘慢导致 HLS 404、关键帧缺失</td></tr>
+        <tr><td>源站 → 边缘</td><td>两端都维持</td><td>RTMP 1935 / SRT 10080</td><td>回源延迟、回源断开次数</td><td>边缘把源站打挂、回源链路抖动被放大</td></tr>
+        <tr><td>边缘 → 播放端</td><td>播放端</td><td>HLS/FLV 8080 / WHEP 8889 + UDP 8189</td><td>出口带宽、并发连接、首帧时间</td><td>CORS 缺失、ICE 只有内网候选、m3u8 被缓存</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>判断“要不要边缘”只用一道算术题：</b>单机出口带宽 × 利用率 ÷ 单观众码率 = 单机能扛的观众数。若这个数远大于实际观众，源站兼边缘最省事；若不够，再加边缘，而不是给源站换更强的 CPU——瓶颈通常在网卡，不在算力。</span></div>
+</section>
+
+<section id="srs-conf">
+  <h2>⚙️ SRS 生产级配置：把每一行都翻译成人话</h2>
+  <p class="lead">SRS 的配置文件像一张“插座面板”：每个花括号是一个功能区，分号是插头的固定螺丝。少一个分号，整台服务器可能起不来；把 <code>candidate</code> 写成内网地址，WebRTC 就会“握手成功、画面不来”。下面这份骨架能直接落地，注释说明“这行是干什么的、不懂会怎样”。</p>
+
+  <pre class="code"><span class="cm"># srs.conf —— 单机直播源站骨架（SRS 5.x / 6.x；键名以官方文档为准）</span>
+<span class="kw">listen</span>              <span class="nm">1935</span>;        <span class="cm"># RTMP 接入：OBS / FFmpeg 默认推这里</span>
+<span class="kw">max_connections</span>     <span class="nm">5000</span>;        <span class="cm"># 连接上限（观众也算），不是“5000 路流”</span>
+<span class="kw">daemon</span>              <span class="nm">off</span>;         <span class="cm"># 交给 systemd / Docker 管进程，别自己 daemon 化</span>
+<span class="kw">srs_log_tank</span>        <span class="nm">console</span>;     <span class="cm"># 容器里输出到 stdout，docker logs 才看得到</span>
+<span class="kw">srs_log_level</span>       <span class="nm">info</span>;        <span class="cm"># 排障临时改 trace，稳定后回 info，否则日志涨得很快</span>
+
+<span class="kw">http_api</span> {                       <span class="cm"># “遥控器”：查询状态、踢客户端，默认 1985</span>
+    <span class="kw">enabled</span>         <span class="nm">on</span>;
+    <span class="kw">listen</span>          <span class="nm">1985</span>;
+    <span class="kw">crossdomain</span>     <span class="nm">on</span>;          <span class="cm"># API 的 CORS；这个端口只应暴露给内网</span>
+}
+
+<span class="kw">http_server</span> {                    <span class="cm"># “货架”：HLS 切片、静态页，默认 8080</span>
+    <span class="kw">enabled</span>         <span class="nm">on</span>;
+    <span class="kw">listen</span>          <span class="nm">8080</span>;
+    <span class="kw">dir</span>             <span class="nm">./objs/nginx/html</span>;
+    <span class="kw">crossdomain</span>     <span class="nm">on</span>;          <span class="cm"># HLS/FLV 被跨域播放时必须开</span>
+}
+
+<span class="kw">vhost</span> <span class="nm">__defaultVhost__</span> {
+    <span class="kw">tcp_nodelay</span>     <span class="nm">on</span>;          <span class="cm"># 小包立即发，降低交互延迟</span>
+    <span class="kw">min_latency</span>     <span class="nm">on</span>;          <span class="cm"># 关闭部分缓存，延迟优先；追剧式回看可关</span>
+
+    <span class="kw">play</span> {
+        <span class="kw">gop_cache</span>   <span class="nm">on</span>;          <span class="cm"># 缓存一个 GOP，新观众不必等下一个 I 帧</span>
+        <span class="kw">queue_length</span> <span class="nm">10</span>;         <span class="cm"># 播放队列上限（秒）；太大延迟高，太小易卡</span>
+    }
+
+    <span class="kw">hls</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">hls_fragment</span>    <span class="nm">2</span>;       <span class="cm"># 一片 2 秒；延迟≈片长×(缓冲片数+1)</span>
+        <span class="kw">hls_window</span>      <span class="nm">10</span>;      <span class="cm"># 清单保留 10 秒；太小播放器会追不上</span>
+        <span class="kw">hls_path</span>        <span class="nm">./objs/nginx/html</span>;
+        <span class="kw">hls_m3u8_file</span>   <span class="nm">[app]/[stream].m3u8</span>;
+        <span class="kw">hls_ts_file</span>     <span class="nm">[app]/[stream]-[seq].ts</span>;
+        <span class="kw">hls_cleanup</span>     <span class="nm">on</span>;      <span class="cm"># 自动删过期切片，防止磁盘被 ts 写满</span>
+        <span class="kw">hls_dispose</span>     <span class="nm">30</span>;      <span class="cm"># 无人观看 30 秒后清理切片目录</span>
+        <span class="kw">hls_wait_keyframe</span> <span class="nm">on</span>;   <span class="cm"># 每片从关键帧开始，避免花屏与时间戳错位</span>
+    }
+
+    <span class="kw">dvr</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">dvr_plan</span>        <span class="nm">session</span>; <span class="cm"># 一次推流一个文件；改成 segment 则按时长切</span>
+        <span class="kw">dvr_path</span>        <span class="nm">./objs/nginx/html/record/[app]/[stream]-[timestamp].flv</span>;
+        <span class="kw">dvr_duration</span>    <span class="nm">30</span>;      <span class="cm"># 仅 segment 模式生效：单段秒数</span>
+        <span class="kw">dvr_wait_keyframe</span> <span class="nm">on</span>;
+    }
+
+    <span class="kw">http_remux</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">mount</span>           <span class="nm">[vhost]/[app]/[stream].flv</span>; <span class="cm"># HTTP-FLV 出口</span>
+    }
+
+    <span class="kw">http_hooks</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">on_publish</span>      <span class="nm">http://127.0.0.1:8085/hooks/publish</span>;
+        <span class="kw">on_unpublish</span>    <span class="nm">http://127.0.0.1:8085/hooks/unpublish</span>;
+        <span class="kw">on_play</span>         <span class="nm">http://127.0.0.1:8085/hooks/play</span>;
+        <span class="kw">on_stop</span>         <span class="nm">http://127.0.0.1:8085/hooks/stop</span>;
+        <span class="kw">on_hls</span>          <span class="nm">http://127.0.0.1:8085/hooks/hls</span>;
+    }
+
+    <span class="kw">rtc</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">rtmp_to_rtc</span>     <span class="nm">on</span>;      <span class="cm"># RTMP 进，WebRTC 出</span>
+        <span class="kw">rtc_to_rtmp</span>     <span class="nm">on</span>;      <span class="cm"># WebRTC 进，RTMP 出（需要反向接入时再开）</span>
+    }
+
+    <span class="kw">srt</span> {
+        <span class="kw">enabled</span>         <span class="nm">on</span>;
+        <span class="kw">srt_to_rtmp</span>     <span class="nm">on</span>;      <span class="cm"># SRT 推流可直接转成 RTMP 供下游使用</span>
+    }
+}
+
+<span class="kw">rtc_server</span> {
+    <span class="kw">enabled</span>         <span class="nm">on</span>;
+    <span class="kw">listen</span>          <span class="nm">8000</span>;        <span class="cm"># UDP，不是 TCP；安全组必须放行</span>
+    <span class="kw">candidate</span>       <span class="nm">203.0.113.10</span>; <span class="cm"># 必须是浏览器可达的公网/映射地址，不能写 172.x</span>
+}
+
+<span class="kw">srt_server</span> {
+    <span class="kw">enabled</span>         <span class="nm">on</span>;
+    <span class="kw">listen</span>          <span class="nm">10080</span>;       <span class="cm"># UDP；SRT 不是 TCP 协议</span>
+    <span class="kw">maxbw</span>           <span class="nm">1000000000</span>;  <span class="cm"># 最大带宽（bps），按网卡能力留 20% 余量</span>
+    <span class="kw">peerlatency</span>     <span class="nm">300</span>;         <span class="cm"># 对端延迟 ms；跨国/弱网可加到 500–1000</span>
+    <span class="kw">recvlatency</span>     <span class="nm">300</span>;
+}</pre>
+
+  <h3>四组配置，各管一件事</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>① 接入与进程</h4>
+      <p class="small"><code>listen 1935</code> 是 RTMP 的门；<code>max_connections</code> 是整栋楼的人数上限（推流端 + 播放端都算）。<code>daemon off</code> 让 Docker/systemd 能接管进程，容器里尤其别开。</p>
+    </div>
+    <div class="card">
+      <h4>② 遥控器与货架</h4>
+      <p class="small"><code>http_api</code>（1985）是遥控器，能查状态、踢人，<b>绝不能直接暴露公网</b>；<code>http_server</code>（8080）是货架，HLS/FLV 从这里出货。两个端口职责不同，别用一个反代把 1985 也带出去。</p>
+    </div>
+    <div class="card">
+      <h4>③ HLS 的延迟与磁盘</h4>
+      <p class="small"><code>hls_fragment</code> 决定切片多长，<code>hls_window</code> 决定清单多长。<code>hls_cleanup + hls_dispose</code> 是磁盘保险丝：只切片不清理，几天就能写满一台机器。</p>
+    </div>
+    <div class="card">
+      <h4>④ WebRTC 与 SRT 的 UDP</h4>
+      <p class="small"><code>rtc_server.listen 8000</code> 与 <code>srt_server.listen 10080</code> 都是 UDP。<code>candidate</code> 写错是“能连上但没画面”的头号原因；SRT 的 <code>peerlatency</code> 是拿延迟换抗丢包。</p>
+    </div>
+  </div>
+
+  <h3>HLS 延迟到底从哪来</h3>
+  <p>HLS 像“连载小说”：观众要先拿到几章（切片）才肯开读。服务器切得快，观众也得先攒缓冲；所以延迟不是单一参数决定的。</p>
+  <div class="math-b">端到端延迟 ≈ 切片时长 × (播放器缓冲片数 + 1) + 网络与解码 ≈ 2 s × 3 + 1 s ≈ 7 s</div>
+  <p class="small">把 <code>hls_fragment</code> 从 6 秒降到 2 秒，延迟会明显下降，但请求数变成 3 倍、切片文件更多、磁盘 I/O 更高。想进 3 秒以内，应该换 LL-HLS 或直接用 HTTP-FLV/WebRTC，而不是把切片切成 0.5 秒硬扛。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>上线前先做语法体检：</b><code>./objs/srs -t -c conf/srs.conf</code>。SRS 的配置错误经常只表现为“进程起来又退出”，<code>docker logs</code> 里才有那一行 <code>parse config failed</code>；先体检，比对着黑屏猜半小时快。</span></div>
+</section>
+
+<section id="srs-api">
+  <h2>🎛️ SRS HTTP API 与 WebHook：让业务系统“管得住”媒体服务器</h2>
+  <p class="lead">HTTP API 像电梯里的按钮面板：你按一下，服务器告诉你现在几楼、谁在电梯里、能不能把人请出去。WebHook 则像门口的保安：每次有人推门（推流/播放/断流），保安先给你的业务系统打电话，问“这个人能不能进”。一个是你主动查，一个是服务器主动报。</p>
+
+  <h3>先分清两组接口</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>类型</th><th>方向</th><th>典型接口 / 触发点</th><th>用途</th><th>失败会怎样</th></tr></thead>
+      <tbody>
+        <tr><td><b>HTTP API</b></td><td>你 → SRS</td><td><code>/api/v1/summaries</code>、<code>/streams</code>、<code>/clients</code></td><td>查状态、查流、踢客户端、核对配置</td><td>查询失败只影响你的面板，不影响直播</td></tr>
+        <tr><td><b>WebHook</b></td><td>SRS → 你</td><td><code>on_publish</code>、<code>on_play</code>、<code>on_unpublish</code>、<code>on_hls</code></td><td>推流鉴权、播放鉴权、断流清理、切片通知</td><td>鉴权类回调失败通常按“拒绝”处理，直播直接进不来</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>API</th><th>方法</th><th>看什么</th><th>常用参数 / 返回重点</th></tr></thead>
+      <tbody>
+        <tr><td><code>/api/v1/versions</code></td><td>GET</td><td>SRS 版本与编译信息</td><td>确认你查文档时看的是不是同一大版本</td></tr>
+        <tr><td><code>/api/v1/summaries</code></td><td>GET</td><td>全局连接数、码率、CPU</td><td>先看总量，再下钻到单流</td></tr>
+        <tr><td><code>/api/v1/streams</code></td><td>GET</td><td>当前所有流</td><td><code>name</code>、<code>clients</code>、<code>kbps</code> 等字段用于核对“有没有人看”</td></tr>
+        <tr><td><code>/api/v1/clients</code></td><td>GET</td><td>谁在推、谁在看</td><td><code>id</code>、<code>ip</code>、<code>vhost</code>、<code>app</code>、<code>stream</code></td></tr>
+        <tr><td><code>/api/v1/clients/{id}</code></td><td>DELETE</td><td>踢掉某个连接</td><td>处理盗链、异常客户端；按 id 精确踢，别全量踢</td></tr>
+        <tr><td><code>/api/v1/config</code></td><td>GET</td><td>当前生效配置</td><td>排障时核对“你以为开了、其实没开”的开关</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 查全局摘要（1985 只在内网开放）</span>
+curl -s http://127.0.0.1:1985/api/v1/summaries | jq
+
+<span class="cm"># 查流列表，挑出“有客户端但码率为 0”的异常流</span>
+curl -s http://127.0.0.1:1985/api/v1/streams | jq <span class="st">'.streams[] | {name, clients, kbps}'</span>
+
+<span class="cm"># 踢掉一个连接（id 从 /clients 里取）</span>
+curl -X DELETE http://127.0.0.1:1985/api/v1/clients/abc123</pre>
+
+  <h3>WebHook 配置：每个动作一个 URL</h3>
+  <pre class="code"><span class="kw">vhost</span> <span class="nm">__defaultVhost__</span> {
+    <span class="kw">http_hooks</span> {
+        <span class="kw">enabled</span>      <span class="nm">on</span>;
+        <span class="kw">on_publish</span>   <span class="nm">http://127.0.0.1:8085/hooks/publish</span>;   <span class="cm"># 推流鉴权：返回非 0 直接拒绝</span>
+        <span class="kw">on_unpublish</span> <span class="nm">http://127.0.0.1:8085/hooks/unpublish</span>; <span class="cm"># 断流通知：清理会话、结算时长</span>
+        <span class="kw">on_play</span>      <span class="nm">http://127.0.0.1:8085/hooks/play</span>;      <span class="cm"># 播放鉴权：防盗链</span>
+        <span class="kw">on_stop</span>      <span class="nm">http://127.0.0.1:8085/hooks/stop</span>;      <span class="cm"># 停止播放：扣减在线数</span>
+        <span class="kw">on_hls</span>       <span class="nm">http://127.0.0.1:8085/hooks/hls</span>;       <span class="cm"># 每个 ts 生成后通知：异步上传对象存储</span>
+    }
+}</pre>
+
+  <p>SRS 用同一个 JSON 结构把上下文送过来，业务端按 <code>action</code> 分流即可。下面是 <code>on_publish</code> 的典型请求体（字段随版本略有增删，以官方文档为准）：</p>
+  <pre class="code">{
+  <span class="st">"action"</span>:    <span class="st">"on_publish"</span>,
+  <span class="st">"client_id"</span>: <span class="st">"9304f0a1"</span>,
+  <span class="st">"ip"</span>:        <span class="st">"1.2.3.4"</span>,
+  <span class="st">"vhost"</span>:     <span class="st">"__defaultVhost__"</span>,
+  <span class="st">"app"</span>:       <span class="st">"live"</span>,
+  <span class="st">"stream"</span>:    <span class="st">"demo"</span>,
+  <span class="st">"param"</span>:     <span class="st">"?token=abc&amp;ts=1700000000"</span>,
+  <span class="st">"tcUrl"</span>:     <span class="st">"rtmp://media.example.com/live"</span>
+}
+
+<span class="cm"># 业务后端允许：</span>
+{ <span class="st">"code"</span>: 0 }
+
+<span class="cm"># 业务后端拒绝（token 错、黑名单、并发超限）：</span>
+{ <span class="st">"code"</span>: 403, <span class="st">"msg"</span>: <span class="st">"invalid token"</span> }</pre>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"推流鉴权：on_publish 的一次完整往返","actors":["推流端","SRS","业务后端"],"steps":[{"from":0,"to":1,"label":"RTMP connect + publish","color":"#7c3aed","detail":"OBS 先建立 RTMP 会话，再发 publish 命令，URL 里带着 app、stream 与查询参数。"},{"from":1,"to":2,"label":"POST on_publish（JSON）","color":"#0891b2","detail":"SRS 把 client_id、ip、vhost、app、stream、param 一并送到业务后端；这一步是同步阻塞的。"},{"from":2,"to":2,"label":"校验 token / 黑名单 / 并发","color":"#f59e0b","detail":"业务后端在本地缓存里查 token 与开播权限，尽量别在这里做慢 SQL；超时会拖垮推流。"},{"from":2,"to":1,"label":"200 {code:0}","color":"#10b981","detail":"返回 code=0 表示放行；非 0 或 HTTP 错误，SRS 会断开这次推流。"},{"from":1,"to":0,"label":"允许推流 / 拒绝断开","color":"#10b981","detail":"放行后媒体开始流动；拒绝时 OBS 侧表现为连接被关闭，而不是编码失败。"},{"from":1,"to":2,"label":"on_unpublish（断流后）","color":"#e11d48","detail":"推流结束或异常断开时通知业务后端，用来结算时长、释放占用的频道。"}]}'></div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>on_publish：推流鉴权</h4>
+      <p class="small">最适合做“谁能开播”。把 token、签名、过期时间放在推流 URL 的查询串里；业务后端验签后返回 <code>code=0</code>。密钥不要硬编码在网页里，也不要把长期 key 当唯一防线。</p>
+    </div>
+    <div class="card">
+      <h4>on_play / on_stop：播放鉴权与计费</h4>
+      <p class="small">最适合做防盗链与在线数统计。注意 <code>on_play</code> 在每次播放请求时触发，HLS 的每个切片请求不一定都走它；别把“切片请求数”当成“观众数”。</p>
+    </div>
+    <div class="card">
+      <h4>on_hls：切片落地通知</h4>
+      <p class="small">每个 ts 生成后回调，带上文件路径、时长、序列号。适合异步转存对象存储、生成回看清单；<b>不要</b>在回调里同步做重活，否则会拖慢切片。</p>
+    </div>
+    <div class="card">
+      <h4>on_unpublish：断流收尾</h4>
+      <p class="small">推流异常断开时也会触发，适合释放“正在直播”的频道锁、写结束时间。业务端要按 <code>client_id</code> 做幂等，避免重复结算。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-r"><span class="ic">🚨</span><span><b>两个绝不能犯的错：</b>① 把 1985 端口直接映射到公网——任何人都能查你的流、踢你的观众；② 在 <code>on_publish</code> 里做 10 秒级的外部请求——SRS 会等，推流端会超时，最后表现为“OBS 一直重连”。回调要在几百毫秒内返回，慢活全部异步化。</span></div>
+</section>
+
+<section id="zlm-deep">
+  <h2>🧰 ZLMediaKit 深入：ini 配置、hook 与国标接口</h2>
+  <p class="lead">ZLM 的 ini 像一张“报关单”：每一栏都写清楚这票货怎么进、怎么出、出了问题找谁。<code>[protocol]</code> 决定开哪些窗口，<code>[hook]</code> 决定每次进出要不要问业务系统，<code>[rtp_proxy]</code> 决定国标收流的港口范围。它比 SRS 多了一层“国标报关”的能力，代价是配置项更多、端口账更复杂。</p>
+
+  <pre class="code"><span class="cm"># config.ini —— ZLM 生产骨架（键名与默认值以官方文档为准）</span>
+<span class="kw">[general]</span>
+enable_proxy=1              <span class="cm"># 允许按需拉流 / 代理上游</span>
+flowThreshold=1024          <span class="cm"># 流量阈值（KB），配合无人观看判断</span>
+maxStreamWaitMS=15000       <span class="cm"># 等待流注册的最长时间，超时播放端会收到错误</span>
+
+<span class="kw">[protocol]</span>
+enable_rtsp=1               <span class="cm"># 摄像头 / 国标常用的接入与输出</span>
+enable_rtmp=1               <span class="cm"># 直播推流与 FLV 出口的基础</span>
+enable_hls=1
+enable_fmp4=1
+enable_ts=1
+enable_rtc=1                <span class="cm"># WebRTC；需要 UDP 8000 可达</span>
+
+<span class="kw">[rtsp]</span>
+port=554                    <span class="cm"># 标准 RTSP 端口；非 root 容器内可改 8554</span>
+authBasic=0                 <span class="cm"># 需要 RTSP Basic 鉴权时打开，并配合 on_rtsp_auth</span>
+directProxy=1               <span class="cm"># 直接代理模式：少一次解复用，兼容性略降</span>
+
+<span class="kw">[rtmp]</span>
+port=1935
+
+<span class="kw">[http]</span>
+port=80                     <span class="cm"># HLS / FLV / API 都走这个口；生产常放 8080 再由反代接管</span>
+rootPath=./www
+charSet=utf-8
+keepAliveSecond=30
+
+<span class="kw">[rtc]</span>
+port=8000                   <span class="cm"># UDP；只映射 TCP 一定播不了</span>
+externIP=203.0.113.10       <span class="cm"># 公网/映射地址，ICE 候选靠它</span>
+preferredCodecA=H264        <span class="cm"># 浏览器最稳的视频编码</span>
+preferredCodecB=opus        <span class="cm"># WebRTC 常用音频编码</span>
+
+<span class="kw">[rtp_proxy]</span>
+port_range=30000-30500      <span class="cm"># 国标收流端口段；防火墙要整段放行 UDP</span>
+timeoutSec=15               <span class="cm"># 收流超时；点播 200 OK 但无画面时先看这里</span>
+
+<span class="kw">[hook]</span>
+enable=1
+timeoutSec=10               <span class="cm"># 业务后端必须在 10 秒内返回，实际应控制在 1 秒内</span>
+on_publish=http://127.0.0.1:8085/zlm/publish
+on_play=http://127.0.0.1:8085/zlm/play
+on_stream_changed=http://127.0.0.1:8085/zlm/stream_changed
+on_stream_none_reader=http://127.0.0.1:8085/zlm/none_reader
+on_rtsp_auth=http://127.0.0.1:8085/zlm/rtsp_auth
+
+<span class="kw">[record]</span>
+appName=record              <span class="cm"># 录制流统一挂到 record 应用下，便于清理</span>
+filePath=./www/record
+fileSecond=3600             <span class="cm"># 单文件时长（秒），到时自动切片</span>
+enable_mp4=1                <span class="cm"># 直接落 MP4；崩溃时文件可能缺 moov，需谨慎</span></pre>
+
+  <h3>ZLM hook 与 SRS WebHook 的差异</h3>
+  <p>两者都叫“回调”，但 ZLM 的 hook 像一整套门禁系统：不只管进出，还管“流发生变化”“没人看了”“RTSP 要认证”。SRS 的 WebHook 更像几个固定岗位，职责清晰但覆盖点少。</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>ZLMediaKit hook</th><th>SRS WebHook</th></tr></thead>
+      <tbody>
+        <tr><td>配置位置</td><td><code>[hook]</code> 段，统一开关 + 多个 URL</td><td><code>vhost</code> 内 <code>http_hooks</code>，逐事件配 URL</td></tr>
+        <tr><td>覆盖面</td><td>更广：发布/播放/流变化/无人观看/RTSP 认证/HTTP 访问</td><td>聚焦发布、播放、断流、HLS、DVR</td></tr>
+        <tr><td>返回约定</td><td><code>{"code":0,"msg":"success"}</code>；<code>on_stream_none_reader</code> 可返回 <code>close:true</code></td><td><code>{"code":0}</code>；非 0 拒绝</td></tr>
+        <tr><td>典型用途</td><td>按需拉流、无人观看自动停、国标频道鉴权</td><td>推流/播放鉴权、切片通知</td></tr>
+        <tr><td>失败影响</td><td>鉴权类失败会拒绝；通知类失败通常只记日志</td><td>鉴权类失败通常直接拒绝</td></tr>
+        <tr><td>调试方式</td><td>看 ZLM 日志里的 hook 请求与响应耗时</td><td>看 SRS 日志与业务后端访问日志对时间戳</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>RESTful API：用 URL 指挥媒体服务器</h3>
+  <p>ZLM 的 API 都挂在 <code>/index/api/</code> 下，统一带 <code>secret</code> 参数（在配置里设定）。它像一台“带遥控的转运中心”，业务系统不用改媒体配置，就能开端口、拉流、录制、截图。</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>接口</th><th>作用</th><th>关键参数</th></tr></thead>
+      <tbody>
+        <tr><td><code>/index/api/getMediaList</code></td><td>列出所有流与应用</td><td><code>vhost</code>、<code>app</code>、<code>stream</code> 过滤</td></tr>
+        <tr><td><code>/index/api/getMediaInfo</code></td><td>查单路流的轨道、编码、在线人数</td><td><code>schema</code>、<code>vhost</code>、<code>app</code>、<code>stream</code></td></tr>
+        <tr><td><code>/index/api/getSnap</code></td><td>抓一张 JPEG 截图</td><td><code>url</code>、<code>timeout_sec</code>、<code>expire_sec</code></td></tr>
+        <tr><td><code>/index/api/startRecord</code></td><td>开始录制（MP4/HLS）</td><td><code>type</code>、<code>vhost</code>、<code>app</code>、<code>stream</code></td></tr>
+        <tr><td><code>/index/api/stopRecord</code></td><td>停止录制</td><td><code>type</code> + 流定位参数</td></tr>
+        <tr><td><code>/index/api/openRtpServer</code></td><td>分配 GB28181 收流端口</td><td><code>port</code>、<code>tcp_mode</code>、<code>stream_id</code></td></tr>
+        <tr><td><code>/index/api/closeRtpServer</code></td><td>关闭收流端口</td><td><code>stream_id</code></td></tr>
+        <tr><td><code>/index/api/addStreamProxy</code></td><td>让 ZLM 主动拉一路上游流</td><td><code>url</code>、<code>vhost</code>、<code>app</code>、<code>stream</code></td></tr>
+        <tr><td><code>/index/api/startSendRtp</code></td><td>把流回推给设备/上级平台（国标语音、级联）</td><td><code>dst_url</code>、<code>dst_port</code>、<code>stream_id</code></td></tr>
+        <tr><td><code>/index/api/getThreadsLoad</code></td><td>看各线程负载</td><td>无</td></tr>
+        <tr><td><code>/index/api/getStatistic</code></td><td>看全局统计（连接、流量）</td><td>无</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 国标点播：先让 ZLM 开一个收流端口，再把端口写进 SIP INVITE 的 SDP</span>
+curl <span class="st">"http://127.0.0.1/index/api/openRtpServer?secret=xxx&amp;port=30000&amp;tcp_mode=1&amp;stream_id=cam1"</span>
+
+<span class="cm"># 浏览器要截图：让 ZLM 从 RTSP 拉一帧，返回 JPEG</span>
+curl -o snap.jpg <span class="st">"http://127.0.0.1/index/api/getSnap?secret=xxx&amp;url=rtsp://127.0.0.1:554/live/cam1&amp;timeout_sec=5&amp;expire_sec=10"</span>
+
+<span class="cm"># 查线程负载：某些线程打满时，先怀疑单路大码率或切片写盘</span>
+curl <span class="st">"http://127.0.0.1/index/api/getThreadsLoad?secret=xxx"</span></pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>国标场景为什么常选 ZLM：</b>它原生能收 RTP/PS，能把 PS 解成 H264/H265 再转 RTMP/HLS/WebRTC；<code>openRtpServer/closeRtpServer</code> 让“按需点播”变成两个 API 调用；<code>startSendRtp</code> 还能做语音对讲与向上级联。SRS 与 MediaMTX 不具备这套“国标报关”能力，通常要在前面加网关或换方案。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>国标的三本账要对齐：</b>① SIP 5060（UDP/TCP）能通；② <code>port_range</code> 与防火墙/安全组整段一致；③ 设备能路由到平台的收流地址。<code>openRtpServer</code> 返回的端口如果不在放行范围，表现就是“SIP 200 OK、PS 流不来”。排查顺序永远是：信令 → 端口 → SDP 里的地址 → PS 解封装。</span></div>
+</section>
+
+<section id="mediamtx-deep">
+  <h2>🧩 MediaMTX 深入：一个二进制，四张网口</h2>
+  <p class="lead">MediaMTX 像一把随身工具钳：不装依赖、不拉一堆插件，单个二进制就把 RTSP、RTMP、HLS、WebRTC、SRT 接在一起。它的世界观只有两个字——<b>路径（path）</b>：一条路径就是一个频道，可以等人推、可以去上游拉、也可以在没人看时自动断。</p>
+
+  <pre class="code"><span class="cm"># mediamtx.yml —— 可直接落地的最小生产骨架</span>
+logLevel: info
+api: yes
+apiAddress: :9997              <span class="cm"># 控制面：查路径/会话，别暴露公网</span>
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp, udp]     <span class="cm"># 摄像头多在局域网，TCP 更稳</span>
+rtmp: yes
+rtmpAddress: :1935
+
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency         <span class="cm"># 低延迟 HLS；兼容性优先可改 mpegts</span>
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAdditionalHosts: [203.0.113.10]  <span class="cm"># 云主机的公网地址，ICE 必需</span>
+webrtcAllowOrigin: <span class="st">'*'</span>        <span class="cm"># 仅播放页跨域时使用；不要当鉴权</span>
+
+srt: yes
+srtAddress: :8890
+
+paths:
+  cam1:
+    source: rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101
+    sourceOnDemand: yes        <span class="cm"># 有人看才回源</span>
+    sourceOnDemandCloseAfter: 10s
+    rtspTransport: tcp
+
+  live:
+    <span class="cm"># 没有 source：等待外部推流进来</span>
+    record: yes
+    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+    recordFormat: fmp4          <span class="cm"># fmp4 更适合网页回放；mpegts 兼容老播放器</span>
+    recordSegmentDuration: 1h
+    recordDeleteAfter: 24h
+
+  <span class="st">'~^cam([0-9]+)$'</span>:
+    <span class="cm"># 正则路径：cam3 会自动映射到 103 通道</span>
+    source: rtsp://user:pass@192.168.1.64:554/Streaming/Channels/$1</pre>
+
+  <h3>paths 的四种玩法</h3>
+  <div class="grid-4">
+    <div class="card">
+      <h4>等人推</h4>
+      <p class="small">只写路径名，不写 <code>source</code>。外部用 RTMP/SRT/WHIP 推进来，路径就成了直播间。适合主播开播。</p>
+    </div>
+    <div class="card">
+      <h4>按需回源</h4>
+      <p class="small"><code>source + sourceOnDemand</code>：第一个观众到来才去拉摄像头，最后一人离开若干秒后断开。省带宽，也省摄像头连接数。</p>
+    </div>
+    <div class="card">
+      <h4>常连转发</h4>
+      <p class="small">去掉 <code>sourceOnDemand</code>，MediaMTX 启动即回源。适合“必须随时可播”的电视墙，但上游会一直有连接。</p>
+    </div>
+    <div class="card">
+      <h4>正则批量</h4>
+      <p class="small">路径名写成 <code>~^cam([0-9]+)$</code>，用 <code>$1</code> 拼上游 URL。几十个摄像头不用手写几十段配置。</p>
+    </div>
+  </div>
+
+  <h3>内建 WebRTC / WHEP：浏览器直接看</h3>
+  <p>MediaMTX 把 WebRTC 做成“一条 URL”：推流用 WHIP，播放用 WHEP，不需要另起 Janus，也不需要业务后端转发 SDP。浏览器像点播一个普通网页一样发起协商。</p>
+  <pre class="code"><span class="cm"># 播放（WHEP）：浏览器 POST SDP offer，服务器回 answer</span>
+# http://server:8889/live/whep
+
+<span class="cm"># 推流（WHIP）：OBS 30+ 或支持 WHIP 的编码器</span>
+# http://server:8889/live/whip
+
+<span class="cm"># HLS 兜底：兼容性最好，代价是延迟</span>
+# http://server:8888/live/index.m3u8
+
+<span class="cm"># 查路径状态：有没有发布者、有没有读者</span>
+curl -s http://127.0.0.1:9997/v3/paths/list | jq <span class="st">'.items[] | {name, ready, readers}'</span></pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>API</th><th>用途</th><th>排障时看什么</th></tr></thead>
+      <tbody>
+        <tr><td><code>/v3/paths/list</code></td><td>所有路径与状态</td><td><code>ready</code> 为 false：没有源；<code>readers</code> 为 0：没人看</td></tr>
+        <tr><td><code>/v3/config/paths/list</code></td><td>当前路径配置</td><td>核对 <code>sourceOnDemand</code> 是否真的生效</td></tr>
+        <tr><td><code>/v3/rtspconns/list</code></td><td>RTSP 会话</td><td>摄像头是否连上、用的 TCP 还是 UDP</td></tr>
+        <tr><td><code>/v3/webrtcsessions/list</code></td><td>WebRTC 会话</td><td>协商成功但无媒体时，看 ICE 状态</td></tr>
+        <tr><td><code>/v3/recordings/list</code></td><td>录制任务</td><td>路径是否在录、分段是否正常</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-r"><span class="ic">🚨</span><span><b>只映射 8889 是 MediaMTX 最常见的坑：</b>WebRTC 的 HTTP 协商在 8889（TCP），但 ICE 媒体默认走单一 UDP 端口 <b>8189</b>。容器只发布 <code>8889:8889</code> 时，SDP 能换成功，画面却永远不来。部署时同时发布 <code>8189:8189/udp</code>，并确认 <code>webrtcAdditionalHosts</code> 是公网地址。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>它的边界也很清楚：</b>不做 GB28181 SIP/PS，不做转码，不做复杂集群调度。需要“国标接入”找 ZLM；需要“源站+边缘+鉴权体系”找 SRS；只需要“把摄像头翻译成浏览器能看的协议”，MediaMTX 最省心。</span></div>
+</section>
+
+<section id="history">
+  <h2>🧱 nginx-rtmp 与历史方案：老卡车还能开，但别用来跑新线路</h2>
+  <p class="lead">nginx-rtmp 像一辆保养得还不错的老卡车：能拉货（RTMP 推拉）、能装箱（HLS 切片）、油耗也不高。但它没有 ABS（WebRTC/SRT）、没有车载导航（API/集群），配件也早停了。维护旧系统可以继续开；新项目上路，最好换一辆现代车。</p>
+
+  <pre class="code"><span class="cm"># nginx.conf —— 能跑的最小 RTMP + HLS 组合</span>
+<span class="kw">rtmp</span> {
+    server {
+        listen 1935;
+        chunk_size 4096;
+
+        application live {
+            live on;
+            record off;
+
+            hls on;
+            hls_path /var/www/hls;
+            hls_fragment 2s;
+            hls_playlist_length 10s;
+
+            <span class="cm"># 推流鉴权：nginx-rtmp 把参数拼到 URL 上回调</span>
+            on_publish http://127.0.0.1:8085/auth;
+        }
+    }
+}
+
+<span class="kw">http</span> {
+    server {
+        listen 8080;
+        location /hls {
+            types {
+                application/vnd.apple.mpegurl m3u8;
+                video/mp2t ts;
+            }
+            root /var/www;
+            add_header Cache-Control no-cache;
+            add_header Access-Control-Allow-Origin *;
+        }
+    }
+}</pre>
+
+  <p class="small">注意 <code>hls_path</code> 与 <code>location /hls</code> 的目录关系：<code>hls_path /var/www/hls</code> 对应 <code>root /var/www</code> + <code>location /hls</code>，少一层目录就会 404。m3u8 必须 <code>no-cache</code>，ts 可以短缓存；这两条写反，表现是“画面卡住不更新”。</p>
+
+  <h3>为什么不建议新项目首选它</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>维护与生态</h4>
+      <p class="small">模块更新长期停滞，和 nginx 新版本、新编译参数的兼容性要自己扛；出问题可查的资料越来越旧。媒体协议在演进（WebRTC、SRT、LL-HLS），它基本停在 RTMP/HLS 时代。</p>
+    </div>
+    <div class="card">
+      <h4>能力边界</h4>
+      <p class="small">没有原生 WebRTC/SRT/GB28181，没有完整的 HTTP API，没有成熟的源站-边缘集群与按需拉流。要做鉴权、录制管理、监控，得在外部再搭一套。</p>
+    </div>
+    <div class="card">
+      <h4>延迟与体验</h4>
+      <p class="small">HLS 延迟由切片与播放器缓冲决定，做低延迟直播很吃力；HTTP-FLV 需要额外模块/配置，首帧与 GOP 缓存策略也不如现代服务器细。</p>
+    </div>
+    <div class="card">
+      <h4>安全与运维</h4>
+      <p class="small">推流鉴权靠 URL 参数 + 回调，缺少细粒度的播放鉴权、Token 生命周期与踢人能力；监控指标少，容量评估基本靠猜。</p>
+    </div>
+  </div>
+
+  <h3>历史方案速览：一句话一个时代</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方案</th><th>年代 / 血统</th><th>一句话定位</th><th>今天的态度</th></tr></thead>
+      <tbody>
+        <tr><td><b>CRTMPD</b>（crtmpserver）</td><td>约 2008，C++ 开源</td><td>早期 RTMP 服务器，功能原始但可读</td><td>只适合读源码、理解 RTMP 握手</td></tr>
+        <tr><td><b>Red5</b></td><td>约 2006，Java 开源</td><td>Flash 时代的“应用服务器”，支持 RTMP 与共享对象</td><td>遗留 Flash 业务维护，别新搭</td></tr>
+        <tr><td><b>Wowza</b></td><td>约 2007，商业</td><td>老牌商业流媒体服务器，插件与协议覆盖广</td><td>有预算、有存量时可用；要接受许可成本</td></tr>
+        <tr><td><b>Adobe Media Server</b></td><td>Flash 官方，已停止维护</td><td>FMS 的继任者，深度绑定 Flash 生态</td><td>尽快迁移，浏览器已不支持 Flash</td></tr>
+        <tr><td><b>nginx-rtmp</b></td><td>约 2012，nginx 模块</td><td>轻量、够用的 RTMP+HLS 方案</td><td>小流量遗留可用，新项目不首选</td></tr>
+        <tr><td><b>SRS / ZLM / MediaMTX</b></td><td>2013 / 2017 / 2020 前后</td><td>现代多协议服务器：WebRTC、SRT、API、集群</td><td>新项目按场景三选一</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>顺手认识一下 FLV：HTTP-FLV 到底在传什么</h3>
+  <p>HTTP-FLV 像“把一段段压缩帧装进贴了编号的纸箱”，再把纸箱排成一条长龙通过 HTTP 发出去。龙头是 9 字节的 FLV Header，后面跟着一个个 Tag。看懂它，排障时就知道“服务器到底有没有把媒体写出去”。</p>
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"FLV Header：9 字节定下整个容器","bytes":"46 4c 56 01 05 00 00 00 09","fields":[{"name":"签名 FLV","start":0,"end":2,"bits":"3 bytes","note":"固定为 0x46 0x4C 0x56，即 ASCII 的 F、L、V；不是这三个字母就不是 FLV"},{"name":"版本","start":3,"end":3,"bits":"1 byte","note":"固定为 1；解析器一般只认 1"},{"name":"标志位","start":4,"end":4,"bits":"bit0..bit2","note":"0x05 = 0b101：bit0 音频存在、bit2 视频存在；没有对应轨道时播放器会等或报错"},{"name":"头长度","start":5,"end":8,"bits":"4 bytes","note":"值为 9，表示 FLV Header 自身长度；其后紧跟 PreviousTagSize0 与第一个 Tag"}],"hint":"FLV Header 只有 9 字节；HTTP-FLV 的长连接里，后面是连续的 Tag（metadata、video、audio）。"}'></div>
+
+  <p class="small">第一个 Tag 通常是 <code>onMetaData</code>（AMF0），携带宽高、帧率、码率等；随后是 video/audio tag。播放器“能连上但一直黑屏”，常见原因是 header 的标志位与实际轨道不符，或者服务器只写了 audio tag。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>老方案的“能跑”不等于“能扛”：</b>nginx-rtmp 在几百并发、单机小流量下依然可靠；但一旦要做鉴权体系、录制回传、边缘扩容、WebRTC 低延迟，补丁成本会超过迁移成本。选型时把“未来半年要加的功能”列出来，再决定要不要继续开老卡车。</span></div>
+</section>
+
+<section id="cluster">
+  <h2>🕸️ 集群与边缘：总仓只发几车货，驿站面对所有收件人</h2>
+  <p class="lead">单机直播像一家小卖部：进货、上架、收银都一个人干。观众一多，收银台先垮，仓库还闲着。集群做的事只有一件——把“面对观众”的活分给很多台边缘，源站只负责把同一路流复制给这几台边缘。边缘越多，源站的出口越省；但边缘的回源链路一旦抖动，故障也会被放大。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 920 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="源站与边缘集群的拓扑">
+      <defs>
+        <marker id="cl-ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,1 L7,4 L0,7 Z" fill="#7c3aed"/>
+        </marker>
+      </defs>
+      <text x="16" y="24" font-size="13" font-weight="700" fill="#0f172a">源站-边缘：源站只复制给边缘，边缘再复制给观众</text>
+      <text x="16" y="44" font-size="10.5" fill="#64748b">回源链路用 RTMP/SRT；边缘出口用 HLS/HTTP-FLV/WHEP</text>
+
+      <rect x="16" y="120" width="140" height="80" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="30" y="144" font-size="12" font-weight="700" fill="#5b21b6">推流端</text>
+      <text x="30" y="164" font-size="10" fill="#334155">1 路 RTMP/SRT</text>
+      <text x="30" y="182" font-size="10" fill="#64748b">上行只需 1 份码率</text>
+
+      <rect x="210" y="95" width="200" height="130" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="224" y="119" font-size="12" font-weight="700" fill="#0e7490">源站 Origin</text>
+      <text x="224" y="139" font-size="10" fill="#334155">SRS / ZLMediaKit</text>
+      <text x="224" y="157" font-size="10" fill="#334155">只服务边缘，不直面观众</text>
+      <text x="224" y="175" font-size="10" fill="#64748b">出口 = 码率 × 边缘数</text>
+      <text x="224" y="193" font-size="10" fill="#64748b">复制 3 份，而不是 1 万份</text>
+      <text x="224" y="211" font-size="10" fill="#64748b">源站挂了，全站都黑</text>
+
+      <rect x="500" y="30" width="160" height="70" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="514" y="52" font-size="11.5" font-weight="700" fill="#047857">边缘 A · 华东</text>
+      <text x="514" y="70" font-size="10" fill="#334155">回源 + GOP 缓存</text>
+      <text x="514" y="88" font-size="10" fill="#64748b">出口只对本地观众</text>
+
+      <rect x="500" y="125" width="160" height="70" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="514" y="147" font-size="11.5" font-weight="700" fill="#047857">边缘 B · 华南</text>
+      <text x="514" y="165" font-size="10" fill="#334155">回源 + GOP 缓存</text>
+      <text x="514" y="183" font-size="10" fill="#64748b">可水平加机器</text>
+
+      <rect x="500" y="220" width="160" height="70" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="514" y="242" font-size="11.5" font-weight="700" fill="#047857">边缘 C · 海外</text>
+      <text x="514" y="260" font-size="10" fill="#334155">回源 + 就近分发</text>
+      <text x="514" y="278" font-size="10" fill="#64748b">回源延迟决定首帧</text>
+
+      <rect x="760" y="30" width="144" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="774" y="52" font-size="11.5" font-weight="700" fill="#92400e">观众 1..N</text>
+      <text x="774" y="70" font-size="10" fill="#334155">浏览器 / App</text>
+      <text x="774" y="88" font-size="10" fill="#64748b">HLS / FLV / WHEP</text>
+
+      <rect x="760" y="125" width="144" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="774" y="147" font-size="11.5" font-weight="700" fill="#92400e">观众 1..N</text>
+      <text x="774" y="165" font-size="10" fill="#334155">电视墙 / 大屏</text>
+      <text x="774" y="183" font-size="10" fill="#64748b">只连最近边缘</text>
+
+      <rect x="760" y="220" width="144" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="774" y="242" font-size="11.5" font-weight="700" fill="#92400e">观众 1..N</text>
+      <text x="774" y="260" font-size="10" fill="#334155">移动端 / 海外</text>
+      <text x="774" y="278" font-size="10" fill="#64748b">就近接入，减少绕路</text>
+
+      <line x1="156" y1="160" x2="202" y2="160" stroke="#7c3aed" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <text x="179" y="150" font-size="7.5" fill="#5b21b6" text-anchor="middle">1 路</text>
+
+      <line x1="410" y1="150" x2="450" y2="70" stroke="#0891b2" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <line x1="410" y1="160" x2="492" y2="160" stroke="#0891b2" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <line x1="410" y1="170" x2="450" y2="252" stroke="#0891b2" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <text x="445" y="118" font-size="8" fill="#0e7490">回源复制</text>
+
+      <line x1="660" y1="65" x2="752" y2="65" stroke="#10b981" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <line x1="660" y1="160" x2="752" y2="160" stroke="#10b981" stroke-width="2" marker-end="url(#cl-ar)"/>
+      <line x1="660" y1="255" x2="752" y2="255" stroke="#10b981" stroke-width="2" marker-end="url(#cl-ar)"/>
+
+      <rect x="16" y="310" width="888" height="54" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="32" y="332" font-size="10.5" font-weight="700" fill="#92400e">带宽账：1 Mbps × 10,000 人 = 10 Gbps；源站出口只有 1 Mbps × 边缘数</text>
+      <text x="32" y="352" font-size="9.5" fill="#64748b">10 G 网卡实际可用约 9.5 Gbps，还要留重传与突发余量；超过单机出口就该上边缘或 CDN</text>
+    </svg>
+    <figcaption>边缘的价值不是“更快的 CPU”，而是“把出口带宽拆到多个地理位置”；源站只承担回源复制。</figcaption>
+  </div>
+
+  <h3>SRS 源站与边缘的两段配置</h3>
+  <pre class="code"><span class="cm"># 源站：主动把流“推”给边缘（forward），适合热门流、边缘数量固定</span>
+<span class="kw">vhost</span> <span class="nm">__defaultVhost__</span> {
+    <span class="kw">cluster</span> {
+        <span class="kw">mode</span>        <span class="nm">local</span>;              <span class="cm"># 我是源站</span>
+    }
+    <span class="kw">forward</span> {
+        <span class="kw">enabled</span>     <span class="nm">on</span>;
+        <span class="kw">destination</span> <span class="nm">10.0.0.21:1935</span>;    <span class="cm"># 边缘 A</span>
+        <span class="kw">destination</span> <span class="nm">10.0.0.22:1935</span>;    <span class="cm"># 边缘 B</span>
+    }
+}
+
+<span class="cm"># 边缘：观众来了才向源站“拉”（remote），适合长尾流、按需点播</span>
+<span class="kw">vhost</span> <span class="nm">__defaultVhost__</span> {
+    <span class="kw">cluster</span> {
+        <span class="kw">mode</span>           <span class="nm">remote</span>;          <span class="cm"># 我是边缘</span>
+        <span class="kw">origin</span>         <span class="nm">10.0.0.10:1935</span>;  <span class="cm"># 源站地址</span>
+        <span class="kw">token_traverse</span> <span class="nm">off</span>;             <span class="cm"># token 是否透传，按鉴权方案决定</span>
+    }
+}</pre>
+
+  <p class="small"><b>forward 与 remote 的区别，像“总仓主动发车”与“驿站缺货再叫货”：</b>forward 会把每一路流都复制到所有边缘，热门流很稳，但长尾流会浪费大量回源带宽；remote 只在有人观看时回源，省带宽，但首个观众要等一次回源，首帧更慢。生产上常见混合策略：热门流 forward，冷门流 remote。</p>
+
+  <h3>负载均衡的三种做法</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>做法</th><th>怎么分</th><th>优点</th><th>代价 / 坑</th></tr></thead>
+      <tbody>
+        <tr><td><b>DNS 轮询</b></td><td>一个域名解析到多个边缘 IP，靠 TTL 轮换</td><td>改动最小，播放器无感</td><td>TTL 缓存导致切换慢；没有健康检查；同一观众可能被分到远端</td></tr>
+        <tr><td><b>HTTP 302</b></td><td>业务网关按地域/负载返回 302，播放器跟随到边缘</td><td>可控、可带 token、可做灰度</td><td>每个清单请求多一次跳转；播放器必须支持重定向；切片地址也要指向边缘</td></tr>
+        <tr><td><b>API 调度</b></td><td>App 先请求调度接口，拿到“边缘地址 + 短时 token”再播放</td><td>最灵活，可结合实时负载与计费</td><td>客户端要配合；调度服务本身要高可用，不能成为新单点</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>带宽账：为什么必须上 CDN</h3>
+  <div class="math-b">总出口带宽 = 单观众码率 × 并发观众数 × (1 + 冗余 20%)<br>1 Mbps × 10,000 人 = 10,000 Mbps = 10 Gbps</div>
+  <p>10 Gbps 是什么概念：一张 10G 网卡理论 10 Gbps，实际可用约 9.5 Gbps，还要留给重传、突发和监控；也就是说，1 Mbps 的流想扛 1 万人，至少要两张 10G 网卡做绑定，且没有余量。若码率是 2 Mbps，就是 20 Gbps；4 Mbps 的 4K 直播，1 万人就是 40 Gbps。这就是为什么“自建源站 + 边缘”到一定规模后一定要接 CDN——不是服务器算不动，而是出口带宽和地域覆盖买不起。</p>
+  <p class="small">源站侧的压力则小得多：源站出口 = 单路码率 × 边缘节点数。100 个边缘、每路 4 Mbps，源站也只需 400 Mbps。真正随观众数线性增长的，是边缘与 CDN 的出口。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"边缘回源：第一个观众到来时发生了什么","actors":["播放端","边缘","源站"],"steps":[{"from":0,"to":1,"label":"请求播放：HLS / FLV / WHEP","color":"#7c3aed","detail":"观众连到最近的边缘，而不是直接连源站；边缘先看本地有没有这路流。"},{"from":1,"to":1,"label":"查缓存：没有可用流","color":"#f59e0b","detail":"边缘没有发布者也没有缓存，决定向源站回源；这一步决定首帧要等多久。"},{"from":1,"to":2,"label":"RTMP / SRT 回源","color":"#0891b2","detail":"边缘以客户端身份连源站，带上 vhost/app/stream 与鉴权参数；源站把它当成一个特殊的观众。"},{"from":2,"to":2,"label":"源站鉴权 / 定位流","color":"#f59e0b","detail":"源站确认这路流存在且有权限，然后开始向边缘转发压缩帧，不解码。"},{"from":2,"to":1,"label":"持续转发媒体","color":"#10b981","detail":"回源是一条持续连接；边缘收到帧后缓存一个 GOP，供后来的观众快速起播。"},{"from":1,"to":0,"label":"边缘下发 + 缓存","color":"#10b981","detail":"第一个观众拿到数据；后续观众直接命中边缘缓存，不再触发回源。"}]}'></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>边缘不是越多越好：</b>每多一个边缘，就多一条回源连接、多一份源站出口、多一个可能抖动的环节。边缘数量应该由“地域覆盖 + 单机出口”决定，而不是拍脑袋。回源链路建议用 SRT 或专线对抗丢包；公网 RTMP 回源抖动时，观众侧会表现为“所有边缘一起卡”。</span></div>
+</section>
+
+<section id="record">
+  <h2>💾 录制与截图：把“流过”变成“留下”</h2>
+  <p class="lead">录制像在传送带旁边放一台复印机：货照常走，复印机另存一份。它最怕两件事——写盘把直播拖慢，以及“录了但文件打不开”。前者靠目录规划与异步落盘，后者靠选对容器与收尾方式。</p>
+
+  <h3>SRS 的 dvr：先决定“一段”还是“一场”</h3>
+  <pre class="code"><span class="kw">vhost</span> <span class="nm">__defaultVhost__</span> {
+    <span class="kw">dvr</span> {
+        <span class="kw">enabled</span>           <span class="nm">on</span>;
+        <span class="kw">dvr_plan</span>          <span class="nm">segment</span>;   <span class="cm"># 按时长切段；session 则一场直播一个文件</span>
+        <span class="kw">dvr_duration</span>      <span class="nm">3600</span>;      <span class="cm"># 每段 1 小时，便于分片上传与失败重试</span>
+        <span class="kw">dvr_path</span>          <span class="nm">./objs/nginx/html/record/[app]/[stream]/[timestamp].flv</span>;
+        <span class="kw">dvr_wait_keyframe</span> <span class="nm">on</span>;        <span class="cm"># 每段从关键帧开始，避免切出半帧</span>
+    }
+}</pre>
+  <p class="small"><code>[timestamp]</code> 让每段文件名不重复；<code>[app]</code>/<code>[stream]</code> 让目录天然按频道分层，清理时不会误删别的业务。<b>录制目录不要和 HLS 切片目录混在一起</b>：一个需要长期保留，一个需要频繁删除，清理脚本很容易误伤。</p>
+
+  <h3>HLS 录制 vs FLV / MP4 录制</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>形态</th><th>落盘方式</th><th>崩溃安全性</th><th>回看体验</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td><b>HLS / ts</b></td><td>持续生成小切片 + m3u8</td><td>高：最多丢最后一片</td><td>直播结束即可按清单回看</td><td>直播回放、边播边看</td></tr>
+        <tr><td><b>FLV</b></td><td>单个持续增长的文件</td><td>中：异常断电可能丢尾部与索引</td><td>需转封装或播放器支持</td><td>归档、后续转 MP4</td></tr>
+        <tr><td><b>MP4</b></td><td>ZLM 直接写 MP4；或 FLV 转封装</td><td>低：moov 未写完时可能打不开</td><td>下载、剪辑、跨平台最好</td><td>成片归档、交付客户</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># FLV 转 MP4：不重新编码，只换容器；+faststart 让网页能边下边播</span>
+ffmpeg -i record/live/demo-1700000000.flv -c copy -movflags +faststart demo.mp4
+
+<span class="cm"># 如果录制被异常中断，先尝试修复索引再转封装</span>
+ffmpeg -err_detect ignore_err -i broken.flv -c copy fixed.mp4</pre>
+
+  <p class="small">ZLM 的 <code>[record] enable_mp4=1</code> 会直接落 MP4；方便，但进程崩溃时文件可能缺 <code>moov</code>。对“必须可交付”的录制，优先 FLV 或分段 MP4，再由后处理生成最终文件。MediaMTX 则可用 <code>recordFormat: fmp4</code> 做分段，网页回放更友好。</p>
+
+  <h3>定时截图：三条命令覆盖大多数场景</h3>
+  <pre class="code"><span class="cm"># 单张封面：从 RTSP 抓一帧，质量 2（约 90%）</span>
+ffmpeg -y -rtsp_transport tcp -i <span class="st">rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101</span> \
+  -frames:v 1 -q:v 2 cover.jpg
+
+<span class="cm"># 每 10 秒一张，用于电视墙轮巡或存证</span>
+ffmpeg -rtsp_transport tcp -i <span class="st">rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101</span> \
+  -vf <span class="st">"fps=1/10"</span> -q:v 3 snap-%03d.jpg
+
+<span class="cm"># 用 ZLM 的 API 抓图：不需要本机装 FFmpeg，适合业务系统调用</span>
+curl -o snap.jpg <span class="st">"http://127.0.0.1/index/api/getSnap?secret=xxx&amp;url=rtsp://127.0.0.1:554/live/cam1&amp;timeout_sec=5&amp;expire_sec=10"</span></pre>
+
+  <p class="small">截图不是“越频繁越好”：每次抓图都可能触发一次上游拉流或解码。摄像头侧并发有限，建议按需抓图（用户点“刷新封面”时），而不是每路每秒定时抓。抓图任务要单独限流，别和直播抢同一个 RTSP 会话。</p>
+
+  <h3>存储账与回传</h3>
+  <div class="math-b">单路录制容量 ≈ 码率 × 3600 ÷ 8 = 1 Mbps × 3600 ÷ 8 ≈ 450 MB/小时<br>24 小时约 10.8 GB；4 Mbps 则约 43 GB/天</div>
+  <p>录制是“按天线性增长”的成本，必须配保留策略：本地只留 3–7 天，长期归档转对象存储（S3/OSS/COS）。回传用 <code>rclone</code>、<code>aws s3 cp</code> 或 SRS 的 <code>on_hls</code> 回调触发异步上传；<b>不要在媒体线程里同步上传</b>，否则切片与录制都会变慢。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>目录规划</h4>
+      <p class="small">按 <code>app/stream/日期</code> 分层；HLS 切片、DVR、截图各自独立根目录。清理脚本只碰“可再生成”的目录，归档目录只允许生命周期规则删除。</p>
+    </div>
+    <div class="card">
+      <h4>磁盘与 inode</h4>
+      <p class="small">HLS 会产生大量小文件，除了容量还要看 inode；<code>df -h</code> 与 <code>df -i</code> 都要看。SSD 写满会拖慢切片，进而让所有观众卡顿。</p>
+    </div>
+    <div class="card">
+      <h4>回传与校验</h4>
+      <p class="small">上传后校验文件大小与 MD5，成功再删本地；失败重试要幂等。对象存储的生命周期规则比“手写 rm”可靠得多。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-r"><span class="ic">🚨</span><span><b>最常见的录制事故：</b>录制目录和 HLS 目录共用，清理脚本按“修改时间”删文件，把刚录好的成片一起删了；或者磁盘写满后，SRS 仍在推流，但切片写不进去，观众看到的是“直播还在、HLS 404”。录制与切片必须分盘或至少分目录，并给磁盘留 20% 余量。</span></div>
+</section>
+
+<section id="monitor">
+  <h2>📈 监控运维与排障 FAQ：先看数，再看日志，最后才猜</h2>
+  <p class="lead">媒体服务器的故障，八成能靠四个数字定位：<b>有没有流、有没有人看、出口带宽够不够、磁盘还写不写得进去</b>。监控像汽车仪表盘：油量、水温、转速各管一件事，盯着一个“CPU 高”就下结论，往往会修错地方。</p>
+
+  <h3>关键指标：看什么、去哪看</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>指标</th><th>它真正说明什么</th><th>SRS</th><th>ZLM</th><th>MediaMTX</th></tr></thead>
+      <tbody>
+        <tr><td><b>并发流数</b></td><td>有多少路“正在发布”的流；不等于观众数</td><td><code>/api/v1/streams</code></td><td><code>getMediaList</code></td><td><code>/v3/paths/list</code> 的 <code>ready</code></td></tr>
+        <tr><td><b>在线客户端</b></td><td>推流端 + 播放端连接总数</td><td><code>/api/v1/clients</code></td><td><code>getStatistic</code></td><td>各 <code>.../list</code> 会话数</td></tr>
+        <tr><td><b>出口带宽</b></td><td>网卡出方向速率；最容易被低估的成本</td><td><code>summaries</code> + 网卡监控</td><td><code>getStatistic</code> + 网卡</td><td>网卡监控</td></tr>
+        <tr><td><b>单流码率</b></td><td>是否与预期一致；突增常是编码参数错误</td><td><code>streams.kbps</code></td><td><code>getMediaInfo</code></td><td>API 路径详情</td></tr>
+        <tr><td><b>首帧 / 卡顿</b></td><td>GOP、缓冲、回源延迟的综合结果</td><td>日志 + 播放器埋点</td><td>日志 + 播放器埋点</td><td>日志 + 播放器埋点</td></tr>
+        <tr><td><b>CPU / 内存</b></td><td>解封装、切片、加密的开销；转发本身不重</td><td><code>docker stats</code></td><td><code>getThreadsLoad</code></td><td><code>docker stats</code></td></tr>
+        <tr><td><b>磁盘 / inode</b></td><td>切片与录制能否继续写；写满会先表现为 HLS 404</td><td><code>df -h</code> / <code>df -i</code></td><td><code>df -h</code> / <code>df -i</code></td><td><code>df -h</code> / <code>df -i</code></td></tr>
+        <tr><td><b>回调失败率</b></td><td>鉴权是否稳定；失败会直接拒绝推流/播放</td><td>业务端日志</td><td><code>[hook]</code> 日志</td><td>无 hook，看代理日志</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>日志与健康检查</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>SRS</h4>
+      <p class="small">容器内常见在 <code>./objs/logs/srs.log</code>；<code>srs_log_tank console</code> 时直接进 <code>docker logs</code>。健康检查：<code>curl 127.0.0.1:1985/api/v1/versions</code>。</p>
+    </div>
+    <div class="card">
+      <h4>ZLMediaKit</h4>
+      <p class="small">日志在镜像内的 <code>log/</code> 目录（具体路径以镜像为准）；健康检查：<code>curl 127.0.0.1/index/api/getStatistic?secret=xxx</code>。</p>
+    </div>
+    <div class="card">
+      <h4>MediaMTX</h4>
+      <p class="small">默认输出到 stdout，<code>docker logs -f mediamtx</code> 或 <code>journalctl -u mediamtx</code>；健康检查：<code>curl 127.0.0.1:9997/v3/paths/list</code>。</p>
+    </div>
+  </div>
+
+  <h3>一份能直接用的 docker compose</h3>
+  <pre class="code"><span class="cm"># docker-compose.yml —— SRS 单机源站 + 挂载配置与 HLS 目录</span>
+services:
+  srs:
+    image: ossrs/srs:5
+    container_name: srs
+    restart: unless-stopped
+    command: ./objs/srs -c conf/srs.conf
+    ports:
+      - <span class="st">"1935:1935"</span>          <span class="cm"># RTMP 推流</span>
+      - <span class="st">"1985:1985"</span>          <span class="cm"># HTTP API，建议只绑内网</span>
+      - <span class="st">"8080:8080"</span>          <span class="cm"># HLS / HTTP-FLV</span>
+      - <span class="st">"8000:8000/udp"</span>      <span class="cm"># WebRTC 媒体</span>
+      - <span class="st">"10080:10080/udp"</span>    <span class="cm"># SRT</span>
+    volumes:
+      - ./conf/srs.conf:/usr/local/srs/conf/srs.conf:ro
+      - ./html:/usr/local/srs/objs/nginx/html
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: [<span class="st">"CMD-SHELL"</span>, <span class="st">"curl -fsS http://127.0.0.1:1985/api/v1/versions || exit 1"</span>]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+<span class="cm"># 常用运维命令</span>
+docker compose up -d
+docker logs -f --tail=100 srs
+docker stats --no-stream srs
+docker compose exec srs ./objs/srs -t -c conf/srs.conf</pre>
+
+  <p class="small">若镜像内没有 <code>curl</code>，删掉 healthcheck 或换成镜像自带的探测工具即可。生产上把 <code>1985</code> 改绑内网地址（例如 <code>127.0.0.1:1985:1985</code>），只让反向代理访问；<code>8000/udp</code> 与 <code>10080/udp</code> 必须真的映射，否则 WebRTC/SRT 只会“握手成功、媒体不来”。</p>
+
+  <h3>排障 FAQ：八个“看起来像玄学”的问题</h3>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>① 推流提示 404 / 被拒绝：vhost、app、stream 到底怎么对应？</summary>
+    <div class="bd">
+      <p class="small">把 URL 拆成三段：<code>rtmp://host:1935/live/demo</code> 中 <code>live</code> 是 app，<code>demo</code> 是 stream，vhost 默认是 <code>__defaultVhost__</code>。SRS 的 <code>vhost</code> 段、ZLM 的 <code>appName</code>、MediaMTX 的 <code>paths</code> 键必须与实际 URL 对上。常见错误是配置写了 <code>vhost live</code>，推流却推到默认 vhost；或者 ZLM 的 <code>appName</code> 与播放地址里的 app 不一致。</p>
+      <p class="small">快速验证：用 <code>ffprobe rtmp://host/live/demo</code> 反向确认流是否存在；再看服务器日志里打印的 <code>vhost/app/stream</code> 三元组，不要凭记忆。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>② HLS 延迟十几秒，调哪个参数？</summary>
+    <div class="bd">
+      <p class="small">先算账：延迟 ≈ 切片时长 ×（播放器缓冲片数 + 1）。默认 6 秒切片 + 3 片缓冲，十几秒很正常。把 <code>hls_fragment</code> 降到 2 秒、<code>hls_window</code> 保持 10 秒左右，通常能到 6–8 秒；再低就要 LL-HLS 或 HTTP-FLV/WebRTC。</p>
+      <p class="small">别只改服务器：播放器（hls.js）自己的 <code>maxBufferLength</code>、<code>liveSyncDuration</code> 也会加延迟。服务器切 1 秒、播放器缓冲 10 秒，结果还是 10 秒以上。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>③ WebRTC 能协商、没画面：先查哪三件事？</summary>
+    <div class="bd">
+      <p class="small">① <b>UDP 端口</b>：SRS 默认 8000/udp，ZLM 默认 8000/udp，MediaMTX 默认 8189/udp；只映射 TCP 一定没媒体。② <b>候选地址</b>：<code>candidate</code>/<code>externIP</code>/<code>webrtcAdditionalHosts</code> 必须是浏览器可达的公网地址，写 172.x 就只能内网看。③ <b>证书与混合内容</b>：HTTPS 页面调 HTTP 的 WHEP 会被浏览器拦截；DTLS 证书指纹不匹配会直接握手失败。</p>
+      <p class="small">再看编码：浏览器普遍支持 H.264，H.265 在多数浏览器里仍不可用；音频优先 Opus/G711。编码不支持时，表现也是“连上了、没画面”。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>④ 网页播放报 CORS：到底该加哪个头？</summary>
+    <div class="bd">
+      <p class="small">HLS/FLV/WHEP 都是浏览器发起的 HTTP 请求，页面源与流源不同就需要 <code>Access-Control-Allow-Origin</code>。SRS 开 <code>http_server.crossdomain</code> 或 <code>http_api.crossdomain</code>；ZLM 在 <code>[http]</code> 配跨域；MediaMTX 用 <code>webrtcAllowOrigin</code>/<code>hlsAllowOrigin</code>。带 Cookie 的请求不能用 <code>*</code>，要回显具体 Origin。</p>
+      <p class="small">CORS 只是浏览器策略，不是鉴权。加完头能播，不代表别人不能盗链；播放鉴权仍要 token + 回调。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>⑤ 回调超时导致推流被拒：业务后端该怎么改？</summary>
+    <div class="bd">
+      <p class="small">鉴权回调是同步阻塞的：SRS/ZLM 等业务后端返回，超时通常按拒绝处理。把回调控制在几百毫秒内：token 验签用本地缓存、频道状态放 Redis、慢查询与外部 API 全部异步化；回调接口单独做限流与降级，别和业务主站共用一套容易抖动的依赖。</p>
+      <p class="small">排障时对齐三个时间戳：推流端发起时间、媒体服务器日志里的 hook 请求时间、业务后端收到/返回时间。若业务端很快但服务器仍超时，查网络与 DNS，不要继续改代码。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>⑥ 磁盘写满：为什么直播还在，HLS 却 404？</summary>
+    <div class="bd">
+      <p class="small">HLS 依赖“切片写盘 + HTTP 读盘”。磁盘满时，内存里的流还在转发，但新 ts 写不进去，m3u8 不更新，观众自然 404 或卡住。先看 <code>df -h</code> 与 <code>df -i</code>，再确认 <code>hls_cleanup</code>/<code>hls_dispose</code> 是否生效、录制目录是否被无限保留。</p>
+      <p class="small">治本：切片与录制分盘；设置保留天数与生命周期；给磁盘留 20% 余量；监控 inode，HLS 的小文件很容易先耗尽 inode 而不是容量。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>⑦ 首个画面很慢：是编码问题还是服务器问题？</summary>
+    <div class="bd">
+      <p class="small">先看 GOP。服务器要等一个关键帧（IDR）才能让新观众起播；GOP 2 秒和 GOP 10 秒，首帧体验差一个数量级。再看 <code>gop_cache</code> 是否开启，按需回源是否让第一个观众承担了整次回源延迟。最后才怀疑编码器。</p>
+      <p class="small">快速验证：同一路流用 ffplay 拉，若 ffplay 也慢，问题在服务器/上游；若 ffplay 快、浏览器慢，查播放器缓冲与 HLS 清单。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>⑧ SRT 连不上：为什么 UDP 通了还失败？</summary>
+    <div class="bd">
+      <p class="small">SRT 不只是“UDP 端口通”：还要看 <code>streamid</code>（部分服务器用它做路径/鉴权）、<code>peerlatency</code>/<code>recvlatency</code> 是否匹配、防火墙是否按“无连接 UDP”放行。SRS 默认 10080/udp，MediaMTX 默认 8890/udp，两者都不是 TCP。</p>
+      <p class="small">先用 <code>ffmpeg -f mpegts -i ... -f mpegts "srt://host:port?streamid=..."</code> 做最小验证，再逐步加 latency 与加密参数；一次只改一个变量。</p>
+    </div>
+  </details>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>排障顺序固定成习惯：</b>① 用 <code>curl</code> 确认 API 活着；② 用 <code>ffprobe</code> 确认流存在；③ 用 <code>ffplay</code> 绕开浏览器；④ 再打开浏览器看控制台与网络；⑤ 最后才看业务代码。媒体问题里，“服务器没这路流”和“浏览器不支持这个协议”占了大多数，别一上来就怀疑编码器。</span></div>
 </section>
 
 </main>
