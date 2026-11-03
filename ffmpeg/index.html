@@ -58,12 +58,22 @@
     <a href="#why">它到底是什么</a>
     <a href="#layers">六个库的分工</a>
     <a href="#objects">数据流与核心对象</a>
+    <a href="#lifecycle">帧的生命周期与引用计数</a>
     <a href="#timestamp">时间戳：PTS / DTS</a>
     <a href="#remux">转码与转封装</a>
     <a href="#filter">滤镜与 filter graph</a>
+    <a href="#graph-syntax">filtergraph 语法拆解</a>
     <a href="#recipes">常用命令配方</a>
+    <a href="#cookbook">命令菜谱 30 条</a>
     <a href="#rate">码率、CRF 与质量</a>
     <a href="#probe">ffprobe 排错</a>
+    <a href="#probe-deep">ffprobe 全家桶</a>
+    <a href="#loudness">响度规范 LUFS</a>
+    <a href="#ladder">码率阶梯与 HLS</a>
+    <a href="#automation">自动化与错误处理</a>
+    <a href="#errors">报错词典</a>
+    <a href="#perf">性能调优</a>
+    <a href="#quality">质量度量 VMAF</a>
     <a href="#source">源码目录导读</a>
     <a href="#wasm">浏览器端 FFmpeg</a>
     <a href="#glossary">术语与坑表</a>
@@ -180,6 +190,157 @@ while (av_read_frame(fmt, pkt) &gt;= 0) {
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>AVFrame 为什么有 <code>data[8]</code> 和 <code>linesize[8]</code>？</b>因为 YUV 常被拆成多个平面（Y、U、V 各一块），每块的行宽可能为了对齐而大于图像宽度。<b>linesize 不是 width</b>。按 width 逐行拷贝，画面会斜；按 linesize 偏移才是正确姿势。音频则常见多个声道平面，平面数超过 8 时用 <code>extended_data</code>。</span></div>
 </section>
 
+<section id="lifecycle">
+  <h2>♻️ 一条帧的一生：引用计数、缓冲池与 seek 后的 flush</h2>
+  <p class="lead">AVFrame 更像图书馆里一本可以多人同时借阅的画册：<code>av_frame_ref</code> 是在借阅卡上再加一个名字（引用计数 +1），<code>av_frame_unref</code> 是还书；最后一个人还书，书才真正下架释放。复制 AVFrame 通常不是复制几兆像素，而是多一张借阅卡。</p>
+  <p>AVPacket 也一样。它包着压缩码流和 PTS/DTS，内部用 <code>AVBufferRef</code> 管理一块带引用计数的内存；<code>av_packet_ref</code> 复制的是“包的结构 + 引用”，不是码流本身。这也解释了两件事：解码器可以几乎零拷贝地把包送进流水线；而滤镜在改像素前必须先确认这块内存没人共享，否则就得 <code>av_frame_make_writable</code> 做写时复制（copy-on-write）。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>AVPacket：压缩包裹</h4>
+      <p class="small">装的是编码后的码流、PTS/DTS、stream_index 和 flags。它是“还没拆的快递”，本身可以共享；<code>av_packet_unref</code> 只是还引用，不是删文件。</p>
+    </div>
+    <div class="card">
+      <h4>AVFrame：未压缩画布</h4>
+      <p class="small">装的是像素或音频采样，以及 <code>data[]</code>、<code>linesize[]</code>、<code>format</code>、<code>sample_rate</code> 等“备注”。像素内存挂在 <code>buf[]</code> 的引用计数上，不在结构体里。</p>
+    </div>
+    <div class="card">
+      <h4>AVBufferRef：借阅卡</h4>
+      <p class="small">真正被复制的对象。引用 +1 时数据不动，引用 −1 时数据也不动；只有计数归零，底层 <code>AVBuffer</code> 才被释放。</p>
+    </div>
+  </div>
+
+  <h3>引用计数 API：谁加一，谁减一</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>API</th><th>做什么</th><th>关键约束</th></tr></thead>
+      <tbody>
+        <tr><td><code>av_frame_alloc</code></td><td>只分配 AVFrame 结构体，像素内存还是空的</td><td>结束用 <code>av_frame_free</code>，它会先 unref</td></tr>
+        <tr><td><code>av_frame_get_buffer</code></td><td>按像素格式、宽高、对齐方式分配真正的一帧</td><td>分配后这帧的 buffer 引用计数为 1</td></tr>
+        <tr><td><code>av_frame_ref(dst, src)</code></td><td>让 dst 共享 src 的底层 buffer，引用 +1</td><td>dst 必须已 alloc 且不持有别的数据，否则先 unref</td></tr>
+        <tr><td><code>av_frame_clone(src)</code></td><td>alloc + ref 的合体，返回一个新结构体</td><td>失败返回 NULL；用完 <code>av_frame_free</code></td></tr>
+        <tr><td><code>av_frame_move_ref(dst, src)</code></td><td>把引用整体搬家，src 被清空</td><td>常用于“交棒”，少一次加一减一</td></tr>
+        <tr><td><code>av_frame_make_writable</code></td><td>若 buffer 被别人共享，先复制一份再让你写</td><td>滤镜改像素前必须调用，否则会改到别人的帧</td></tr>
+        <tr><td><code>av_frame_unref</code></td><td>引用 −1；减到 0 才释放 buffer</td><td>不释放 AVFrame 结构体本身，结构可复用</td></tr>
+        <tr><td><code>av_packet_ref / unref</code></td><td>包的共享复制 / 归还引用</td><td>跨线程投递包时优先用 <code>av_packet_move_ref</code></td></tr>
+        <tr><td><code>av_buffer_pool_get</code></td><td>从池里拿一块可复用 buffer</td><td>池适合固定分辨率、高频分配的场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code">AVFrame *dst = av_frame_alloc();
+av_frame_ref(dst, src);         // 共享同一块像素，底层 refs +1
+av_frame_make_writable(dst);    // 要改像素时确认独占；被共享则内部复制
+...
+av_frame_unref(dst);            // refs -1，不一定是 free
+av_frame_free(&amp;dst);            // 再释放结构体本身
+
+// 更常见的“拿走一份”写法
+AVFrame *copy = av_frame_clone(src);
+if (!copy) { /* ENOMEM */ }
+
+// 缓冲池：固定分辨率流水线的高频分配
+AVBufferPool *pool = av_buffer_pool_init(buf_size, NULL);
+AVBufferRef  *ref  = av_buffer_pool_get(pool);
+...
+av_buffer_unref(&amp;ref);
+av_buffer_pool_uninit(&amp;pool);</pre>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"从 AVPacket 到 AVFrame：引用与归还","actors":["AVPacket","解码器","AVFrame","消费者"],"steps":[{"from":0,"to":1,"label":"avcodec_send_packet()","color":"#7c3aed","detail":"把压缩包送进解码器。解码器持有的是包的引用，不会复制几兆码流。"},{"from":1,"to":2,"label":"avcodec_receive_frame()","color":"#0891b2","detail":"解码器吐出未压缩帧。一次 send 可能吐出 0 帧或多帧，要循环 receive 到 EAGAIN。"},{"from":2,"to":3,"label":"av_frame_ref()","color":"#10b981","detail":"把同一帧共享给滤镜或编码器，底层 buffer 引用计数 +1。此时两块“借阅卡”指向同一块像素。"},{"from":3,"to":2,"label":"av_frame_unref()","color":"#f59e0b","detail":"消费者处理完归还引用：refs −1。只要还有别人持有，像素就不会被释放。"},{"from":2,"to":1,"label":"seek 后 avcodec_flush_buffers()","color":"#e11d48","detail":"清空解码器内部的参考帧队列（DPB）、延迟帧和旧时间戳，避免旧 GOP 污染新位置。"}]}'></div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 920 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AVPacket 与 AVFrame 引用计数生命周期">
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">一条帧的生命周期：压缩包 → 解码 → 原始帧 → 共享 → 归还</text>
+      <text x="20" y="48" font-size="11" fill="#64748b">上层是压缩域，下层是未压缩域；数字圆圈对应四条关键调用</text>
+
+      <rect x="20" y="64" width="130" height="64" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="85" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">文件 / 网络</text>
+      <text x="85" y="108" text-anchor="middle" font-size="9" fill="#64748b">MP4 / TS / RTSP</text>
+
+      <rect x="190" y="64" width="150" height="64" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="265" y="86" text-anchor="middle" font-size="12" font-weight="700" fill="#0e7490">AVPacket</text>
+      <text x="265" y="104" text-anchor="middle" font-size="9" fill="#64748b">压缩包 · buf refs = 1</text>
+      <text x="265" y="118" text-anchor="middle" font-size="9" fill="#64748b">PTS / DTS / flags</text>
+
+      <rect x="380" y="64" width="150" height="64" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="455" y="86" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">解码器</text>
+      <text x="455" y="104" text-anchor="middle" font-size="9" fill="#64748b">参考帧队列 DPB</text>
+      <text x="455" y="118" text-anchor="middle" font-size="9" fill="#64748b">延迟帧 / 旧 PTS</text>
+
+      <rect x="570" y="64" width="150" height="64" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="645" y="86" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">AVFrame</text>
+      <text x="645" y="104" text-anchor="middle" font-size="9" fill="#64748b">原始帧 · buf refs = 1</text>
+      <text x="645" y="118" text-anchor="middle" font-size="9" fill="#64748b">data[] / linesize[]</text>
+
+      <rect x="760" y="64" width="140" height="64" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="830" y="88" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">滤镜 / 编码</text>
+      <text x="830" y="108" text-anchor="middle" font-size="9" fill="#64748b">消费者</text>
+
+      <line x1="150" y1="96" x2="184" y2="96" stroke="#7c3aed" stroke-width="1.6"/>
+      <polygon points="190,96 182,91 182,101" fill="#7c3aed"/>
+      <circle cx="170" cy="96" r="8" fill="#7c3aed"/><text x="170" y="99" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">1</text>
+
+      <line x1="340" y1="96" x2="374" y2="96" stroke="#0891b2" stroke-width="1.6"/>
+      <polygon points="380,96 372,91 372,101" fill="#0891b2"/>
+      <circle cx="360" cy="96" r="8" fill="#0891b2"/><text x="360" y="99" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">2</text>
+
+      <line x1="530" y1="96" x2="564" y2="96" stroke="#f59e0b" stroke-width="1.6"/>
+      <polygon points="570,96 562,91 562,101" fill="#f59e0b"/>
+      <circle cx="550" cy="96" r="8" fill="#f59e0b"/><text x="550" y="99" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">3</text>
+
+      <line x1="720" y1="96" x2="754" y2="96" stroke="#10b981" stroke-width="1.6"/>
+      <polygon points="760,96 752,91 752,101" fill="#10b981"/>
+      <circle cx="740" cy="96" r="8" fill="#10b981"/><text x="740" y="99" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">4</text>
+
+      <text x="20" y="152" font-size="10" fill="#475569">① av_read_frame　② avcodec_send_packet　③ avcodec_receive_frame　④ av_frame_ref → refs = 2</text>
+
+      <rect x="20" y="178" width="380" height="82" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="36" y="202" font-size="11" font-weight="700" fill="#92400e">seek 之后必须做的一步</text>
+      <text x="36" y="222" font-size="10" fill="#92400e">avcodec_flush_buffers(ctx)</text>
+      <text x="36" y="240" font-size="9" fill="#64748b">清空 DPB、延迟帧、旧时间戳；否则旧参考帧会污染新 GOP。</text>
+
+      <rect x="440" y="178" width="180" height="64" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="530" y="202" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">消费者 A：滤镜</text>
+      <text x="530" y="222" text-anchor="middle" font-size="9" fill="#64748b">av_frame_make_writable 后再改</text>
+
+      <rect x="650" y="178" width="180" height="64" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="740" y="202" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">消费者 B：编码器</text>
+      <text x="740" y="222" text-anchor="middle" font-size="9" fill="#64748b">只读，不需要复制</text>
+
+      <line x1="620" y1="128" x2="520" y2="174" stroke="#10b981" stroke-width="1.6"/>
+      <polygon points="520,178 527,170 532,178" fill="#10b981"/>
+      <line x1="670" y1="128" x2="735" y2="174" stroke="#10b981" stroke-width="1.6"/>
+      <polygon points="740,178 729,175 735,168" fill="#10b981"/>
+      <text x="600" y="154" font-size="9" fill="#047857">同一块像素，refs = 2</text>
+
+      <rect x="20" y="286" width="880" height="46" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="36" y="306" font-size="10" font-weight="700" fill="#0f172a">引用计数变化：</text>
+      <text x="140" y="306" font-size="10" fill="#475569">refs = 2（共享中）</text>
+      <text x="320" y="306" font-size="10" fill="#475569">→ 消费者 A unref → refs = 1</text>
+      <text x="560" y="306" font-size="10" fill="#475569">→ 消费者 B unref → refs = 0</text>
+      <text x="790" y="306" font-size="10" font-weight="700" fill="#047857">→ 释放像素 buffer</text>
+      <text x="36" y="324" font-size="9" fill="#64748b">av_frame_unref 只减引用；av_frame_free 才连结构体一起回收。</text>
+    </svg>
+    <figcaption>紫色是入口与消费者，青色是压缩包，黄色是解码器内部状态，绿色是未压缩帧；引用计数只在 2 → 1 → 0 时真正释放。</figcaption>
+  </div>
+
+  <h3>为什么 seek 必须清空解码器，而不是只清空 packet</h3>
+  <p><b>解码器不是无状态计算器。</b>H.264/H.265 解码依赖参考帧队列（DPB）、运动矢量预测和环路滤波状态；它还可能有几帧延迟没吐出来。执行 <code>av_seek_frame</code> 只是把“读文件的指针”挪到目标关键帧，解码器内部的旧世界还在。此时直接喂新包，轻则画面花一下，重则一直用旧参考帧，输出绿块或错帧。</p>
+
+  <pre class="code">av_seek_frame(fmt, v_stream, target_ts, AVSEEK_FLAG_BACKWARD);
+avcodec_flush_buffers(ctx);   // 清空参考帧、延迟帧与内部时间线
+av_packet_unref(pkt);         // 旧包也不要留着
+
+// 转码收尾时同样要 flush：送 NULL 让解码器把缓存的帧吐完
+avcodec_send_packet(ctx, NULL);</pre>
+
+  <p class="small">命令行里的 <code>ffmpeg -ss</code> 已经替你做了这些事；写 API 时漏掉 <code>avcodec_flush_buffers</code>，症状通常是“seek 后第一秒花屏”“从中间开始播却出现片头画面”“时间戳突然跳回旧值”。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>flush 不等于 free。</b><code>avcodec_flush_buffers</code> 清的是解码器内部状态，不释放 <code>AVCodecContext</code>；<code>av_frame_unref</code> 清的是帧的引用，不释放结构体。把这两件事混在一起，常见结果是双重释放（double free）或继续泄漏。</span></div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>缓冲池不是“高级优化”，而是固定分辨率流水线的默认姿势。</b>每帧都 <code>av_frame_get_buffer</code> 会不断向系统申请大块内存，延迟和碎片都上来了；用 <code>AVBufferPool</code> 让帧归还后内存回池，下一次解码直接复用。池的生命周期通常跟解码器或滤镜图走，不要跨线程随手释放。</span></div>
+</section>
+
 <section id="timestamp">
   <h2>⏱️ 时间戳：PTS 是“上映时间”，DTS 是“装车时间”</h2>
   <p class="lead">视频帧不是按拍摄顺序到达的。B 帧要参考后面的帧才能解码，所以“送到解码器的顺序”和“显示给观众的顺序”不一样。DTS（Decoding Time Stamp）是装车顺序，PTS（Presentation Time Stamp）是上映顺序。time_base 则是这把尺子的刻度：同样写 25，刻度是 1/25 秒还是 1/90000 秒，含义差 3600 倍。</p>
@@ -283,6 +444,231 @@ ffmpeg -i a.mp4 -i b.m4a \
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么滤镜有时比转码还慢？</b>因为滤镜运行在未压缩帧上。1080p 一帧 YUV420 约 3 MB，25 fps 就是每秒 75 MB 的搬运量；复杂滤镜还会反复读写。能用编码器参数解决的事（码率、preset），不要用重滤镜去“补救”。</span></div>
 </section>
 
+<section id="graph-syntax">
+  <h2>🧩 filtergraph 逐字符拆解：方括号是站名，分号是换乘线</h2>
+  <p class="lead">filtergraph 像一张地铁线路图：<code>[0:v]</code> 是“从 0 号输入的 video 站上车”，<code>,</code> 是同一条线上连续经过的工位，<code>;</code> 是换乘到另一条线，<code>[base]</code> 是给这条线的终点站起个名字，后面再把它接到别的线路。看不懂符号，就会把“两个滤镜串联”写成“两个输入并联”。</p>
+
+  <p>先看一条完整的、带两路输入的命令。它把主视频缩放到 1280 宽、裁成 720p，再把 logo 缩到 120 宽，最后叠到右下角：</p>
+  <pre class="code">ffmpeg -i input.mp4 -i logo.png \
+  -filter_complex "[0:v]scale=1280:-2,crop=1280:720:0:0[base];[1:v]scale=120:-1[logo];[base][logo]overlay=W-w-20:H-h-20[v]" \
+  -map "[v]" -map 0:a? -c:v libx264 -crf 22 -c:a copy output.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>片段</th><th>名字</th><th>逐字符含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>[0:v]</code></td><td>输入 pad 标签</td><td><code>0</code> 是第几个 <code>-i</code> 输入，<code>v</code> 是 video。要指定“第一条视频流”可写 <code>[0:v:0]</code>。</td></tr>
+        <tr><td><code>scale=1280:-2</code></td><td>滤镜与参数</td><td><code>scale</code> 是滤镜名，<code>=</code> 后是参数；<code>:</code> 分隔参数。<code>-2</code> 表示按比例算高度，并保证是偶数。</td></tr>
+        <tr><td><code>,</code></td><td>串联</td><td>同一路数据依次经过下一个滤镜，前一个的输出直接接后一个的输入。</td></tr>
+        <tr><td><code>;</code></td><td>并联 / 换乘</td><td>结束一条滤镜链，开始另一条独立链路。链路之间不会自动连起来，必须用标签对接。</td></tr>
+        <tr><td><code>[base]</code></td><td>输出 pad 标签</td><td>给这条链的结果起名，供后面引用。标签在同一张图里只能被“生产”一次。</td></tr>
+        <tr><td><code>[base][logo]overlay</code></td><td>多输入滤镜</td><td>两个方括号依次对应 overlay 的第 0、1 个输入；overlay 把第二个画面叠到第一个上。</td></tr>
+        <tr><td><code>[v]</code></td><td>最终输出标签</td><td>图的出口。命令行必须用 <code>-map "[v]"</code> 把它接进输出文件。</td></tr>
+        <tr><td><code>-map 0:a?</code></td><td>可选映射</td><td>问号表示“有音频就映射，没有也不报错”；不写这段，音频会丢。</td></tr>
+        <tr><td><code>-vf</code></td><td>简易单路语法</td><td>等价于“只对主视频做一条单进单出链”，不需要写标签，也不接受多输入。</td></tr>
+        <tr><td><code>-filter_complex</code></td><td>完整图语法</td><td>多输入、多输出、分叉、合并都用它；结果的 pad 必须自己 <code>-map</code>。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="flow">
+    <div class="node hi">[0:v]<span>0 号输入的视频</span></div>
+    <span class="ar">→</span>
+    <div class="node">scale=1280:-2<span>缩放，高度自动</span></div>
+    <span class="ar">,</span>
+    <div class="node">crop=1280:720:0:0<span>按宽高与左上角裁剪</span></div>
+    <span class="ar">→</span>
+    <div class="node hi">[base]<span>给结果起名</span></div>
+    <span class="ar">;</span>
+    <div class="node hi">[1:v]<span>1 号输入的 logo</span></div>
+    <span class="ar">→</span>
+    <div class="node">scale=120:-1<span>宽度 120，高度按比例</span></div>
+    <span class="ar">→</span>
+    <div class="node hi">[logo]<span>第二路标签</span></div>
+    <span class="ar">;</span>
+    <div class="node">[base][logo]<span>两路同时进 overlay</span></div>
+    <span class="ar">→</span>
+    <div class="node">overlay=W-w-20:H-h-20<span>右下角留 20 px</span></div>
+    <span class="ar">→</span>
+    <div class="node hi">[v]<span>最终输出 pad</span></div>
+  </div>
+
+  <p><b>三条硬规则：</b>第一，标签必须唯一，同一个名字被两个滤镜输出会直接报错；第二，所有 pad 最终都要接上，悬空的输出会让滤镜图配置失败；第三，参数里的逗号、冒号如果属于表达式，要用 <code>\,</code> 或引号保护，否则会被当成滤镜分隔符。比如场景检测要写 <code>select=gt(scene\,0.3)</code>。</p>
+
+  <h3>经典图 1：split —— 一源多档</h3>
+  <p>split 像复印机：同一帧进来，复印成多份，分别走不同的缩放工位。它不会自动帮你输出成多个文件，你仍然要用 <code>-map</code> 把每份接到对应输出。</p>
+  <div class="diagram">
+    <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="split 滤镜一源多档">
+      <text x="20" y="24" font-size="13" font-weight="700" fill="#0f172a">split：一帧进，三路出，每路独立缩放</text>
+      <text x="20" y="44" font-size="10" fill="#64748b">同一条时间线，三套分辨率；下游可以分别编码，也可以交给 HLS 打包器</text>
+
+      <rect x="20" y="95" width="150" height="64" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="95" y="120" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">input.mp4</text>
+      <text x="95" y="138" text-anchor="middle" font-size="9" fill="#64748b">1920 × 1080 · 25 fps</text>
+
+      <rect x="220" y="100" width="110" height="52" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="275" y="123" text-anchor="middle" font-size="11" font-weight="700" fill="#0e7490">split=3</text>
+      <text x="275" y="140" text-anchor="middle" font-size="9" fill="#64748b">复制帧引用</text>
+
+      <line x1="170" y1="127" x2="214" y2="127" stroke="#7c3aed" stroke-width="1.6"/>
+      <polygon points="220,127 212,122 212,132" fill="#7c3aed"/>
+
+      <line x1="330" y1="126" x2="369" y2="47" stroke="#0891b2" stroke-width="1.5"/>
+      <line x1="330" y1="127" x2="369" y2="127" stroke="#0891b2" stroke-width="1.5"/>
+      <line x1="330" y1="128" x2="369" y2="207" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="380,47 369,42 369,52" fill="#0891b2"/>
+      <polygon points="380,127 369,122 369,132" fill="#0891b2"/>
+      <polygon points="380,207 369,202 369,212" fill="#0891b2"/>
+
+      <rect x="380" y="20" width="200" height="55" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="480" y="40" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">scale=1920:-2 → 1080p</text>
+      <text x="480" y="57" text-anchor="middle" font-size="9" fill="#64748b">目标 5 Mbps</text>
+
+      <rect x="380" y="100" width="200" height="55" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="480" y="120" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">scale=1280:-2 → 720p</text>
+      <text x="480" y="137" text-anchor="middle" font-size="9" fill="#64748b">目标 3 Mbps</text>
+
+      <rect x="380" y="180" width="200" height="55" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="480" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">scale=854:-2 → 480p</text>
+      <text x="480" y="217" text-anchor="middle" font-size="9" fill="#64748b">目标 1.2 Mbps</text>
+
+      <rect x="620" y="20" width="230" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="735" y="40" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">out_1080.mp4</text>
+      <text x="735" y="57" text-anchor="middle" font-size="9" fill="#64748b">[v0] 接 -map</text>
+
+      <rect x="620" y="100" width="230" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="735" y="120" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">out_720.mp4</text>
+      <text x="735" y="137" text-anchor="middle" font-size="9" fill="#64748b">[v1] 接 -map</text>
+
+      <rect x="620" y="180" width="230" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="735" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">out_480.mp4</text>
+      <text x="735" y="217" text-anchor="middle" font-size="9" fill="#64748b">[v2] 接 -map</text>
+
+      <line x1="580" y1="47" x2="614" y2="47" stroke="#10b981" stroke-width="1.5"/>
+      <polygon points="620,47 612,42 612,52" fill="#10b981"/>
+      <line x1="580" y1="127" x2="614" y2="127" stroke="#10b981" stroke-width="1.5"/>
+      <polygon points="620,127 612,122 612,132" fill="#10b981"/>
+      <line x1="580" y1="207" x2="614" y2="207" stroke="#10b981" stroke-width="1.5"/>
+      <polygon points="620,207 612,202 612,212" fill="#10b981"/>
+    </svg>
+    <figcaption>split 只是“把同一帧分给多路”，并不会自动复制像素；真正花钱的是后面三路各自编码。</figcaption>
+  </div>
+
+  <pre class="code">ffmpeg -i input.mp4 \
+  -filter_complex "[0:v]split=3[a][b][c];[a]scale=1920:-2[v0];[b]scale=1280:-2[v1];[c]scale=854:-2[v2]" \
+  -map "[v0]" -c:v libx264 -crf 20 -c:a copy out_1080.mp4 \
+  -map "[v1]" -c:v libx264 -crf 20 -c:a copy out_720.mp4 \
+  -map "[v2]" -c:v libx264 -crf 20 -c:a copy out_480.mp4</pre>
+  <p class="small">这条命令把三路接进三个输出文件。注意每条 <code>-map</code> 后面的编码参数只作用于紧跟的那个输出；不要在第一个输出后面就把编码参数“用完”。</p>
+
+  <h3>经典图 2：overlay —— 两路画面的叠放</h3>
+  <p>overlay 像把一张贴纸盖在海报上：第一个输入是底板，第二个输入是贴纸；<code>x:y</code> 决定贴纸左上角的位置。<code>W</code>/<code>H</code> 是底板宽高，<code>w</code>/<code>h</code> 是贴纸宽高，所以 <code>W-w-20</code> 就是“贴到右边、留 20 像素”。</p>
+  <div class="diagram">
+    <svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="overlay 滤镜叠加水印">
+      <text x="20" y="24" font-size="13" font-weight="700" fill="#0f172a">overlay：主画面 + logo，定位后再进编码器</text>
+      <text x="20" y="44" font-size="10" fill="#64748b">第二路输入必须先用 scale 缩到合适大小；overlay 不会自动帮你缩放</text>
+
+      <rect x="20" y="30" width="170" height="64" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="105" y="54" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">input.mp4</text>
+      <text x="105" y="72" text-anchor="middle" font-size="9" fill="#64748b">主画面 [0:v]</text>
+
+      <rect x="20" y="150" width="170" height="56" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="105" y="172" text-anchor="middle" font-size="11" font-weight="700" fill="#0e7490">logo.png</text>
+      <text x="105" y="190" text-anchor="middle" font-size="9" fill="#64748b">第二路输入 [1:v]</text>
+
+      <rect x="240" y="150" width="140" height="56" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="310" y="172" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">scale=120:-1</text>
+      <text x="310" y="190" text-anchor="middle" font-size="9" fill="#64748b">固定宽度，高度按比例</text>
+
+      <rect x="440" y="60" width="160" height="100" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="520" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">overlay</text>
+      <text x="520" y="104" text-anchor="middle" font-size="9" fill="#64748b">x = W - w - 20</text>
+      <text x="520" y="120" text-anchor="middle" font-size="9" fill="#64748b">y = H - h - 20</text>
+      <text x="520" y="140" text-anchor="middle" font-size="9" fill="#64748b">[base][logo]</text>
+
+      <rect x="660" y="60" width="200" height="64" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="760" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">[v] → output.mp4</text>
+      <text x="760" y="102" text-anchor="middle" font-size="9" fill="#64748b">libx264 · crf 22</text>
+
+      <rect x="660" y="160" width="200" height="50" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="760" y="181" text-anchor="middle" font-size="10" font-weight="700" fill="#047857">0:a? 原样 copy</text>
+      <text x="760" y="197" text-anchor="middle" font-size="9" fill="#64748b">不重编码音频</text>
+
+      <line x1="190" y1="62" x2="436" y2="92" stroke="#7c3aed" stroke-width="1.5"/>
+      <polygon points="440,93 431,88 433,97" fill="#7c3aed"/>
+      <line x1="190" y1="178" x2="236" y2="178" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="240,178 232,173 232,183" fill="#0891b2"/>
+      <line x1="380" y1="178" x2="436" y2="132" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="440,128 430,134 437,140" fill="#0891b2"/>
+      <line x1="600" y1="100" x2="656" y2="90" stroke="#10b981" stroke-width="1.5"/>
+      <polygon points="660,89 651,85 652,94" fill="#10b981"/>
+
+      <text x="220" y="228" font-size="9" fill="#64748b">顺序很关键：先 scale 再 overlay；先 overlay 再编码。反过来会多处理很多像素。</text>
+    </svg>
+    <figcaption>紫色主画面与青色 logo 进入黄色 overlay 工位，绿色是最终输出；右下角留白由 <code>W-w-20</code> 表达。</figcaption>
+  </div>
+
+  <pre class="code">ffmpeg -i input.mp4 -i logo.png \
+  -filter_complex "[1:v]scale=120:-1[logo];[0:v][logo]overlay=W-w-20:H-h-20[v]" \
+  -map "[v]" -map 0:a? -c:v libx264 -crf 22 -c:a copy output.mp4</pre>
+
+  <h3>经典图 3：amix —— 多路音频合并</h3>
+  <p>amix 像调音台把所有话筒推到同一个总线：每个输入先统一采样率与声道布局，再混合。<code>duration=longest</code> 表示“以最长的那路为准”，短的那路结束后静音补足；<code>first</code> 则以第一路时长为准。</p>
+  <div class="diagram">
+    <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="amix 多路音频混合">
+      <text x="20" y="24" font-size="13" font-weight="700" fill="#0f172a">amix：两路音频先重采样，再合并成一条输出</text>
+      <text x="20" y="44" font-size="10" fill="#64748b">采样率、声道数不一致时，先 aresample；否则可能报布局不支持或听感异常</text>
+
+      <rect x="20" y="30" width="170" height="56" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="105" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">input.mp4 音轨 A</text>
+      <text x="105" y="70" text-anchor="middle" font-size="9" fill="#64748b">[0:a]</text>
+
+      <rect x="20" y="160" width="170" height="56" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="105" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">music.m4a 音轨 B</text>
+      <text x="105" y="200" text-anchor="middle" font-size="9" fill="#64748b">[1:a]</text>
+
+      <rect x="240" y="30" width="140" height="56" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="310" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#0e7490">aresample=48000</text>
+      <text x="310" y="70" text-anchor="middle" font-size="9" fill="#64748b">[a0]</text>
+
+      <rect x="240" y="160" width="140" height="56" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="310" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#0e7490">aresample=48000</text>
+      <text x="310" y="200" text-anchor="middle" font-size="9" fill="#64748b">[a1]</text>
+
+      <rect x="440" y="82" width="160" height="96" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="520" y="106" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">amix</text>
+      <text x="520" y="124" text-anchor="middle" font-size="9" fill="#64748b">inputs=2</text>
+      <text x="520" y="140" text-anchor="middle" font-size="9" fill="#64748b">duration=longest</text>
+      <text x="520" y="156" text-anchor="middle" font-size="9" fill="#64748b">[a0][a1]</text>
+
+      <rect x="660" y="94" width="200" height="64" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="760" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">AAC 128k → output.mp4</text>
+      <text x="760" y="136" text-anchor="middle" font-size="9" fill="#64748b">视频 0:v 原样 copy</text>
+
+      <line x1="190" y1="58" x2="236" y2="58" stroke="#7c3aed" stroke-width="1.5"/>
+      <polygon points="240,58 232,53 232,63" fill="#7c3aed"/>
+      <line x1="190" y1="188" x2="236" y2="188" stroke="#7c3aed" stroke-width="1.5"/>
+      <polygon points="240,188 232,183 232,193" fill="#7c3aed"/>
+      <line x1="380" y1="58" x2="436" y2="104" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="440,106 431,98 436,94" fill="#0891b2"/>
+      <line x1="380" y1="188" x2="436" y2="156" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="440,154 431,148 436,160" fill="#0891b2"/>
+      <line x1="600" y1="126" x2="656" y2="126" stroke="#10b981" stroke-width="1.5"/>
+      <polygon points="660,126 652,121 652,131" fill="#10b981"/>
+    </svg>
+    <figcaption>两路音频先各自重采样到 48 kHz，再进入 amix；输出统一编码为 AAC，视频保持 copy。</figcaption>
+  </div>
+
+  <pre class="code">ffmpeg -i input.mp4 -i music.m4a \
+  -filter_complex "[0:a]aresample=48000[a0];[1:a]aresample=48000[a1];[a0][a1]amix=inputs=2:duration=longest[a]" \
+  -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 128k output.mp4</pre>
+  <p class="small">如果两路响度差太多，先给每一路加 <code>volume=0.7</code> 之类的增益再 amix；只想让一路在特定时间段出现，用 <code>adelay</code> 或 <code>atrim</code> 先裁好，别指望 amix 自己对齐时间。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>滤镜顺序就是性能顺序。</b><code>fps</code> 降到 10 再 <code>scale</code> 到 360p，比先 scale 再丢帧少处理约 60% 的像素。把“变少”的工位放在“变贵”的工位前面，是滤镜图最便宜的优化。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要靠“自动转换”兜底。</b>滤镜对像素格式、采样率、声道布局有要求，FFmpeg 会在某些接缝处自动插入 format/aresample，但不是所有地方都兜得住。显式写 <code>format=yuv420p</code>、<code>aresample=48000</code>，比事后对着花屏猜要省时间。</span></div>
+</section>
+
 <section id="recipes">
   <h2>🍳 常用命令配方：切片、截图、录屏、推流、拼接、抽音轨</h2>
   <p>下面这些命令不是背下来的，而是从“输入 → 处理 → 输出”推出来的。注意参数位置：写在 <code>-i</code> 前的是“输入选项”，写在后面的是“输出选项”。位置错了，参数就会作用到另一个文件上。</p>
@@ -359,6 +745,138 @@ ffmpeg -i in.mp4 -vn -c:a copy audio.m4a
 ffmpeg -i video.mp4 -i newaudio.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -shortest out.mp4</pre>
     <p class="small">concat demuxer 要求编码参数一致（分辨率、profile、时间基）；只要有一项不同，就会出现花屏或音画错位。宁可用 concat 滤镜重编码，也不要赌。</p>
   </div>
+</section>
+
+<section id="cookbook">
+  <h2>🍱 命令菜谱 30 条：按场景点菜，不用背参数</h2>
+  <p class="lead">这 30 条配方像一张按口味分组的菜单：你想“把片子变小”“每 10 秒截一张图”“把字幕烧进去”，直接点到对应分组。每条命令下面都有一句“这在干什么”，先看懂目的，再改文件名和参数，比死记 300 字符安全得多。</p>
+  <p class="small">输入输出统一用 <code>input.mp4</code>、<code>output.mp4</code> 占位；实际使用时替换成自己的路径。所有命令都假定输入确实存在，且构建里编进了对应编码器。</p>
+
+  <div class="tabs">
+    <button class="tab on" data-t="tc">转码与压缩</button>
+    <button class="tab" data-t="grab">抽帧与音频</button>
+    <button class="tab" data-t="join2">拼接与字幕</button>
+    <button class="tab" data-t="look">画面与变速</button>
+    <button class="tab" data-t="live">采集与推流</button>
+  </div>
+
+  <div class="tab-pnl on" data-p="tc">
+    <pre class="code"># 1 网页通用：H.264 CRF 20，画质优先、码率随画面复杂度起伏
+ffmpeg -i input.mp4 -c:v libx264 -preset slow -crf 20 -c:a aac -b:a 128k output.mp4
+
+# 2 更省带宽：H.265，Apple 生态加 hvc1 tag（否则 QuickTime 可能不认）
+ffmpeg -i input.mp4 -c:v libx265 -crf 28 -preset medium -tag:v hvc1 -c:a copy output.mp4
+
+# 3 新一代 AV1：构建里要有 libsvtav1，先 ffmpeg -encoders 确认再跑
+ffmpeg -i input.mp4 -c:v libsvtav1 -crf 35 -preset 6 -c:a copy output.mp4
+
+# 4 目标文件大小：两遍编码，第一遍只统计复杂度（输出到 null，不占磁盘）
+ffmpeg -i input.mp4 -c:v libx264 -b:v 2M -pass 1 -an -f null -
+ffmpeg -i input.mp4 -c:v libx264 -b:v 2M -pass 2 -c:a aac -b:a 128k output.mp4
+
+# 5 旧设备 / 小屏：720p + 25 fps，faststart 让 MP4 边下边播
+ffmpeg -i input.mp4 -vf "scale=-2:720,fps=25" -c:v libx264 -crf 23 -preset veryfast -c:a copy -movflags +faststart output.mp4
+
+# 6 只换箱子：MKV → MP4，码流原样搬运
+ffmpeg -i input.mkv -c copy -movflags +faststart output.mp4</pre>
+    <p class="small">第 4 条的两遍编码适合“必须卡死文件大小”的交付；日常点播直接用 CRF，没必要为几 MB 多花一倍时间。第 6 条不经过解码器，几秒就能完成。</p>
+  </div>
+
+  <div class="tab-pnl" data-p="grab">
+    <pre class="code"># 1 每 10 秒一张：fps=1/10 把时间轴当成“每 10 秒取一帧”
+ffmpeg -i input.mp4 -vf "fps=1/10,scale=640:-2" -q:v 2 frame_%03d.jpg
+
+# 2 雪碧图：20 张缩略图拼成 5×4，先抽帧再 tile，最后只输出一张
+ffmpeg -i input.mp4 -vf "fps=1/10,scale=320:-2,tile=5x4" -frames:v 1 sprite.jpg
+
+# 3 指定时刻缩略图：-ss 放在 -i 前更快，但不保证落在精确帧上
+ffmpeg -ss 00:00:12 -i input.mp4 -frames:v 1 -q:v 2 thumb.jpg
+
+# 4 场景切换帧：只保留画面变化大的帧，0.3 是阈值，越大越少
+ffmpeg -i input.mp4 -vf "select=gt(scene\,0.3)" -fps_mode vfr scene_%03d.jpg
+
+# 5 只抽音轨：-vn 去掉视频，-c:a copy 不重编码，最快也无损
+ffmpeg -i input.mp4 -vn -c:a copy output.m4a
+
+# 6 转 AAC：兼容网页与移动端，采样率统一到 48 kHz、双声道
+ffmpeg -i input.mp4 -vn -c:a aac -b:a 128k -ar 48000 -ac 2 output.m4a</pre>
+    <p class="small">雪碧图的关键是 <code>tile</code> 前先 <code>fps</code> 和 <code>scale</code>：先降帧、再缩小，最后才拼图，否则会先处理一堆高分辨率帧。缩略图用 <code>-q:v 2</code> 控制 JPEG 质量，数字越小越清晰。</p>
+  </div>
+
+  <div class="tab-pnl" data-p="join2">
+    <pre class="code"># 1 同规格拼接：concat demuxer 只重排包，最快；list.txt 每行写 file 'part1.mp4'
+ffmpeg -f concat -safe 0 -i list.txt -c copy output.mp4
+
+# 2 规格不同：concat 滤镜先统一分辨率/帧率/像素格式，再重编码
+ffmpeg -i part1.mp4 -i part2.mp4 -filter_complex "[0:v]scale=1280:720,fps=25,format=yuv420p[v0];[1:v]scale=1280:720,fps=25,format=yuv420p[v1];[v0][v1]concat=n=2:v=1:a=0[v]" -map "[v]" -map 0:a? -c:v libx264 -crf 22 -c:a aac output.mp4
+
+# 3 concat protocol：只适合 MPEG-TS 这类可顺序拼接的码流，简单但容错差
+ffmpeg -i "concat:part1.ts|part2.ts" -c copy output.ts
+
+# 4 软字幕：字幕单独成轨，播放器可开关；MP4 里用 mov_text
+ffmpeg -i input.mp4 -i subtitles.srt -map 0:v -map 0:a -map 1:s -c:v copy -c:a copy -c:s mov_text output.mp4
+
+# 5 硬字幕：字幕烧进像素，任何播放器都能看，但改不了
+ffmpeg -i input.mp4 -vf "subtitles=subtitles.srt" -c:v libx264 -crf 20 -c:a copy output.mp4
+
+# 6 换音轨：视频原样，只替换一条音频；-shortest 防止音频比视频长
+ffmpeg -i input.mp4 -i newaudio.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -shortest output.mp4</pre>
+    <div class="scroll-x">
+      <table class="cmp">
+        <thead><tr><th>拼接方式</th><th>要不要重编码</th><th>适合</th><th>最大的坑</th></tr></thead>
+        <tbody>
+          <tr><td><code>concat demuxer</code></td><td>否（<code>-c copy</code>）</td><td>编码参数完全一致的分片</td><td>分辨率、profile、time_base 有一项不同就花屏或音画错位</td></tr>
+          <tr><td><code>concat protocol</code></td><td>否</td><td>MPEG-TS 这类本身就是连续码流的格式</td><td>MP4 分片不能用；对损坏/非连续码流几乎没有容错</td></tr>
+          <tr><td><code>concat 滤镜</code></td><td>是</td><td>规格不同、需要统一画布</td><td>必须显式统一 scale / fps / format，且耗 CPU</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="tab-pnl" data-p="look">
+    <pre class="code"># 1 右下角水印：logo 先缩放，overlay 定位到右边距 20、下边距 20
+ffmpeg -i input.mp4 -i logo.png -filter_complex "[1:v]scale=120:-1[logo];[0:v][logo]overlay=W-w-20:H-h-20[v]" -map "[v]" -map 0:a? -c:v libx264 -crf 22 -c:a copy output.mp4
+
+# 2 竖屏裁剪：1920×1080 先中心裁出 608×1080，再缩放到 1080×1920
+ffmpeg -i input.mp4 -vf "crop=608:1080:(iw-608)/2:0,scale=1080:1920,setsar=1" -c:v libx264 -crf 20 -c:a copy output.mp4
+
+# 3 补边不拉伸：先等比缩到 1280 宽，再 pad 成 16:9，空的地方补黑
+ffmpeg -i input.mp4 -vf "scale=1280:-2,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -crf 20 -c:a copy output.mp4
+
+# 4 变速 2 倍：视频 setpts 减半，音频 atempo 加倍；两者必须配套
+ffmpeg -i input.mp4 -filter_complex "[0:v]setpts=0.5*PTS[v];[0:a]atempo=2.0[a]" -map "[v]" -map "[a]" -c:v libx264 -crf 20 -c:a aac output.mp4
+
+# 5 GIF 两步法：先造专用调色板，再按调色板抖动，颜色才不会发灰
+ffmpeg -i input.mp4 -vf "fps=12,scale=480:-1:flags=lanczos,palettegen" palette.png
+ffmpeg -i input.mp4 -i palette.png -lavfi "fps=12,scale=480:-1:flags=lanczos[x];[x][1:v]paletteuse" output.gif
+
+# 6 旋转画面：transpose=1 顺时针 90°，transpose=2 逆时针；手机竖拍可先关自动旋转
+ffmpeg -i input.mp4 -vf "transpose=1" -c:v libx264 -crf 20 -c:a copy output.mp4</pre>
+    <p class="small">变速只改视频不改音频，会立刻音画不同步。视频用 <code>setpts</code>，音频用 <code>atempo</code>；<code>atempo</code> 单级的常用范围是 0.5～2.0，超出范围就串联多个 <code>atempo</code>。GIF 如果不走调色板，FFmpeg 会用默认 256 色硬凑，渐变和肤色最容易脏。</p>
+  </div>
+
+  <div class="tab-pnl" data-p="live">
+    <pre class="code"># 1 Windows 录屏：gdigrab 抓桌面，ultrafast 保证实时不掉帧
+ffmpeg -f gdigrab -framerate 30 -i desktop -c:v libx264 -preset ultrafast -pix_fmt yuv420p screen.mp4
+
+# 2 Linux 录屏：x11grab 指定显示器和区域，:0.0 表示第一个 X display
+ffmpeg -f x11grab -video_size 1920x1080 -framerate 30 -i :0.0 screen.mp4
+
+# 3 macOS 采集：avfoundation 的 "1:0" 是“视频设备:音频设备”索引
+ffmpeg -f avfoundation -i "1:0" -c:v libx264 -preset veryfast -c:a aac mac.mp4
+
+# 4 先列设备：Windows 摄像头 / 麦克风名字不能猜
+ffmpeg -f dshow -list_devices true -i dummy
+
+# 5 推 RTMP：-re 按实时速度读文件，-tune zerolatency 压低编码缓冲
+ffmpeg -re -i input.mp4 -c:v libx264 -preset veryfast -tune zerolatency -b:v 2M -maxrate 2M -bufsize 4M -c:a aac -ar 48000 -f flv rtmp://host/live/stream
+
+# 6 拉流转推：不解码不编码，只换协议和地址
+ffmpeg -i rtmp://source/live/stream -c copy -f flv rtmp://dest/live/stream</pre>
+    <p class="small">采集类命令最常见的两个失败是“设备名不存在”和“没有权限”。先执行第 4 条把设备名列出来，再替换 <code>"Camera"</code>、<code>"Microphone"</code> 这类占位名。推流时缺 <code>-re</code>，文件会瞬间灌进缓冲区，服务端看起来像“卡住”。</p>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>一条命令只做一件事，出错才好定位。</b>想加水印又压缩又抽音轨，先分别跑通“缩放”“overlay”“抽音轨”，再把滤镜链接起来。把 5 个目标塞进一条 400 字符的命令，报错时你连是哪个工位坏的都不知道。</span></div>
 </section>
 
 <section id="rate">
@@ -443,6 +961,657 @@ ffprobe -v error -select_streams v:0 -show_frames \
   </div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>“文件能解，网络有问题；文件都解不了，封装或编码有问题。”</b>这是排错的分水岭。先用 <code>ffmpeg -i in.mp4 -f null -</code> 完整解一遍（不写输出），观察报错与速度；再回到网络层抓包。不要在“到底是流坏了还是网坏了”这个问题上猜。</span></div>
+</section>
+
+<section id="probe-deep">
+  <h2>🔬 ffprobe 全家桶：容器、流、包、帧、章节全摊开</h2>
+  <p class="lead">ffprobe 像体检中心：<code>-show_format</code> 是总检报告，<code>-show_streams</code> 是分科检查，<code>-show_packets</code> 是抽血逐项看，<code>-show_frames</code> 是影像逐帧看，<code>-show_chapters</code> 是目录页。你不需要一次全做，按症状选项目，报告才看得懂。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数</th><th>输出什么</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>-show_format</code></td><td>容器级信息：format_name、duration、size、bit_rate、tags</td><td>先确认它到底是什么文件，时长和总码率对不对</td></tr>
+        <tr><td><code>-show_streams</code></td><td>每条流的编码、分辨率、帧率、采样率、profile、extradata 概览</td><td>判断兼容性、是否 VFR、音频布局是否正常</td></tr>
+        <tr><td><code>-show_packets</code></td><td>每个压缩包的 pts/dts、duration、size、flags</td><td>查负时间戳、DTS 跳变、关键帧分布、峰值码率</td></tr>
+        <tr><td><code>-show_frames</code></td><td>解码后每一帧的类型、时间戳、像素格式、运动信息</td><td>数 I/P/B 帧、找关键帧、看帧级时间戳</td></tr>
+        <tr><td><code>-show_chapters</code></td><td>章节标题与起止时间</td><td>课程、播客、蓝光目录提取</td></tr>
+        <tr><td><code>-of json / csv / flat</code></td><td>输出格式：JSON 给脚本，CSV 给表格，flat 给人读</td><td><code>json</code> 结构化；<code>csv=p=0</code> 去掉前缀便于 awk</td></tr>
+        <tr><td><code>-show_entries</code></td><td>只挑需要的字段，输出更小</td><td><code>stream=codec_name,width,height</code></td></tr>
+        <tr><td><code>-read_intervals</code></td><td>只读指定时间段或前 N 个包</td><td><code>%+#10</code> 表示从开头读 10 个</td></tr>
+        <tr><td><code>-count_frames</code></td><td>真正解一遍并数帧，比读头部准确但更慢</td><td>容器没写帧数时统计实际帧数</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>10 条实用查询：从“这是什么”到“哪里坏了”</h3>
+  <pre class="code"># 1 总览：容器 + 所有流，JSON 交给脚本处理
+ffprobe -v error -show_format -show_streams -of json input.mp4
+
+# 2 时长 / 体积 / 总码率：flat 一行一个键值，最适合人读
+ffprobe -v error -show_entries format=duration,size,bit_rate -of flat input.mp4
+
+# 3 视频参数：编码、分辨率、帧率、像素格式、profile / level
+ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,level,width,height,pix_fmt,r_frame_rate,avg_frame_rate,bit_rate -of csv=p=0 input.mp4
+
+# 4 音频参数：采样率、声道数、声道布局、码率
+ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels,channel_layout,bit_rate -of csv=p=0 input.mp4
+
+# 5 前 10 个包：PTS / DTS / 时长 / 大小 / flags，先看是否从负数开始
+ffprobe -v error -select_streams v:0 -show_packets -show_entries packet=pts_time,dts_time,duration_time,size,flags -read_intervals "%+#10" -of csv=p=0 input.mp4
+
+# 6 关键帧位置与 GOP：相邻关键帧的 PTS 差就是这一段的 GOP 秒数
+ffprobe -v error -select_streams v:0 -show_frames -show_entries frame=pts_time,key_frame,pict_type -of csv=p=0 input.mp4 | awk -F, '$2==1 {if (last!="") printf "GOP %.2fs @ %.2fs\n", $1-last, $1; last=$1}'
+
+# 7 帧类型直方图：I/P/B 各多少帧（第三列是 pict_type）
+ffprobe -v error -select_streams v:0 -show_frames -show_entries frame=pict_type -of csv=p=0 input.mp4 | awk -F, '{print $3}' | sort | uniq -c
+
+# 8 峰值码率估算：逐包 size×8 / duration_time，取最大值（单位 bps）
+ffprobe -v error -select_streams v:0 -show_packets -show_entries packet=size,duration_time -of csv=p=0 input.mp4 | awk -F, 'NF&gt;=2 &amp;&amp; $2!="N/A" {v=$1*8/$2; if(v&gt;m) m=v} END {printf "peak ≈ %.2f Mbps\n", m/1000000}'
+
+# 9 黑场 / 静音：这不是 ffprobe，而是 ffmpeg 的检测滤镜，结果打在 stderr
+ffmpeg -i input.mp4 -vf "blackdetect=d=0.5:pix_th=0.10" -an -f null -
+ffmpeg -i input.mp4 -af "silencedetect=noise=-30dB:d=1" -f null -
+
+# 10 章节：播客、课程、蓝光的目录页
+ffprobe -v error -show_chapters -of json input.mp4</pre>
+
+  <p class="small">第 6、7、8 条用了 <code>csv=p=0</code>：它去掉 <code>packet,</code>、<code>frame,</code> 这类前缀，让字段从第一列开始，awk 才好数。Windows 没有 awk 时，把管道后半段换成 PowerShell 的 <code>ForEach-Object</code> / <code>Measure-Object</code> 即可，字段含义不变。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>看时长不对</h4>
+      <p class="small">先看 <code>format=duration,size,bit_rate</code>，再用 <code>format=duration</code> 对比 <code>stream=duration</code>。容器头没写时长时，ffprobe 可能显示 <code>N/A</code>，不代表文件坏了。</p>
+    </div>
+    <div class="card">
+      <h4>看帧率忽高忽低</h4>
+      <p class="small"><code>r_frame_rate</code> 是“能表示的最小公倍率”，<code>avg_frame_rate</code> 才是平均帧率。两个差得远，通常说明是 VFR（可变帧率），录屏和手机视频很常见。</p>
+    </div>
+    <div class="card">
+      <h4>看关键帧太少</h4>
+      <p class="small">关键帧位置决定 seek 精度与首屏速度。切片前用 <code>-g</code> 或 <code>-force_key_frames</code> 对齐，别让切片器每次都等下一个 IDR。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>ffprobe 报的 codec_tag_string 不一定可信。</b>有些封装器会写错 tag，或者同一编码用了非标准 fourcc。判断兼容性时，<code>codec_name</code>、<code>profile</code>、<code>level</code> 和实际解码测试（<code>ffmpeg -i input.mp4 -f null -</code>）要一起看，不能只信一个字符串。</span></div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>先读“结构”，再读“数值”。</b>排查顺序建议：format 看容器是否完整 → streams 看编码/分辨率/采样率 → packets 看时间戳与关键帧 → frames 看真实解码结果。跳过前两步直接数帧，往往会得到一堆噪声。</span></div>
+</section>
+
+<section id="loudness">
+  <h2>🔊 响度规范：LUFS 是“整个房间的平均音量”，不是瞬间尖峰</h2>
+  <p class="lead">LUFS 像把整段音频请进一个标准房间，用一台“按人耳偏好加权”的声级计测平均值：它不是某一秒的尖峰，而是整段内容的整体响度。两个文件的分贝峰值一样，听起来却可能一个震耳、一个发闷，差别就在这个平均值。</p>
+  <p>FFmpeg 的 <code>loudnorm</code> 实现的是 EBU R128 思路：先测量积分响度（integrated loudness）、真峰值（true peak）和响度范围（LRA），再按目标值调整。它不是简单地“把音量拉大”，所以能避免把安静的段落也一起轰起来。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>术语</th><th>一句话解释</th><th>注意点</th></tr></thead>
+      <tbody>
+        <tr><td><b>LUFS / LKFS</b></td><td>带人耳加权的平均响度，数字越大越响</td><td>LKFS 与 LUFS 在数值上等价，广播里常写 LKFS</td></tr>
+        <tr><td><b>LU</b></td><td>相对上一个参考响度的“差多少”</td><td>用于描述增益变化，不是绝对值</td></tr>
+        <tr><td><b>True Peak / dBTP</b></td><td>考虑重采样后可能出现的峰值的真峰值</td><td>编码成 AAC/MP3 后峰值可能变高，留 1～2 dB 余量</td></tr>
+        <tr><td><b>LRA</b></td><td>响度范围：整段里安静与响亮差多少</td><td>LRA 太大说明动态过宽，短视频平台可能压平</td></tr>
+        <tr><td><b>Integrated</b></td><td>整段积分响度，loudnorm 的 <code>I</code></td><td>门限会排除长静音，不是把静音也平均进去</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>场景</th><th>目标响度</th><th>真峰值上限</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>EBU R128 广播</td><td class="num">−23 LUFS ±0.5</td><td class="num">−1 dBTP</td><td>欧洲广播的基准，强调可预测</td></tr>
+        <tr><td>ATSC A/85 广播</td><td class="num">−24 LKFS ±2</td><td class="num">−2 dBTP</td><td>北美广播常见目标，具体以播出方规范为准</td></tr>
+        <tr><td>YouTube / 流媒体</td><td class="num">−14 ～ −16 LUFS</td><td class="num">−1 ～ −2 dBTP</td><td>平台通常会再归一化一次，交母版别顶到 0 dBFS</td></tr>
+        <tr><td>播客 / 口播</td><td class="num">−16 LUFS</td><td class="num">−1.5 dBTP</td><td>人声为主，LRA 不宜过大</td></tr>
+        <tr><td>短视频 / 广告</td><td class="num">−14 ～ −16 LUFS</td><td class="num">−1 dBTP</td><td>信息密度高，但仍要避免削波</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="loudnorm 响度归一化前后对比">
+      <text x="20" y="24" font-size="13" font-weight="700" fill="#0f172a">loudnorm：把“忽大忽小”的平均响度拉到目标线，同时不撞真峰值天花板</text>
+      <text x="20" y="44" font-size="10" fill="#64748b">左边是原始电平，右边是归一化后；虚线是目标响度，红色是 true peak 上限</text>
+
+      <text x="40" y="68" font-size="11" font-weight="700" fill="#5b21b6">原始：均值偏离目标</text>
+      <line x1="30" y1="118" x2="300" y2="118" stroke="#f59e0b" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <text x="300" y="112" text-anchor="end" font-size="9" fill="#92400e">目标 −16 LUFS</text>
+      <line x1="30" y1="200" x2="300" y2="200" stroke="#cbd5e1" stroke-width="1"/>
+
+      <rect x="40" y="180" width="16" height="20" rx="3" fill="#c4b5fd"/>
+      <rect x="64" y="110" width="16" height="90" rx="3" fill="#c4b5fd"/>
+      <rect x="88" y="160" width="16" height="40" rx="3" fill="#c4b5fd"/>
+      <rect x="112" y="70" width="16" height="130" rx="3" fill="#c4b5fd"/>
+      <rect x="136" y="140" width="16" height="60" rx="3" fill="#c4b5fd"/>
+      <rect x="160" y="90" width="16" height="110" rx="3" fill="#c4b5fd"/>
+      <rect x="184" y="165" width="16" height="35" rx="3" fill="#c4b5fd"/>
+      <rect x="208" y="120" width="16" height="80" rx="3" fill="#c4b5fd"/>
+      <rect x="232" y="150" width="16" height="50" rx="3" fill="#c4b5fd"/>
+      <rect x="256" y="100" width="16" height="100" rx="3" fill="#c4b5fd"/>
+      <text x="165" y="224" text-anchor="middle" font-size="9" fill="#64748b">峰值高、平均低 → 听感忽大忽小</text>
+
+      <rect x="350" y="96" width="180" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="440" y="120" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">loudnorm</text>
+      <text x="440" y="138" text-anchor="middle" font-size="9" fill="#64748b">I / TP / LRA</text>
+      <text x="440" y="154" text-anchor="middle" font-size="9" fill="#64748b">两遍法用线性增益</text>
+
+      <line x1="300" y1="130" x2="346" y2="130" stroke="#7c3aed" stroke-width="1.6"/>
+      <polygon points="350,130 342,125 342,135" fill="#7c3aed"/>
+      <line x1="530" y1="130" x2="566" y2="130" stroke="#10b981" stroke-width="1.6"/>
+      <polygon points="570,130 562,125 562,135" fill="#10b981"/>
+
+      <text x="580" y="68" font-size="11" font-weight="700" fill="#047857">归一后：均值贴线，峰值留余量</text>
+      <line x1="570" y1="118" x2="870" y2="118" stroke="#f59e0b" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <line x1="570" y1="76" x2="870" y2="76" stroke="#e11d48" stroke-width="1.4"/>
+      <text x="870" y="70" text-anchor="end" font-size="9" fill="#9f1239">true peak 上限 −1.5 dBTP</text>
+      <line x1="570" y1="200" x2="870" y2="200" stroke="#cbd5e1" stroke-width="1"/>
+
+      <rect x="580" y="118" width="16" height="82" rx="3" fill="#6ee7b7"/>
+      <rect x="604" y="112" width="16" height="88" rx="3" fill="#6ee7b7"/>
+      <rect x="628" y="122" width="16" height="78" rx="3" fill="#6ee7b7"/>
+      <rect x="652" y="108" width="16" height="92" rx="3" fill="#6ee7b7"/>
+      <rect x="676" y="120" width="16" height="80" rx="3" fill="#6ee7b7"/>
+      <rect x="700" y="110" width="16" height="90" rx="3" fill="#6ee7b7"/>
+      <rect x="724" y="124" width="16" height="76" rx="3" fill="#6ee7b7"/>
+      <rect x="748" y="114" width="16" height="86" rx="3" fill="#6ee7b7"/>
+      <rect x="772" y="120" width="16" height="80" rx="3" fill="#6ee7b7"/>
+      <rect x="796" y="112" width="16" height="88" rx="3" fill="#6ee7b7"/>
+      <text x="720" y="224" text-anchor="middle" font-size="9" fill="#64748b">整体抬到目标，峰顶仍低于红线</text>
+    </svg>
+    <figcaption>黄色虚线是目标响度，红色是 true peak 上限；两遍法先测量再施加线性增益，尽量保留原有动态。</figcaption>
+  </div>
+
+  <h3>两遍法：先体检，再按报告开药</h3>
+  <p>第一遍只测量，不产出文件；第二遍把测量值填回 <code>loudnorm</code>，让整段使用同一个线性增益。这样不会出现“安静段落被单独放大、噪声也变大”的动态抽吸感。</p>
+  <pre class="code"># 第一遍：测量并把 JSON 写进 loud.json（日志也混在里面，脚本取最后一个 JSON 对象）
+ffmpeg -hide_banner -i input.mp4 -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json" -f null - 2&gt; loud.json
+
+# 第二遍：把 measured_I / measured_TP / measured_LRA / measured_thresh / offset 填回去
+ffmpeg -i input.mp4 \
+  -af "loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=-18.6:measured_TP=-3.2:measured_LRA=6.5:measured_thresh=-28.4:offset=0.3:linear=true" \
+  -c:v copy -c:a aac -b:a 192k output.mp4</pre>
+  <p class="small">上面第二行里的 <code>measured_*</code> 是占位值，必须换成第一遍 JSON 里的真实数字。只写 <code>I=-16</code> 不写 measured 参数，loudnorm 会走动态模式，效果是“能用”，但不是最适合交付母版的线性归一化。</p>
+
+  <h3>单行模式与 dynaudnorm：快，但会“呼吸”</h3>
+  <pre class="code"># 单遍 loudnorm：适合快速预览或直播前粗调，动态调整会轻微改变节奏感
+ffmpeg -i input.mp4 -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:v copy -c:a aac -b:a 192k output.mp4
+
+# dynaudnorm：按窗口动态拉增益，适合口播/采访这类音量忽大忽小的素材
+ffmpeg -i input.mp4 -af "dynaudnorm=p=0.9:m=10" -c:v copy -c:a aac -b:a 192k output.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方案</th><th>怎么工作</th><th>优点</th><th>代价 / 适用</th></tr></thead>
+      <tbody>
+        <tr><td><code>loudnorm</code> 两遍</td><td>先测量，再用线性增益整体平移</td><td>保留动态、结果可复现、符合 R128 思路</td><td>要跑两遍；交付母版首选</td></tr>
+        <tr><td><code>loudnorm</code> 单遍</td><td>边分析边动态调整</td><td>一条命令搞定</td><td>可能“呼吸”或改变段落强弱；预览可用</td></tr>
+        <tr><td><code>dynaudnorm</code></td><td>按短窗口动态拉增益</td><td>口播音量更均匀</td><td>会抬高底噪、产生抽吸感；不适合音乐母版</td></tr>
+        <tr><td><code>volume=+6dB</code></td><td>整段固定增益</td><td>最简单、完全可预测</td><td>不知道目标响度，容易削波；只能微调</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>响度归一化不是“把音量开到最大”。</b>把峰值顶到 0 dBFS，再编码成 AAC，重采样后的真峰值可能超过 0 dBTP，播放器会削波。目标响度和真峰值要一起看：<code>TP=-1.5</code> 就是给编码和后续处理留的余量。</span></div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>先统一采样率，再谈响度。</b>不同采样率、声道布局的素材混在一起，loudnorm 的测量口径会变得难解释。音频链最稳的顺序是：<code>aresample=48000</code> → 声道布局统一 → <code>loudnorm</code> → 编码。</span></div>
+</section>
+
+<section id="ladder">
+  <h2>📶 码率阶梯：同一部片，给每条网络都备一把椅子</h2>
+  <p class="lead">点播的多档码率像自助餐分大小份：胃口小的拿小份，胃口大的拿大份，服务员（播放器）根据桌面空间（带宽）随时换盘。只给一个 8 Mbps 的 1080p，弱网用户就只能等；只给一个 360p，强网用户又觉得糊。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>分辨率</th><th>H.264 目标码率</th><th>H.265 目标码率</th><th>音频</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>1080p / 25–30</td><td class="num">4.5–6 Mbps</td><td class="num">2.5–3.5 Mbps</td><td class="num">128 kbps</td><td>桌面、电视、稳定宽带</td></tr>
+        <tr><td>720p / 25–30</td><td class="num">2.5–3.5 Mbps</td><td class="num">1.5–2 Mbps</td><td class="num">128 kbps</td><td>主流移动端、普通宽带</td></tr>
+        <tr><td>480p / 25–30</td><td class="num">1–1.5 Mbps</td><td class="num">0.6–1 Mbps</td><td class="num">96–128 kbps</td><td>弱网、老旧设备</td></tr>
+        <tr><td>360p / 25–30</td><td class="num">0.5–0.8 Mbps</td><td class="num">0.3–0.5 Mbps</td><td class="num">64–96 kbps</td><td>极弱网、首屏兜底</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">表里的数字是“内容复杂度中等”的经验值，不是标准。体育、游戏、烟火这类高运动画面要往上加；动画、纯色背景、静态课程可以往下压。真正的判断方法是：同一段素材做几档，分别测 VMAF/SSIM，再看播放器实际切换表现。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="多档码率 HLS 阶梯">
+      <text x="20" y="24" font-size="13" font-weight="700" fill="#0f172a">一条命令生成三档 HLS：同一条时间线，三种分辨率与码率</text>
+      <text x="20" y="44" font-size="10" fill="#64748b">关键帧必须对齐，分片边界才能对齐；master.m3u8 负责告诉播放器有哪些档</text>
+
+      <rect x="20" y="118" width="150" height="64" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="95" y="143" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">input.mp4</text>
+      <text x="95" y="161" text-anchor="middle" font-size="9" fill="#64748b">1920×1080 · 25 fps</text>
+
+      <rect x="210" y="120" width="130" height="60" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="275" y="144" text-anchor="middle" font-size="11" font-weight="700" fill="#0e7490">split + scale</text>
+      <text x="275" y="162" text-anchor="middle" font-size="9" fill="#64748b">三路视频 pad</text>
+
+      <line x1="170" y1="150" x2="206" y2="150" stroke="#7c3aed" stroke-width="1.6"/>
+      <polygon points="210,150 202,145 202,155" fill="#7c3aed"/>
+
+      <line x1="340" y1="140" x2="389" y2="57" stroke="#0891b2" stroke-width="1.5"/>
+      <line x1="340" y1="150" x2="389" y2="150" stroke="#0891b2" stroke-width="1.5"/>
+      <line x1="340" y1="160" x2="389" y2="243" stroke="#0891b2" stroke-width="1.5"/>
+      <polygon points="400,57 389,52 389,62" fill="#0891b2"/>
+      <polygon points="400,150 389,145 389,155" fill="#0891b2"/>
+      <polygon points="400,243 389,238 389,248" fill="#0891b2"/>
+
+      <rect x="400" y="30" width="200" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="500" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">1080p · 5 Mbps</text>
+      <text x="500" y="67" text-anchor="middle" font-size="9" fill="#64748b">hls_1080p_000.ts …</text>
+
+      <rect x="400" y="123" width="200" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="500" y="143" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">720p · 3 Mbps</text>
+      <text x="500" y="160" text-anchor="middle" font-size="9" fill="#64748b">hls_720p_000.ts …</text>
+
+      <rect x="400" y="216" width="200" height="55" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="500" y="236" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">480p · 1.2 Mbps</text>
+      <text x="500" y="253" text-anchor="middle" font-size="9" fill="#64748b">hls_480p_000.ts …</text>
+
+      <rect x="680" y="100" width="200" height="100" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="780" y="124" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">master.m3u8</text>
+      <text x="780" y="144" text-anchor="middle" font-size="9" fill="#64748b">BANDWIDTH + RESOLUTION</text>
+      <text x="780" y="160" text-anchor="middle" font-size="9" fill="#64748b">播放器按带宽自动切换</text>
+      <text x="780" y="178" text-anchor="middle" font-size="9" fill="#64748b">三档共用一条时间线</text>
+
+      <line x1="600" y1="57" x2="676" y2="128" stroke="#10b981" stroke-width="1.4"/>
+      <line x1="600" y1="150" x2="676" y2="150" stroke="#10b981" stroke-width="1.4"/>
+      <line x1="600" y1="243" x2="676" y2="172" stroke="#10b981" stroke-width="1.4"/>
+      <polygon points="680,126 670,119 671,130" fill="#10b981"/>
+      <polygon points="680,150 672,145 672,155" fill="#10b981"/>
+      <polygon points="680,174 670,170 671,180" fill="#10b981"/>
+
+      <text x="20" y="288" font-size="9" fill="#64748b">分片时长 4 s，关键帧也每 4 s 一个；否则播放器切档时会先等下一个 IDR，切换看起来像“卡一下”。</text>
+    </svg>
+    <figcaption>紫色是源，青色是分叉与缩放，绿色是三档 HLS 分片，黄色是 master playlist；播放器读 master，再按带宽选 variant。</figcaption>
+  </div>
+
+  <pre class="code">ffmpeg -i input.mp4 \
+  -filter_complex "[0:v]split=3[v0][v1][v2];[v0]scale=1920:-2[v0o];[v1]scale=1280:-2[v1o];[v2]scale=854:-2[v2o]" \
+  -map "[v0o]" -map 0:a:0 -map "[v1o]" -map 0:a:0 -map "[v2o]" -map 0:a:0 \
+  -c:v libx264 -preset veryfast -sc_threshold 0 \
+  -force_key_frames "expr:gte(t,n_forced*4)" \
+  -b:v:0 5M -maxrate:v:0 5.5M -bufsize:v:0 10M \
+  -b:v:1 3M -maxrate:v:1 3.3M -bufsize:v:1 6M \
+  -b:v:2 1.2M -maxrate:v:2 1.3M -bufsize:v:2 2.4M \
+  -c:a aac -b:a 128k -ac 2 \
+  -f hls -hls_time 4 -hls_playlist_type vod \
+  -hls_segment_filename "hls_%v_%03d.ts" \
+  -master_pl_name master.m3u8 \
+  -var_stream_map "v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:480p" \
+  "hls_%v.m3u8"</pre>
+
+  <p><b>这条命令在干什么：</b>split 把一路视频复制成三路，分别缩放；三组 <code>-map</code> 把三路视频和三路音频按顺序接进输出流；<code>-b:v:0/1/2</code> 给每条输出视频流单独设码率；最后 HLS muxer 按 <code>var_stream_map</code> 把输出流编号映射成 1080p/720p/480p，并生成 <code>master.m3u8</code>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数 / 写法</th><th>作用</th><th>容易错的地方</th></tr></thead>
+      <tbody>
+        <tr><td><code>-var_stream_map</code></td><td>声明每条 variant 由哪些输出流组成</td><td><code>v:0</code> 指“第 0 条输出视频流”，不是输入流；顺序必须与 <code>-map</code> 一致</td></tr>
+        <tr><td><code>hls_%v_%03d.ts</code></td><td>用 variant 编号区分分片文件</td><td>不写 <code>%v</code> 会互相覆盖，只剩最后一档</td></tr>
+        <tr><td><code>-master_pl_name</code></td><td>额外生成总清单</td><td>只生成 variant 清单时，播放器不知道该选哪档</td></tr>
+        <tr><td><code>-force_key_frames</code></td><td>强制每 4 秒一个关键帧</td><td>帧率未知时比固定 <code>-g</code> 更稳，能保证切档对齐</td></tr>
+        <tr><td><code>-hls_time 4</code></td><td>每片目标 4 秒</td><td>实际边界仍会等关键帧；关键帧不齐，片长就漂</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>先验证 master，再上传 CDN。</b>本地用 <code>ffplay master.m3u8</code> 或浏览器播放器跑一遍，观察切档时有没有停顿、首屏要几秒。只检查每个 variant 的 <code>.m3u8</code> 文件存在，不代表播放器能正确选档。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>分辨率与码率不是越多档越好。</b>档位太多会让编码时间、存储和 CDN 回源成倍增长；通常 3～5 档足够覆盖主流网络。低档位不要低于源内容真正需要的清晰度，否则播放器频繁切档，观感比一直低清更差。</span></div>
+</section>
+
+<section id="automation">
+  <h2>⚙️ 自动化与错误处理：让脚本替你盯进度</h2>
+  <p class="lead">批量转码像一条流水线：<code>-progress</code> 是传送带上的计数器，<code>-stats</code> 是车间大屏，<code>-xerror</code> 是“一有次品就停线”的报警器。没有这些，脚本只能等命令跑完再看文件大小，出了问题也不知道坏在第几步。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数</th><th>作用</th><th>使用建议</th></tr></thead>
+      <tbody>
+        <tr><td><code>-hide_banner</code></td><td>隐藏版本与构建信息</td><td>脚本日志更短；不会隐藏错误</td></tr>
+        <tr><td><code>-loglevel error</code></td><td>只留错误</td><td>批处理默认；排查时改成 <code>warning</code> 或 <code>info</code></td></tr>
+        <tr><td><code>-loglevel level+info</code></td><td>日志带级别前缀</td><td>长日志里方便筛“哪条是 error”</td></tr>
+        <tr><td><code>-stats / -nostats</code></td><td>向 stderr 打印实时进度行 / 关闭它</td><td>人在终端看用 <code>-stats</code>；脚本解析用 <code>-progress</code></td></tr>
+        <tr><td><code>-progress pipe:1</code></td><td>把 key=value 进度写到 stdout</td><td>stdout 给进度，stderr 留给日志，互不污染</td></tr>
+        <tr><td><code>-xerror</code></td><td>遇到 error 级日志就退出</td><td>批处理要“坏一个停一个”时用；会牺牲“尽量产出”</td></tr>
+        <tr><td><code>-y / -n</code></td><td>直接覆盖 / 绝不覆盖</td><td>自动化更推荐 <code>-n</code>，避免误删已有成品</td></tr>
+        <tr><td><code>-nostdin</code></td><td>关闭交互式键盘输入</td><td>后台任务、循环脚本必加，防止误触暂停</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><code>-progress</code> 的输出长什么样</h3>
+  <pre class="code">frame=1234
+fps=25.0
+bitrate=2100.0kbits/s
+total_size=104857600
+out_time_us=49360000
+out_time_ms=49360000
+out_time=00:00:49.360000
+dup_frames=0
+drop_frames=0
+speed=1.21x
+progress=continue</pre>
+  <p class="small">这是一组不断刷新的 <code>key=value</code>，最后一组以 <code>progress=end</code> 收尾。注意有些版本里 <code>out_time_ms</code> 实际也是微秒，脚本优先用 <code>out_time_us</code>。百分比 = <code>out_time_us / 总时长(微秒)</code>，不要拿 <code>frame</code> 去猜，VFR 素材会不准。</p>
+
+  <pre class="code"># 只要进度不要重复的 stats 行；stdout 给进度，stderr 仍然留给错误日志
+ffmpeg -hide_banner -nostdin -loglevel error -progress pipe:1 -nostats \
+  -i input.mp4 -c:v libx264 -crf 22 -preset veryfast -c:a aac output.mp4
+
+# PowerShell 里只看时间和速度
+ffmpeg -hide_banner -nostdin -loglevel error -progress pipe:1 -nostats `
+  -i input.mp4 -c:v libx264 -crf 22 -c:a aac output.mp4 2&gt;$null |
+  Select-String "out_time=|speed="</pre>
+
+  <h3>批量转码：PowerShell 与 bash 各一段</h3>
+  <pre class="code"># PowerShell 7：逐个转，失败只警告，不中断整批
+Get-ChildItem -Filter *.mkv | ForEach-Object {
+  $out = "out\$($_.BaseName).mp4"
+  if (Test-Path $out) { return }              # 已存在就跳过，避免 -n 把“跳过”误判成失败
+  ffmpeg -hide_banner -nostdin -loglevel error -xerror `
+    -i $_.FullName -c:v libx264 -crf 22 -preset veryfast `
+    -c:a aac -b:a 128k -movflags +faststart $out
+  if ($LASTEXITCODE -ne 0) { Write-Warning "失败：$($_.Name)" }
+}
+
+# bash：已有成品就跳过；退出码非 0 才记入 fail.log
+for f in *.mkv; do
+  out="out/${f%.mkv}.mp4"
+  [ -e "$out" ] &amp;&amp; continue
+  ffmpeg -hide_banner -nostdin -loglevel error -xerror -i "$f" \
+    -c:v libx264 -crf 22 -preset veryfast -c:a aac -b:a 128k "$out" \
+    || echo "FAIL $f" &gt;&gt; fail.log
+done</pre>
+
+  <pre class="code"># PowerShell 7 并行：最多同时 4 个，每个只给 2 个编码线程，避免线程超卖
+Get-ChildItem -Filter *.mkv | ForEach-Object -Parallel {
+  ffmpeg -hide_banner -nostdin -loglevel error -xerror -n -threads 2 `
+    -i $_.FullName -c:v libx264 -crf 22 -preset veryfast `
+    -c:a aac ("out\" + $_.BaseName + ".mp4")
+} -ThrottleLimit 4</pre>
+
+  <p>并行不是“开得越多越快”。x264 自己会按 CPU 核数开线程，你再开 8 个任务，每个任务都在抢核，cache 抖动、内存暴涨，总吞吐反而下降。经验规则是：并行数 × 单任务线程数 ≤ 物理核心数，留 1～2 个核给 IO 和系统。</p>
+
+  <h3>让脚本可重跑：临时文件 + 原子改名</h3>
+  <pre class="code">$out = "output.mp4"
+$tmp = "$out.part.mp4"
+ffmpeg -hide_banner -nostdin -loglevel error -xerror -y `
+  -i input.mp4 -c:v libx264 -crf 22 -c:a aac $tmp
+if ($LASTEXITCODE -eq 0) {
+  Move-Item -Force $tmp $out      # 成功才替换成品
+} else {
+  Remove-Item -Force $tmp         # 失败留下半成品，下次会误判
+}</pre>
+  <p class="small">直接写最终文件名，进程被杀就会留下一个“看起来成功、其实播不了”的 MP4。先写 <code>.part</code> 再改名，下次脚本只要判断目标文件是否存在就能安全跳过。配合 <code>-n</code>，批量任务可以随时中断、随时重跑。</p>
+
+  <div class="callout callout-r"><span class="ic">🚫</span><span><b>不要用 stderr 的自然语言做流程控制。</b>“Conversion failed!”“Invalid data found”这些文案会随版本和语言环境变化，唯一稳定的失败信号是进程退出码非 0。日志用来给人看，退出码用来给脚本判断。</span></div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b><code>-xerror</code> 不是万能开关。</b>它让 FFmpeg 在遇到 error 级日志时立刻退出，但有些错误只被记为 warning，仍然会产出“能播但有问题”的文件。交付前仍应做一次 <code>ffprobe</code> 或 <code>ffmpeg -f null -</code> 的完整解码校验。</span></div>
+</section>
+
+<section id="errors">
+  <h2>🚑 报错词典：先看第一条错误，再看最后一行</h2>
+  <p class="lead">FFmpeg 的日志像急诊病历：最后一行往往是“抢救失败”（<code>Conversion failed!</code>），真正的原因在更上面。先分诊是“读不懂箱子”（demuxer/容器）、“搬不动货”（解码/编码）还是“装不进新箱子”（muxer/封装），再对症下药。</p>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">DTS</span>Non-monotonic DTS in output stream 0:1</summary>
+    <div class="bd">
+      <p><b>原因：</b>输出时间戳倒退了。常见于 <code>-c copy</code> 拼接不同时间基的文件、带 B 帧的流重排、<code>-ss</code> 截断后直接 copy，或输入本身时间戳就乱。</p>
+      <p><b>修复：</b>先尝试重排时间戳；仍不行就让编码器重新生成时间线。</p>
+      <pre class="code"># 先保留码流，只修时间戳
+ffmpeg -i input.mp4 -c copy -avoid_negative_ts make_zero -fflags +genpts output.mp4
+
+# 仍报错：重编码，强制恒定帧率
+ffmpeg -i input.mp4 -fps_mode cfr -r 25 -c:v libx264 -crf 20 -c:a aac output.mp4</pre>
+      <p class="small">拼接前先统一 time_base 与帧率；不要指望 <code>-c copy</code> 能自动修复两段来源不同的 B 帧顺序。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">VFR</span>Past duration 0.999992 too large</summary>
+    <div class="bd">
+      <p><b>原因：</b>输入是 VFR（可变帧率），或时间戳与目标帧率不匹配；编码器想按恒定帧率输出，发现“上一帧持续得太久”。录屏、手机视频、部分网络流最常见。</p>
+      <p><b>修复：</b>明确指定恒定帧率，让滤镜链重新采样时间轴。</p>
+      <pre class="code">ffmpeg -i input.mp4 -fps_mode cfr -r 25 -c:v libx264 -crf 20 -c:a aac output.mp4</pre>
+      <p class="small">如果只是警告、输出时长和音画同步都正常，可以不改；如果伴随丢帧或音画漂移，就必须转 CFR。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">容器</span>moov atom not found</summary>
+    <div class="bd">
+      <p><b>原因：</b>MP4 的索引（moov atom）没写进文件。录制时断电、进程被杀、相机写卡中断，都会留下“有数据、没目录”的半成品。</p>
+      <p><b>修复：</b>这不是转码参数能解决的。先确认文件不是 0 字节；能读的先让 FFmpeg 尝试解析；缺失索引通常需要同型号正常文件做参考的修复工具（如 untrunc）。</p>
+      <pre class="code"># 只用于诊断：能读出流说明 moov 至少部分存在
+ffprobe -v error -show_format -show_streams broken.mp4
+
+# 若容器可读、只是尾部索引损坏，尝试重写一遍容器
+ffmpeg -i broken.mp4 -c copy repaired.mp4</pre>
+      <p class="small"><code>-movflags +faststart</code> 只能在 moov 存在时把它挪到文件头，不能凭空造出缺失的索引。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-g">编码器</span>Unknown encoder 'libx264'</summary>
+    <div class="bd">
+      <p><b>原因：</b>当前构建没有编进这个编码器（常见于精简版、系统包管理器版本、部分手机/嵌入式构建）。不是命令写错。</p>
+      <p><b>修复：</b>先列出可用编码器，再换一个当前构建支持的。</p>
+      <pre class="code">ffmpeg -hide_banner -encoders | Select-String "264|265|av1"
+
+# 没有 libx264 时的兜底（兼容性尚可，效率较低）
+ffmpeg -i input.mp4 -c:v mpeg4 -q:v 4 -c:a aac output.mp4</pre>
+      <p class="small">libx264/libx265 属于 GPL 组件，不同发行版和第三方构建的授权策略不同；先看 <code>ffmpeg -buildconf</code>，不要在生产机上临时替换系统 FFmpeg。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">泛化</span>Conversion failed!</summary>
+    <div class="bd">
+      <p><b>原因：</b>这是总收尾错误，不是根因。真正的错误在它上面：编码器初始化失败、滤镜配置失败、写文件失败、参数不合法都可能落到这一行。</p>
+      <p><b>修复：</b>把日志级别调高，向上找第一条 <code>error</code>；再用短片段复现，缩小变量。</p>
+      <pre class="code">ffmpeg -hide_banner -loglevel warning -i input.mp4 -t 5 -c:v libx264 -crf 22 -c:a aac output.mp4
+
+# 只解码、不编码，排除编码器与封装器
+ffmpeg -v error -i input.mp4 -f null -</pre>
+      <p class="small">如果 <code>-f null -</code> 也失败，问题在解码/输入；如果它成功而完整命令失败，重点查编码参数和输出路径/权限。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">滤镜</span>Error reinitializing filters / Failed to configure output pad</summary>
+    <div class="bd">
+      <p><b>原因：</b>滤镜链运行到一半，输入的宽高、像素格式或帧率变了（拼接不同素材、动态分辨率流、可变像素格式），滤镜图需要重建，但下游已经按旧参数配置好。</p>
+      <p><b>修复：</b>在进入滤镜链前把参数钉死，别让下游看到两种尺寸。</p>
+      <pre class="code">ffmpeg -i input.mp4 -vf "scale=1280:720,fps=25,format=yuv420p" \
+  -c:v libx264 -crf 20 -c:a aac output.mp4</pre>
+      <p class="small">多输入拼接时尤其要每一路都写 <code>scale</code>、<code>fps</code>、<code>format</code>；只给其中一路写，另一路仍可能在运行中改变参数。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-a">选项</span>Option not found / Error parsing options</summary>
+    <div class="bd">
+      <p><b>原因：</b>参数不属于这个编码器/封装器，或者拼写错误、版本过旧。例如把 x264 的 <code>-crf</code> 套到 NVENC 上，NVENC 用的是 <code>-cq</code>；把只存在于某个 muxer 的选项写给了另一个 muxer。</p>
+      <p><b>修复：</b>直接查当前构建的帮助，而不是照抄网上的命令。</p>
+      <pre class="code">ffmpeg -hide_banner -h encoder=libx264
+ffmpeg -hide_banner -h encoder=h264_nvenc
+ffmpeg -hide_banner -h muxer=mp4</pre>
+      <p class="small">看到 <code>Unrecognized option</code> 先确认选项是否属于“输出选项”；写在 <code>-i</code> 前后的位置也会改变它作用的组件。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">码流</span>Invalid NAL unit size / decode_slice_header error</summary>
+    <div class="bd">
+      <p><b>原因：</b>H.264/H.265 码流损坏，或封装器写入了错误的 extradata/SPS-PPS。下载中断、磁盘坏块、错误拼接、非标准 remux 都可能触发。</p>
+      <p><b>修复：</b>优先重新获取源文件；如果只是想把可看的部分抢救出来，可以放宽错误检测，但不要把它当“修复”。</p>
+      <pre class="code"># 只用于抢救观看：容忍坏包，重新编码，尽量跳过损坏区域
+ffmpeg -err_detect ignore_err -i input.mp4 -c:v libx264 -crf 18 -c:a aac salvaged.mp4</pre>
+      <p class="small"><code>-err_detect ignore_err</code> 会掩盖问题，产出的文件可能仍有花屏或静音段；正式交付不要用它。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">封装</span>Too many packets buffered for output stream</summary>
+    <div class="bd">
+      <p><b>原因：</b>封装器在等某条流追上另一条流，缓冲队列达到上限。常见于音频比视频长很多、某条流时间戳跳变、muxer 需要交错写入时。</p>
+      <p><b>修复：</b>加大交错队列只能缓解；真正的修法是让两条流时长/时间线一致。</p>
+      <pre class="code">ffmpeg -i input.mp4 -c:v libx264 -crf 20 -c:a aac \
+  -max_muxing_queue_size 1024 -shortest output.mp4</pre>
+      <p class="small">如果加大队列后内存暴涨，说明某条流的时间戳严重错位，继续加数字只是把问题推迟到 OOM。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▸</span><span class="tag tag-r">头信息</span>Could not write header (incorrect codec parameters?)</summary>
+    <div class="bd">
+      <p><b>原因：</b>编码器和容器不匹配，或缺了容器/编码器要求的参数。例如把 WebM 常用的 VP9/Opus 硬塞进 MP4、rawvideo 没给宽高和像素格式、编码器尚未收到必需的 extradata。</p>
+      <p><b>修复：</b>换正确的容器，或补齐编码器要求的参数；先用 <code>-h muxer=…</code> 确认它到底接受什么。</p>
+      <pre class="code"># VP9 + Opus 用 WebM，而不是 MP4
+ffmpeg -i input.mp4 -c:v libvpx-vp9 -crf 32 -b:v 0 -c:a libopus -f webm output.webm
+
+# rawvideo 进 MP4：必须显式给分辨率、像素格式和帧率
+ffmpeg -f rawvideo -pix_fmt yuv420p -s 1920x1080 -r 25 -i input.yuv \
+  -c:v libx264 -crf 20 output.mp4</pre>
+      <p class="small">HEVC 进 MP4 本身是合法的；<code>-tag:v hvc1</code> 是给 Apple 生态的兼容性标签，不是“修复 header 错误”的万能药。真正要确认的是“这个 muxer 是否支持这个 codec 的这些参数”。</p>
+    </div>
+  </details>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>排错顺序：输入 → 解码 → 滤镜 → 编码 → 封装。</b>先用 <code>ffmpeg -i input.mp4 -f null -</code> 验证输入和解码；再加滤镜；再加编码；最后换封装。每加一层跑一次，错误出现的那一层就是嫌疑人。</span></div>
+</section>
+
+<section id="perf">
+  <h2>⚡ 性能调优：先找瓶颈，再拧旋钮</h2>
+  <p class="lead">转码像一条四工位流水线：解码、滤镜、编码、IO。速度慢不一定是因为“CPU 不行”，也可能是最慢的那个工位在等人。盲目把 <code>-threads</code> 拉满，像给所有工位同时加人，结果大家挤在门口，吞吐反而下降。</p>
+
+  <div class="flow vert">
+    <div class="node hi">① 解码<span>把压缩流还原成帧；软解吃 CPU，硬解吃 GPU/显存</span></div>
+    <span class="ar">→</span>
+    <div class="node">② 滤镜<span>缩放、裁切、叠加、字幕；运行在未压缩帧上</span></div>
+    <span class="ar">→</span>
+    <div class="node">③ 编码<span>整条链路最贵的一环；preset 与编码器决定速度</span></div>
+    <span class="ar">→</span>
+    <div class="node hi">④ 封装 / IO<span>写磁盘、写网络、写管道；慢盘和网络挂载最先卡这里</span></div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>现象</th><th>先量什么</th><th>更可能的瓶颈</th><th>先试什么</th></tr></thead>
+      <tbody>
+        <tr><td><code>speed</code> 长期低于 1x，CPU 100%</td><td><code>-benchmark</code> 的 utime / rtime</td><td>软解 + 滤镜 + 软编都在抢 CPU</td><td>换 <code>preset</code>；降滤镜分辨率；硬件加速</td></tr>
+        <tr><td>CPU 只有 30%，磁盘 100%</td><td>任务管理器 / iostat 的写队列</td><td>IO：慢盘、网络盘、日志同步</td><td>换本地盘；先写管道；减少同时写盘任务</td></tr>
+        <tr><td>CPU 100%，GPU 0%</td><td><code>nvidia-smi</code> / 任务管理器 GPU 引擎</td><td>根本没走硬件编码</td><td>显式指定 <code>h264_nvenc</code> 等硬件编码器</td></tr>
+        <tr><td><code>-f null -</code> 很快，完整输出很慢</td><td>对比两次的 rtime</td><td>编码或封装</td><td>换 preset / 编码器；检查输出盘</td></tr>
+        <tr><td><code>-f null -</code> 也慢</td><td>utime / stime</td><td>解码或滤镜</td><td>减少滤镜；用硬解；先降分辨率</td></tr>
+        <tr><td>内存持续上涨</td><td>maxrss / 系统内存</td><td>队列堆积、滤镜缓存、并行过多</td><td>降 <code>-threads</code>；减少并行；检查时间戳错位</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><code>-benchmark</code>：用数字代替感觉</h3>
+  <pre class="code"># 完整编码到 null muxer，不写文件，测“解码 + 滤镜 + 编码”总时间
+ffmpeg -benchmark -i input.mp4 -c:v libx264 -preset medium -crf 20 -c:a copy -f null -
+
+# 只解码 + 滤镜，不编码、不封装
+ffmpeg -benchmark -i input.mp4 -f null -
+
+# 只做解封装 + 封装（copy），看 IO 与容器开销
+ffmpeg -benchmark -i input.mp4 -c copy -f null -
+
+# 单独看某个滤镜的代价：对比加与不加 scale
+ffmpeg -benchmark -i input.mp4 -vf "scale=1280:-2" -f null -</pre>
+  <p class="small"><code>-benchmark</code> 末尾会打印：<code>bench: utime=…s stime=…s rtime=…s</code>。<code>rtime</code> 是墙钟时间，<code>utime/stime</code> 是用户态/内核态 CPU 时间。处理速度 ≈ 视频时长 / <code>rtime</code>；<code>speed=2x</code> 就表示 10 分钟视频约 5 分钟处理完。<code>-benchmark_all</code> 会给出更细的分阶段统计，但日志更长。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>preset</th><th>相对速度</th><th>相对压缩率</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>ultrafast</code></td><td>最快</td><td>最低</td><td>录屏、直播兜底、只求实时</td></tr>
+        <tr><td><code>veryfast</code></td><td>很快</td><td>较低</td><td>批量转码、预览、日常交付</td></tr>
+        <tr><td><code>fast / medium</code></td><td>中等</td><td>中等</td><td><code>medium</code> 是 x264 默认的平衡点</td></tr>
+        <tr><td><code>slow / slower</code></td><td>慢</td><td>较高</td><td>点播母版、预算充足的离线转码</td></tr>
+        <tr><td><code>veryslow / placebo</code></td><td>很慢 / 极慢</td><td>边际提升</td><td><code>placebo</code> 通常只换来极小体积收益，不推荐生产</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>线程与 tune：不是越多越好</h3>
+  <pre class="code"># 让编码器按机器自动选线程（默认就是 0）
+ffmpeg -i input.mp4 -c:v libx264 -crf 20 -threads 0 -c:a copy output.mp4
+
+# 给视频编码单独限线程，适合与其它任务共存
+ffmpeg -i input.mp4 -c:v libx264 -crf 20 -threads:v 4 -c:a copy output.mp4
+
+# 限制滤镜线程，避免滤镜阶段把核吃满
+ffmpeg -i input.mp4 -filter_threads 4 -filter_complex_threads 4 \
+  -vf "scale=1280:-2" -c:v libx264 -crf 20 -c:a copy output.mp4
+
+# 直播低延迟：减少编码缓冲，代价是同画质需要更高码率
+ffmpeg -i input.mp4 -c:v libx264 -preset veryfast -tune zerolatency -b:v 2M -c:a aac -f flv rtmp://host/live/stream</pre>
+  <p class="small"><code>-tune</code> 是“给编码器一个偏好”：<code>film</code> 保留胶片颗粒，<code>animation</code> 适合卡通/动画，<code>grain</code> 保留噪点，<code>stillimage</code> 适合静态幻灯片，<code>fastdecode</code> 降低解码端负担，<code>zerolatency</code> 压缩编码延迟。x265 与硬件编码器的 tune 名称不完全一样，先查 <code>-h encoder=…</code>。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>先做“减法”，再做“换硬件”。</b>把 <code>fps</code> 从 30 降到 25、把滤镜分辨率从 4K 降到 1080p、把 <code>preset</code> 从 slow 换成 veryfast，往往比换一块 GPU 更快见效，而且不改变交付格式。调优前先记录一组基线数字，否则你无法判断改动到底有没有用。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>基准测试要跑两次以上。</b>第一次读文件可能命中冷缓存，第二次才是稳定值；输出到网络盘或机械盘会污染编码器的成绩。测试时固定输入、固定输出、关闭其它重任务，否则 <code>rtime</code> 的波动会让你误判瓶颈。</span></div>
+
+  <div class="callout callout-i"><span class="ic">🚀</span><span><b>硬件加速：</b>把解码、缩放、编码搬到 GPU 能显著提速，但滤镜链和“显存 ↔ 内存”的拷贝方式决定实际收益，细节见 <a href="../hwaccel/index.html">硬件加速专页</a>，这里不展开。</span></div>
+</section>
+
+<section id="quality">
+  <h2>🎯 质量度量：别用肉眼 A/B，用 VMAF/SSIM/PSNR 说话</h2>
+  <p class="lead">质量评估像考试打分：PSNR 是“逐像素对答案”，错一个像素就扣分；SSIM 看“结构像不像”，更接近人眼对亮度和轮廓的敏感；VMAF 则是请一群“人眼评委”训练出来的模型打分——它最像主观观感，但也最依赖模型和素材。</p>
+  <p>三者都不是“越高越好看”的绝对真理，而是帮你把“这个码率够不够”从感觉变成可比较的数字。正确用法是：同码率比 VMAF，同 VMAF 比码率，最后再到目标设备上看一眼。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>指标</th><th>原理</th><th>数值范围</th><th>优点</th><th>盲区</th></tr></thead>
+      <tbody>
+        <tr><td><b>PSNR</b></td><td>逐像素均方误差换算成 dB</td><td>通常 30–45 dB</td><td>计算快、结果稳定、容易复现</td><td>不关心结构与人眼感知；轻微模糊也可能高分</td></tr>
+        <tr><td><b>SSIM</b></td><td>比较亮度、对比度、结构相似性</td><td>0–1，越接近 1 越好</td><td>比 PSNR 更贴近人眼，适合看局部结构</td><td>仍是局部统计，对时间抖动/运动不敏感</td></tr>
+        <tr><td><b>VMAF</b></td><td>用主观打分数据训练的视频质量模型</td><td>0–100，越高越好</td><td>最接近“人觉得好不好”，适合码率阶梯决策</td><td>依赖模型版本与素材；需要额外构建支持</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>三条命令：SSIM、PSNR、VMAF</h3>
+  <pre class="code"># SSIM：第一个输入是参考，第二个是被测；结果打在日志里
+ffmpeg -i input.mp4 -i output.mp4 -lavfi "[0:v][1:v]ssim" -f null -
+
+# PSNR：同样先参考、后被测
+ffmpeg -i input.mp4 -i output.mp4 -lavfi "[0:v][1:v]psnr" -f null -
+
+# VMAF：需要构建里带 libvmaf；可同时把结果写成 JSON
+ffmpeg -i input.mp4 -i output.mp4 \
+  -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=vmaf.json" -f null -</pre>
+  <p class="small">顺序不能反：滤镜里的第一个输入是“参考答案”，第二个才是“学生答卷”。SSIM 日志里看 <code>All</code> 或 <code>Y</code> 分量；VMAF 的 JSON 里有逐帧分数与整体均值，做码率阶梯时通常看均值，也要看最低帧，避免“平均不错、运动段崩掉”。</p>
+
+  <h3>分辨率不一致时：先对齐，再比较</h3>
+  <p>VMAF/SSIM 要求两路画面尺寸一致。把 720p 输出和 1080p 原片直接比，滤镜会拒绝配置。做码率阶梯时，正确做法是“用对应分辨率的下采样参考”，而不是把低清输出硬放大到 1080p 再比——放大不会增加信息，只会把模糊算成“更接近”。</p>
+  <pre class="code"># 两路都缩到 1280×720 再比；flags=bicubic 保证缩放算法一致
+ffmpeg -i input.mp4 -i output_720.mp4 \
+  -lavfi "[0:v]scale=1280:720:flags=bicubic[ref];[1:v]scale=1280:720:flags=bicubic[dist];[ref][dist]libvmaf" \
+  -f null -
+
+# 时间戳起点不一致时，先各自归零，避免错帧
+ffmpeg -i input.mp4 -i output.mp4 \
+  -lavfi "[0:v]settb=AVTB,setpts=PTS-STARTPTS[ref];[1:v]settb=AVTB,setpts=PTS-STARTPTS[dist];[ref][dist]ssim" \
+  -f null -</pre>
+
+  <h3>用 CRF 扫一遍，找“甜点”</h3>
+  <pre class="code"># bash：对同一源做 4 个 CRF，分别算 VMAF，再结合文件大小选点
+for crf in 18 20 23 26; do
+  ffmpeg -hide_banner -loglevel error -i input.mp4 -c:v libx264 -preset medium -crf $crf "test_$crf.mp4"
+  vmaf=$(ffmpeg -i input.mp4 -i "test_$crf.mp4" -lavfi "[0:v][1:v]libvmaf" -f null - 2&gt;&amp;1 | awk '/VMAF/ {print $NF}')
+  size=$(stat -c %s "test_$crf.mp4" 2&gt;/dev/null || stat -f %z "test_$crf.mp4")
+  echo "CRF=$crf  VMAF=$vmaf  size=$size"
+done</pre>
+  <p class="small">这个循环在 Linux/macOS 上可直接跑；Windows 把 <code>stat</code> 换成 PowerShell 的 <code>(Get-Item).Length</code>。更严谨的做法是固定“目标 VMAF”，比较不同编码器/分辨率下谁用的码率更低，而不是固定 CRF 比分数。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>用 VMAF 选阶梯，用肉眼做终审。</b>常见经验：VMAF 90 以上通常接近“透明”，80–90 多数内容可接受，70 以下容易出现可见的块效应或涂抹感；但动画、胶片颗粒、体育镜头的阈值完全不同。最终仍要在手机、电视、笔记本各看一遍。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要拿 PSNR 做唯一 KPI。</b>把画面整体模糊一点，PSNR 可能仍然很高，但人眼一眼就能看出“糊”。PSNR/SSIM 适合做回归测试和快速筛查，VMAF 适合做码率决策；三者都只是代理指标，不是主观质量本身。</span></div>
 </section>
 
 <section id="source">

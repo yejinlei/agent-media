@@ -66,6 +66,12 @@
     <a href="#hls">HLS / DASH 的分片</a>
     <a href="#math">体积与开销计算</a>
     <a href="#debug">排错清单</a>
+    <a href="#boxmap">MP4 box 全谱</a>
+    <a href="#tickmath">时间刻度手工演算</a>
+    <a href="#mkv">MKV / WebM 的 EBML</a>
+    <a href="#subs">多轨道与字幕</a>
+    <a href="#tools">容器工具对照表</a>
+    <a href="#tscc">TS 连续性计数诊断</a>
     <a href="#glossary">术语表</a>
   </nav>
 </aside>
@@ -505,6 +511,304 @@ ffprobe -select_streams v -show_frames \
       </tbody>
     </table>
   </div>
+</section>
+
+<section id="boxmap">
+  <h2>🧱 MP4 box 全谱：一张图认清谁装谁</h2>
+  <p class="lead">把 MP4 想成一栋<strong>带总台账的仓库</strong>：<code>moov</code> 是台账室，<code>trak</code> 是每条货道，<code>stbl</code> 是货道里那摞明细账，<code>mdat</code> 才是真正的货物。box 只有两种长相——“有子箱的大箱”和“装数据的叶子箱”，所有复杂度都来自嵌套。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 400" role="img" aria-label="MP4 box 层级结构">
+      <rect x="20" y="8" width="120" height="24" rx="4" fill="#f1f5f9" stroke="#cbd5e1"/>
+      <text x="80" y="25" text-anchor="middle" font-size="13" fill="#334155">ftyp</text>
+      <text x="150" y="25" font-size="12" fill="#94a3b8">品牌与兼容声明</text>
+
+      <rect x="20" y="40" width="200" height="24" rx="4" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="90" y="57" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">moov</text>
+      <text x="230" y="57" font-size="12" fill="#94a3b8">影片总台账</text>
+
+      <rect x="52" y="72" width="120" height="22" rx="4" fill="#fff" stroke="#e2e8f0"/>
+      <text x="112" y="88" text-anchor="middle" font-size="12" fill="#334155">mvhd</text>
+      <text x="182" y="88" font-size="12" fill="#94a3b8">全局时间刻度 / 时长</text>
+
+      <rect x="52" y="102" width="190" height="22" rx="4" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="147" y="118" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">trak</text>
+      <text x="252" y="118" font-size="12" fill="#94a3b8">一条轨道（视频 / 音频 / 字幕各一个）</text>
+
+      <rect x="84" y="132" width="110" height="22" rx="4" fill="#fff" stroke="#e2e8f0"/>
+      <text x="139" y="148" text-anchor="middle" font-size="12" fill="#334155">tkhd</text>
+      <text x="204" y="148" font-size="12" fill="#94a3b8">宽高 / 音量 / 轨道 ID</text>
+
+      <rect x="84" y="162" width="150" height="22" rx="4" fill="#fff" stroke="#e2e8f0"/>
+      <text x="159" y="178" text-anchor="middle" font-size="12" fill="#334155">edts / elst</text>
+      <text x="244" y="178" font-size="12" fill="#94a3b8">编辑列表：空镜、延时、剪切</text>
+
+      <rect x="84" y="192" width="160" height="22" rx="4" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="164" y="208" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">mdia</text>
+      <text x="254" y="208" font-size="12" fill="#94a3b8">媒体信息</text>
+
+      <rect x="116" y="222" width="100" height="22" rx="4" fill="#fff" stroke="#e2e8f0"/>
+      <text x="166" y="238" text-anchor="middle" font-size="12" fill="#334155">mdhd</text>
+      <text x="226" y="238" font-size="12" fill="#94a3b8">媒体时间刻度</text>
+
+      <rect x="116" y="252" width="150" height="22" rx="4" fill="#fff" stroke="#e2e8f0"/>
+      <text x="191" y="268" text-anchor="middle" font-size="12" fill="#334155">hdlr</text>
+      <text x="276" y="268" font-size="12" fill="#94a3b8">vide / soun / subt</text>
+
+      <rect x="116" y="282" width="150" height="22" rx="4" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="191" y="298" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">minf</text>
+      <text x="276" y="298" font-size="12" fill="#94a3b8">vmhd / smhd / dinf / stbl</text>
+
+      <rect x="148" y="312" width="440" height="24" rx="4" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="368" y="329" text-anchor="middle" font-size="12" font-weight="700" fill="#155e75">stbl：stsd · stts · ctts · stss · stsc · stsz · stco/co64</text>
+
+      <rect x="20" y="352" width="200" height="24" rx="4" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="90" y="369" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">mdat</text>
+      <text x="230" y="369" font-size="12" fill="#94a3b8">真正的像素与音频字节，按顺序堆放</text>
+    </svg>
+    <figcaption>图：一个典型 MP4 的 box 层级。缩进表示“被谁包含”，同一层级的先后顺序就是文件里的字节顺序。</figcaption>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>box</th><th>位置</th><th>回答什么问题</th><th>工程上什么时候要看它</th></tr></thead>
+      <tbody>
+        <tr><td><code>ftyp</code></td><td>文件最前</td><td>我是什么品牌、兼容哪些规范</td><td>判断“为什么某播放器不认这个文件”</td></tr>
+        <tr><td><code>moov</code></td><td>通常靠前或靠后</td><td>整部影片的目录</td><td>moov 在尾部 = 必须下完才能播</td></tr>
+        <tr><td><code>mvhd</code></td><td>moov 第一个子 box</td><td>全局 timescale、总时长、默认音量</td><td>校验时长对不上时先看它</td></tr>
+        <tr><td><code>trak</code></td><td>moov 内，可多个</td><td>一条轨道的全部信息</td><td>数轨道数量、区分音视频字幕</td></tr>
+        <tr><td><code>tkhd</code></td><td>trak 内</td><td>轨道 ID、显示宽高、音量、启用标志</td><td>查“视频有但显示尺寸不对”</td></tr>
+        <tr><td><code>elst</code></td><td>edts 内</td><td>这轨从媒体第几秒开始、播多久</td><td>片头空画面、音画整体偏移</td></tr>
+        <tr><td><code>mdhd</code></td><td>mdia 内</td><td>本轨道自己的 timescale 与时长</td><td>stts 的 delta 要靠它换算成秒</td></tr>
+        <tr><td><code>hdlr</code></td><td>mdia 内</td><td>这是视频、音频还是字幕</td><td>识别未知轨道</td></tr>
+        <tr><td><code>stsd</code></td><td>stbl 内</td><td>用哪种编码器、参数集在哪</td><td>取 avcC / hvcC / esds</td></tr>
+        <tr><td><code>mdat</code></td><td>通常在文件后段</td><td>存放实际样本字节</td><td>算文件体积、做分片时必须切它</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 一行命令打印整棵 box 树（Bento4）</span>
+mp4dump --verbosity 2 in.mp4
+
+<span class="cm"># GPAC 的等价物，还会顺手标出可疑 box</span>
+mp4box -diso in.mp4</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>看 box 树的顺序：</b>先看 <code>ftyp</code> 判断品牌 → 再看 <code>moov</code> 在头还是尾 → 然后在 <code>trak</code> 里数轨道 → 最后钻进 <code>stbl</code> 找 <code>stsd</code>。这条路径覆盖了 90% 的“文件打不开 / 打开了但不对”的问题。</span></div>
+</section>
+
+<section id="tickmath">
+  <h2>⏱️ 时间刻度手工演算：把三张表算成一条时间线</h2>
+  <p class="lead">时间戳不是文件里直接写好的“第几秒”，而是<strong>用刻度尺量出来的</strong>。<code>mdhd.timescale</code> 是这把尺子的刻度密度，<code>stts</code> 是每段多长，<code>ctts</code> 是显示顺序相对解码顺序的补偿。三者一乘一加，才得到 PTS。</p>
+
+  <p>公式很短，但要分清两个时钟：<span class="math">秒 = tick / timescale</span>。视频轨道常用 90000，音频用采样率（48000）。<b>mvhd 的 timescale 只用于“整部影片”的时长与 elst</b>，不参与单帧换算——这是最常见的误用。</p>
+
+  <h3>例：一个 30 fps 视频轨，含 2 个 B 帧</h3>
+  <p>设 <code>mdhd.timescale = 90000</code>，<code>stts</code> 只有一项 <code>(count=4, delta=3000)</code>：每帧 3000 tick，即 3000/90000 = 33.33 ms，正好 30 fps。编码器按“解码顺序”交付样本，但人眼要按“显示顺序”看，于是 <code>ctts</code> 记录每个样本该往后挪多少：</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>样本（解码序）</th><th>DTS（tick）</th><th>ctts 偏移</th><th>PTS = DTS + 偏移</th><th>实际呈现顺序</th><th>帧类型</th></tr></thead>
+      <tbody>
+        <tr><td>s0</td><td>0</td><td>0</td><td>0</td><td>第 1 帧（0 ms）</td><td>I</td></tr>
+        <tr><td>s1</td><td>3000</td><td>+6000</td><td>9000</td><td>第 4 帧（100 ms）</td><td>P</td></tr>
+        <tr><td>s2</td><td>6000</td><td>−3000</td><td>3000</td><td>第 2 帧（33 ms）</td><td>B</td></tr>
+        <tr><td>s3</td><td>9000</td><td>−3000</td><td>6000</td><td>第 3 帧（66 ms）</td><td>B</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这张表解释了三个常见现象：</p>
+  <ul>
+    <li><b>为什么 P 帧排在 B 帧前面交付：</b>B 帧要靠前后两个参考帧才能解，P 帧（s1）必须先解码出来。</li>
+    <li><b>为什么 ctts 会出现负数：</b>s2、s3 的 PTS 比 DTS 小。ISO 14496-12 里 <code>ctts</code> 的 version 0 只允许非负偏移，所以这类文件必须写 version 1（有符号），否则解码器会把偏移读成天文数字。</li>
+    <li><b>为什么 <code>ffprobe</code> 有时报 “non-monotonic DTS”：</b>不是时间戳坏了，而是容器把 DTS 写成了 PTS 的值，播放器按单调递增去校验就会报警。</li>
+  </ul>
+
+  <pre class="code"><span class="cm"># 逐包对照 DTS / PTS / 是否为关键帧</span>
+ffprobe -select_streams v:0 -show_packets \
+  -show_entries packet=pts_time,dts_time,flags,duration_time \
+  -of csv in.mp4 | head -20
+
+<span class="cm"># 只看 ctts 是否存在（有 B 帧通常就有）</span>
+mp4box -diso in.mp4 | grep -i ctts</pre>
+
+  <h3>音频轨道的换算</h3>
+  <p>AAC-LC 一帧固定 1024 个采样点，<code>mdhd.timescale = 48000</code>，于是 <code>stts</code> 每项 delta = 1024，一帧 1024/48000 ≈ 21.33 ms。音频通常没有 ctts（不需要重排），所以音频的 DTS 就等于 PTS——这也是“音画对齐以音频为主时钟”的物理原因之一。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>elst 用的是两把尺子：</b><code>segment_duration</code> 用 <b>mvhd</b> 的 timescale，<code>media_time</code> 用 <b>mdhd</b> 的 timescale。混用会把“片头剪掉 2 秒”算成完全错误的位置。</span></div>
+</section>
+
+<section id="mkv">
+  <h2>🧩 MKV / WebM：另一种记账方式（EBML）</h2>
+  <p class="lead">MP4 用“定长 box”，MKV 用 <strong>EBML</strong>——一种“可伸缩的标签”，像集装箱上贴的可撕标签：ID 和长度都可以只占 1 字节，也可以占 8 字节，全看内容有多大。好处是向前兼容（老播放器能跳过不认识的新元素），代价是解析器必须逐字节猜“这个标签有多长”。</p>
+
+  <h3>长度怎么编出来</h3>
+  <p>EBML 的 ID 和 Size 都用“首位标记法”：第一个字节里最高的那个 1 决定总长度。</p>
+  <div class="bitfield">
+    <span class="bf" style="flex:1"><b>1xxx xxxx</b><i>1 字节：值 7 位，最大 127</i></span>
+    <span class="bf" style="flex:1"><b>01xx xxxx xxxx xxxx</b><i>2 字节：值 14 位，最大 16383</i></span>
+    <span class="bf" style="flex:1"><b>001x xxxx …</b><i>3 字节：值 21 位</i></span>
+    <span class="bf" style="flex:1"><b>0001 xxxx …</b><i>4 字节：值 28 位</i></span>
+  </div>
+  <p class="small">ID 也有同样的规则，但 ID 的“值”是连同标记位一起当标识符用的，所以 <code>1A 45 DF A3</code> 就是 4 字节 ID（文件头 EBML）。长度字段则只取标记位之后的值。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>元素</th><th>ID（hex）</th><th>作用</th><th>类比</th></tr></thead>
+      <tbody>
+        <tr><td>EBML</td><td><code>1A 45 DF A3</code></td><td>文件头，声明 DocType 与版本</td><td>外箱上的“这是 MKV”</td></tr>
+        <tr><td>DocType</td><td><code>42 82</code></td><td>值为 <code>matroska</code> 或 <code>webm</code></td><td>区分 MKV 与 WebM 的唯一硬标准</td></tr>
+        <tr><td>Segment</td><td><code>18 53 80 67</code></td><td>包裹全部内容</td><td>整车货物</td></tr>
+        <tr><td>SeekHead</td><td><code>11 4D 9B 74</code></td><td>记录其他关键元素的位置</td><td>箱内的目录索引</td></tr>
+        <tr><td>Info</td><td><code>15 49 A9 66</code></td><td>TimecodeScale、时长、封装程序</td><td>运单抬头</td></tr>
+        <tr><td>Tracks</td><td><code>16 54 AE 6B</code></td><td>每轨的 TrackType / CodecID / 参数</td><td>每类货物的规格表</td></tr>
+        <tr><td>Cluster</td><td><code>1F 43 B6 75</code></td><td>一组按时间聚在一起的块</td><td>按时间打包的一摞箱子</td></tr>
+        <tr><td>SimpleBlock</td><td><code>A3</code></td><td>真正的一帧数据 + 相对时间码</td><td>单个包裹</td></tr>
+        <tr><td>Cues</td><td><code>1C 53 BB 6B</code></td><td>关键帧索引，决定能否拖动</td><td>快速定位表</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>TimecodeScale 是 MKV 的“统一刻度”：</b>默认 1000000 ns（= 1 ms）。Cluster 里的 <code>Timecode</code> 是毫秒数，SimpleBlock 里再带一个相对偏移（有符号 16 位）。所以 MKV 内部其实是“毫秒 + 相对 tick”，而不是 MP4 那种按轨道 timescale 计数。</p>
+
+  <p><b>WebM 就是 MKV 的子集：</b>DocType 写成 <code>webm</code>，只允许 VP8 / VP9 / AV1 视频与 Vorbis / Opus 音频，且不允许章节等少数元素。浏览器看到 <code>webm</code> 才保证按 WebM 规范解析，看到 <code>matroska</code> 不一定能播。</p>
+
+  <pre class="code"><span class="cm"># 看 MKV 的元素树（MKVToolNix 自带）</span>
+mkvinfo -v in.mkv | head -40
+
+<span class="cm"># 提取轨道与附件</span>
+mkvextract tracks in.mkv 0:video.h264 1:audio.aac</pre>
+
+  <div class="callout callout-r"><span class="ic">🚫</span><span><b>“Cluster 里没有 Cues” 会怎样：</b>播放器只能从头顺序读，进度条变成“只能前进不能后退”。修复办法是 <code>mkvmerge -o fixed.mkv in.mkv</code> 重写索引，视频流本身不用重编码。</span></div>
+</section>
+
+<section id="subs">
+  <h2>💬 多轨道与字幕：为什么同一个文件里能塞好几国语言</h2>
+  <p class="lead">容器像<strong>多抽屉的柜子</strong>：每个抽屉挂一张标签（<code>hdlr</code> 说明类型，<code>tkhd</code> 说明它是否默认打开）。字幕只是“另一种抽屉”，里面装的不是像素而是文字或小图片——但格式五花八门，这才是转封装时最容易掉链子的地方。</p>
+
+  <h3>先认类型：hdlr 的 handler_type</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>handler_type</th><th>含义</th><th>MP4 里常见编码</th><th>MKV 里常见编码</th></tr></thead>
+      <tbody>
+        <tr><td><code>vide</code></td><td>视频</td><td>avc1 / hvc1 / av01 / vp09</td><td>V_MPEG4/ISO/AVC 等</td></tr>
+        <tr><td><code>soun</code></td><td>音频</td><td>mp4a / Opus / alac</td><td>A_AAC / A_OPUS / A_FLAC</td></tr>
+        <tr><td><code>subt</code></td><td>字幕（文本或位图）</td><td>tx3g / wvtt / stpp</td><td>S_TEXT/UTF8 / S_TEXT/ASS</td></tr>
+        <tr><td><code>text</code></td><td>章节名、强制字幕等文本轨</td><td>text</td><td>—</td></tr>
+        <tr><td><code>meta</code></td><td>元数据（时间码轨等）</td><td>tmcd</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>字幕格式对照（最容易踩的坑）</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>源格式</th><th>MP4 能否直装</th><th>MKV 能否直装</th><th>处理方式</th></tr></thead>
+      <tbody>
+        <tr><td>SRT（纯文本）</td><td>不能，需转 <code>mov_text</code>（tx3g）</td><td>能，<code>S_TEXT/UTF8</code></td><td>MP4 走 <code>-c:s mov_text</code></td></tr>
+        <tr><td>ASS / SSA（带特效样式）</td><td>不能（样式会丢失）</td><td>能，<code>S_TEXT/ASS</code></td><td>保留特效就别转 MP4</td></tr>
+        <tr><td>WebVTT</td><td>能，<code>wvtt</code></td><td>能（按文本处理）</td><td>网页播放首选</td></tr>
+        <tr><td>PGS / VobSub（位图字幕）</td><td>不能</td><td>能</td><td>MKV 原生支持；MP4 需烧字幕</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># MKV → MP4：视频音频原样复制，字幕转 mov_text</span>
+ffmpeg -i in.mkv -c:v copy -c:a copy -c:s mov_text -map 0 out.mp4
+
+<span class="cm"># 全部原样转封装（MKV 之间最安全）</span>
+ffmpeg -i in.mkv -c copy -map 0 out.mkv
+
+<span class="cm"># 只挑第 1 条音轨 + 第 1 条字幕，并设为默认</span>
+ffmpeg -i in.mkv -map 0:v:0 -map 0:a:0 -map 0:s:0 \
+  -c copy -disposition:a:0 default out.mkv
+
+<span class="cm"># 硬字幕烧进画面（必须重新编码视频）</span>
+ffmpeg -i in.mp4 -vf "subtitles=sub.srt" -c:a copy out.mp4</pre>
+
+  <p><b>disposition 决定“默认打开哪个抽屉”：</b><code>default</code> 默认轨、<code>forced</code> 强制显示（常用于“外语对白才出字幕”）、<code>commentary</code> 评论音轨、<code>hearing_impaired</code> 听障辅助。这些只是标志位，不改变数据本身，转封装时能原样带过去。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>判断“字幕为什么不显示”：</b>先 <code>ffprobe -show_streams -select_streams s</code> 看有没有字幕流；再看 <code>disposition</code> 是否为 default；最后看播放器是否支持该编码（尤其 MP4 里的 ASS 会被直接忽略）。</span></div>
+</section>
+
+<section id="tools">
+  <h2>🧰 容器工具对照表：什么盒子用哪把螺丝刀</h2>
+  <p class="lead">拆容器不需要写代码，<strong>四件套</strong>就能覆盖绝大多数场景：官方 <code>ffprobe</code> 看内容，Bento4 的 <code>mp4dump</code> 看结构，GPAC 的 <code>mp4box</code> 改结构，MKVToolNix 看 MKV。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>工具</th><th>擅长</th><th>典型命令</th><th>注意</th></tr></thead>
+      <tbody>
+        <tr><td><code>ffprobe</code></td><td>格式 / 流 / 包 / 帧的通用查询</td><td><code>ffprobe -show_streams -of json in.mp4</code></td><td>不显示 box 结构，只给“结论”</td></tr>
+        <tr><td><code>mp4dump</code>（Bento4）</td><td>逐 box 打印，含偏移与大小</td><td><code>mp4dump --verbosity 3 in.mp4</code></td><td>输出很长，配合 <code>head</code> / <code>grep</code></td></tr>
+        <tr><td><code>mp4box</code>（GPAC）</td><td>查看 / 修复 / 拆分 / 加 hint</td><td><code>mp4box -info in.mp4</code>、<code>-diso</code>、<code>-fix</code></td><td>改结构前先备份</td></tr>
+        <tr><td><code>mkvinfo</code> / <code>mkvmerge</code></td><td>MKV 元素树与重写索引</td><td><code>mkvinfo -v in.mkv</code>、<code>mkvmerge -o o.mkv i.mkv</code></td><td>重写索引不重新编码</td></tr>
+        <tr><td><code>ffmpeg -f null</code></td><td>只解码不输出，验证码流能否读通</td><td><code>ffmpeg -i in.ts -c copy -f null -</code></td><td>看 warn / error 里有没有 CC 或 DTS 异常</td></tr>
+        <tr><td><code>flvmeta</code></td><td>读 FLV 头与 onMetaData</td><td><code>flvmeta in.flv</code></td><td>FLV 的元数据常被写坏</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 一条命令同时看容器与轨道摘要</span>
+ffprobe -show_format -show_streams -of json in.mp4
+
+<span class="cm"># 只看包级时间戳（排查音画不同步的第一步）</span>
+ffprobe -show_packets -select_streams v:0 \
+  -show_entries packet=pts_time,dts_time,size,flags -of csv in.mp4 | head
+
+<span class="cm"># 只看帧级信息（含 pict_type，判断 GOP 结构）</span>
+ffprobe -show_frames -select_streams v:0 \
+  -show_entries frame=pict_type,key_frame,pkt_pts_time -of csv in.mp4 | head</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>remux 与 re-encode 的区别，一条命令就能验证：</b>转封装前后比较 <code>ffprobe -show_packets</code> 的包数与每包 size——数量与大小完全一致，说明只是换了外壳；有变化就说明偷偷重编码了。</span></div>
+</section>
+
+<section id="tscc">
+  <h2>📡 TS 连续性计数（CC）诊断：4 个 bit 抓丢包</h2>
+  <p class="lead">TS 的每个包都有 4 bit 的 <code>continuity_counter</code>，像<strong>传送带上的编号贴纸</strong>：同一个 PID 每来一个带数据的包就 +1，到 15 回绕到 0。丢了一个包，编号就会跳；收到重复包，编号就停。它是整条链路里最便宜、最有效的丢包探测器。</p>
+
+  <div class="bitfield">
+    <span class="bf" style="flex:1"><b>sync</b><i>8 bit，固定 0x47</i></span>
+    <span class="bf" style="flex:1"><b>TEI</b><i>1 bit，传输错误</i></span>
+    <span class="bf" style="flex:1"><b>PUSI</b><i>1 bit，负载单元起始</i></span>
+    <span class="bf" style="flex:1"><b>priority</b><i>1 bit</i></span>
+    <span class="bf" style="flex:1"><b>PID</b><i>13 bit，流标识</i></span>
+    <span class="bf" style="flex:1"><b>TSC</b><i>2 bit，加扰控制</i></span>
+    <span class="bf" style="flex:1"><b>AF</b><i>2 bit，有无适配字段</i></span>
+    <span class="bf" style="flex:1"><b>CC</b><i>4 bit，0-15 循环</i></span>
+  </div>
+
+  <p><b>关键细节：只有带负载的包才让 CC 递增。</b>纯适配字段的包（AF=10 或 11 且无 payload）CC 保持不变。所以看到“编号原地不动”不一定有问题，先确认那个包到底有没有带数据。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>CC 现象</th><th>可能的原因</th><th>怎么确认</th><th>后果</th></tr></thead>
+      <tbody>
+        <tr><td>正常 +1（15→0 回绕）</td><td>无异常</td><td>—</td><td>—</td></tr>
+        <tr><td>跳了 2 以上</td><td>中间丢包 / 网卡丢帧 / 交换机拥塞</td><td>看同 PID 前后是否缺一帧 PES</td><td>画面局部花屏，音频咔嗒声</td></tr>
+        <tr><td>与上一个包相同</td><td>重复包（重传或抓包重复）</td><td>对比两包的 payload 是否一致</td><td>一般无害，但会让计数失真</td></tr>
+        <tr><td>乱序</td><td>多路径、负载均衡乱序</td><td>按 PID 排序后重放</td><td>解码器丢弃或报错</td></tr>
+        <tr><td>跳号但带 discontinuity 标志</td><td>码流切换、加扰变化</td><td>看 adaptation_field 的 discontinuity_indicator</td><td>合法，不算故障</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 复制解码一遍，让 ffmpeg 把异常打出来</span>
+ffmpeg -i in.ts -c copy -f null - 2&gt;&amp;1 | Select-String -Pattern "continuity|corrupt|discontinuity"
+
+<span class="cm"># Linux / macOS 等价写法</span>
+ffmpeg -i in.ts -c copy -f null - 2&gt;&amp;1 | grep -Ei "continuity|corrupt|discontinuity"
+
+<span class="cm"># 看每个 PID 的包数与时间跨度（判断哪路流在丢）</span>
+ffprobe -show_packets -show_entries packet=stream_index,pts_time -of csv in.ts | sort | uniq -c | head</pre>
+
+  <p>工程上还有两个“配套检查”，和 CC 一起看能快速定位：</p>
+  <ul>
+    <li><b>PCR 间隔：</b>规范建议不超过 100 ms。PCR 缺失或间隔过大，接收端时钟会漂移，表现为音画缓慢错位。</li>
+    <li><b>PES 长度与时间戳：</b>同一 PID 里 PTS 突然倒退，通常是上游重连或切台，不是解码器的问题。</li>
+  </ul>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>CC 跳号不等于“一定丢包”：</b>编码器在网络抖动时可能主动插入 discontinuity 标志后重置计数。先看标志位，再下结论；另外，用 UDP 抓包时抓包点本身也可能丢，别把“抓包机丢的”算到业务头上。</span></div>
 </section>
 
 </main>

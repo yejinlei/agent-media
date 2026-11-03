@@ -56,18 +56,33 @@
   <h4>本页目录</h4>
   <nav>
     <a href="#why">为什么协议不止一种</a>
+    <a href="#panorama">协议全景对比表</a>
     <a href="#rtp">RTP：会编号的快递</a>
     <a href="#rtcp">RTCP：客服回访与补发</a>
+    <a href="#rtp-deep">RTP/RTCP 深潜</a>
     <a href="#rtsp">RTSP：点菜与上菜</a>
+    <a href="#rtsp-methods">RTSP 方法全集</a>
     <a href="#rtmp">RTMP：分块装车</a>
     <a href="#hls">HLS：把直播切片</a>
+    <a href="#hls-tags">HLS 标签与 LL-HLS</a>
     <a href="#dash">DASH：一份清单多种画质</a>
+    <a href="#dash-mpd">DASH MPD 结构</a>
     <a href="#srt">SRT：用延迟换稳定</a>
+    <a href="#srt-rist">SRT 与 RIST</a>
     <a href="#webrtc">WebRTC：打洞与上锁</a>
+    <a href="#webrtc-stack">WebRTC 协议栈全图</a>
+    <a href="#nat">NAT 四种类型：哪些能互穿</a>
+    <a href="#stun">STUN：一眼看穿我长什么样</a>
+    <a href="#turn">TURN：实在不行就让服务器代转</a>
+    <a href="#ice-detail">ICE 连通性检查：从候选到一条路</a>
+    <a href="#webrtc-faq">WebRTC 排障实战</a>
+    <a href="#quic-moq">QUIC 与 MoQ</a>
     <a href="#gb28181">GB28181 的位置</a>
     <a href="#ports">端口与防火墙速查</a>
     <a href="#compare">协议选型对比</a>
     <a href="#debug">抓包与排错</a>
+    <a href="#capture">抓包实战</a>
+    <a href="#faq">排障 FAQ</a>
     <a href="#glossary">术语表</a>
   </nav>
 </aside>
@@ -105,6 +120,46 @@
   </div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>一句话记住分工：</b>RTP 负责“每一包是什么”，RTCP 负责“收得怎么样”，RTSP/RTMP 负责“开始与结束”，HLS/DASH 负责“怎么让很多人同时看”，SRT 负责“在不稳定的网络上稳住”，WebRTC 负责“在浏览器里低延迟地互通”。</span></div>
+</section>
+
+<section id="panorama">
+  <h2>🗺️ 协议全景对比表：一张表看懂十种路况</h2>
+  <p class="lead">如果协议是交通工具：<strong>RTSP/RTP</strong> 是点对点专线小巴，快但不进商场（浏览器）；<strong>RTMP</strong> 是老牌货运火车，准时但只能在既有铁轨（TCP）上跑；<strong>HLS/DASH</strong> 是地铁，站站停、运力惊人；<strong>SRT/RIST</strong> 是带押运员的越野车队，专为烂路设计；<strong>WebRTC</strong> 是视频通话专线，延迟极低但要双方都在线；<strong>MoQ</strong> 则是还在图纸上的磁悬浮。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>协议</th><th>典型延迟</th><th>传输层</th><th>可靠机制</th><th>典型场景</th><th>抓包端口 / 特征</th></tr></thead>
+      <tbody>
+        <tr><td><b>RTSP + RTP</b></td><td class="num">0.5–3 s</td><td>TCP 554 控制 + UDP/TCP 媒体</td><td>RTCP 反馈 + 可选重传</td><td>摄像头取流、NVR、局域网监看</td><td class="num">TCP 554；RTP/RTCP 动态 UDP 端口对</td></tr>
+        <tr><td><b>RTMP</b></td><td class="num">1–5 s</td><td>TCP 1935</td><td>TCP 重传</td><td>主播推流、导播台接入</td><td class="num">TCP 1935；rtmpt 过滤器</td></tr>
+        <tr><td><b>HLS</b></td><td class="num">6–30 s</td><td>HTTP over TCP 80/443</td><td>TCP 重传 + 分片重下</td><td>大并发直播、点播、OTT</td><td class="num">80/443；http 过滤 .m3u8/.ts</td></tr>
+        <tr><td><b>LL-HLS</b></td><td class="num">2–5 s</td><td>HTTP/2 over TCP 443</td><td>TCP + 部分分片增量下发</td><td>电商直播、赛事直播</td><td class="num">443；_HLS_msn / _HLS_part 参数</td></tr>
+        <tr><td><b>DASH</b></td><td class="num">4–20 s</td><td>HTTP over TCP 80/443</td><td>TCP 重传 + 分片重下</td><td>多码率点播、多 DRM 平台</td><td class="num">80/443；http 过滤 .mpd/.m4s</td></tr>
+        <tr><td><b>SRT</b></td><td class="num">0.2–2 s 可调</td><td>UDP 单端口</td><td>ARQ 重传 + 延迟缓冲 + AES</td><td>公网回传、远程制作、贡献链路</td><td class="num">UDP 9000（常见）；按端口过滤</td></tr>
+        <tr><td><b>RIST</b></td><td class="num">0.3–3 s 可调</td><td>UDP（Main Profile 走 RTP）</td><td>ARQ（Simple/Main）+ 可选 FEC</td><td>广电回传、跨机构互联</td><td class="num">UDP 偶数端口对（RTP/RTCP）</td></tr>
+        <tr><td><b>WebRTC</b></td><td class="num">0.2–1 s</td><td>UDP（ICE）+ DTLS-SRTP</td><td>NACK/PLI 重传 + GCC 拥塞控制</td><td>会议、连麦、低延迟播放</td><td class="num">UDP 3478 / 动态高位端口；stun/dtls</td></tr>
+        <tr><td><b>WHIP / WHEP</b></td><td class="num">同 WebRTC</td><td>HTTP 信令 + WebRTC 媒体</td><td>同 WebRTC</td><td>WebRTC 推流 / 拉流的标准入口</td><td class="num">443 的 HTTP POST + SDP</td></tr>
+        <tr><td><b>MoQ</b></td><td class="num">目标 &lt; 1 s</td><td>QUIC（HTTP/3）</td><td>QUIC 流级重传，无队头阻塞</td><td>下一代大规模低延迟分发（草案）</td><td class="num">UDP 443；quic 过滤器</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>看延迟先问“谁等谁”</h4>
+      <p class="small">HLS 的延迟是<strong>播放器等切片凑够</strong>；SRT 的延迟是<strong>缓冲等丢包补回</strong>；WebRTC 的延迟只等<strong>网络一圈往返</strong>。同样是 1 秒，成因完全不同，优化方向也不同。</p>
+    </div>
+    <div class="card">
+      <h4>看可靠性先问“谁来补”</h4>
+      <p class="small">TCP 由内核协议栈补，应用管不着；RTP/UDP 要靠 NACK 让发送端补；HLS 直接重新下载整段。补得越靠近应用层，策略越灵活，但实现越复杂。</p>
+    </div>
+    <div class="card">
+      <h4>看场景先问“观众是谁”</h4>
+      <p class="small">观众是浏览器：HLS/DASH/WebRTC/WHEP；观众是机房里的另一台服务器：RTSP/SRT/RIST；观众是 CDN：只能给 HTTP 切片。先把观众定下来，协议表自动缩到两三行。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>这张表的用法：</b>排障时按“抓包端口”一列先确认包有没有到；选型时按“典型场景”一列先圈候选，再用“可靠机制”一列判断它在你这条链路上会怎样失败。</span></div>
 </section>
 
 <section id="rtp">
@@ -181,6 +236,115 @@
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>排错提示：</b>“一直花屏但网络看起来不丢包”，先看有没有 PLI/FIR 发出、发送端有没有响应。只看 RTP 序号是不够的，反馈报文可能被防火墙挡在反方向——RTCP 也需要<strong>双向</strong>放行。</span></div>
 </section>
 
+<section id="rtp-deep">
+  <h2>🧬 RTP/RTCP 深潜：扩展头、CSRC 与五种回访单</h2>
+  <p class="lead">基础 RTP 头只是快递面单的<strong>正面</strong>。有些包裹还要在背面贴一张<strong>附加说明书</strong>（头扩展），或者列出<strong>中转站清单</strong>（CSRC）；而 RTCP 也不是“一种报文”，而是五种格式完全不同的回访单：汇报（SR）、收货统计（RR）、名片（SDES）、告别（BYE）、自定义便条（APP）。看懂这些字节，你才能在没有服务器日志时判断“这包是谁发的、带了什么、该不该补”。</p>
+
+  <h3>头扩展：X=1 时，面单后面先加一段“目录”</h3>
+  <p>想象寄快递时勾选了“含附件”：工作人员会先在面单背面写一行目录——“附件共 3 页、编号体系是 A”，然后才把附件钉上去。RTP 的扩展头就是这行目录：<code>X=1</code> 时，固定头（含 CSRC 列表）之后紧跟 4 个字节的扩展头，前 2 字节是 <code>profile</code>（编号体系），后 2 字节是 <code>length</code>（附件长度，单位是 <strong>32 位字</strong>，不是字节）。算错这个单位，载荷起点就会整体偏移，解码器只会看到一堆垃圾字节。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>profile 值</th><th>扩展格式</th><th>每个元素怎么读</th><th>常见用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>0xBEDE</code></td><td>RFC 8285 单字节头</td><td>1 字节里高 4 位是 id、低 4 位是 length−1；id=0 表示填充，id=15 保留</td><td>音频电平、视频朝向、TRCC 序号等短扩展</td></tr>
+        <tr><td><code>0x1000–0x100F</code></td><td>RFC 8285 双字节头</td><td>先 16 位 id，再 8 位 length（字节数）；低 4 位留给应用自定义</td><td>需要更大 id 或更长数据的扩展</td></tr>
+        <tr><td>其他值</td><td>由具体规范或厂商定义</td><td>接收端不认识的扩展，可以按 length 整段跳过，不影响主载荷</td><td>私有元数据、实验性字段</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTP 头 + 2 个 CSRC + 1 个扩展块（X=1，CC=2）","bytes":"A2 E0 12 34 00 0F 42 40 5A 3C 6F 12 11 11 11 11 22 22 22 22 BE DE 00 03 10 AA 22 BB CC DD 30 FF 00 00 00 00","fields":[{"name":"V / P / X / CC","start":0,"end":0,"bits":"2+1+1+4 bit","note":"0xA2 = 1010 0010：V=2、P=0、X=1、CC=2。CC=2 表示后面跟 2 个 32 位 CSRC，载荷起点要比普通包后移 8 字节。"},{"name":"M / PT","start":1,"end":1,"bits":"1+7 bit","note":"0xE0：M=1 表示这是该帧的最后一个包；PT=96 是动态类型，真实编码要看 SDP 的 a=rtpmap:96 写的是 H264 还是 H265。"},{"name":"Sequence / Timestamp","start":2,"end":7,"bits":"16 + 32 bit","note":"序号 0x1234 = 4660；时间戳 0x000F4240 = 1,000,000，按 90 kHz 折算约 11.11 秒。"},{"name":"SSRC","start":8,"end":11,"bits":"32 bit","note":"0x5A3C6F12。同一路流的所有包共享它；多路混流时先按 SSRC 分组，再按时间戳排序。"},{"name":"CSRC[0] / CSRC[1]","start":12,"end":19,"bits":"2 × 32 bit","note":"混音或混流服务器把原始发言者的 SSRC 填在这里，等于告诉接收端这包内容来自谁。普通摄像头点对点流一般 CC=0，整段不存在。"},{"name":"扩展 profile","start":20,"end":21,"bits":"16 bit","note":"0xBEDE 是 RFC 8285 单字节扩展；0x1000 到 0x100F 是双字节扩展。不认识的 profile 应按 length 跳过。"},{"name":"扩展 length","start":22,"end":23,"bits":"16 bit","note":"0x0003 = 3 个 32 位字 = 12 字节。注意单位是字，不是字节；这是解析扩展头最常见的错误。"},{"name":"扩展数据","start":24,"end":35,"bits":"12 字节","note":"0x10 AA 是 id=1、len=0，即 1 字节数据 AA；0x22 BB CC DD 是 id=2、len=2，即 3 字节数据；0x30 FF 是 id=3、len=0；末尾 4 个 00 是填充。"}],"hint":"悬停任意字节看它在头里的位置。真实载荷从第 36 个字节（偏移 0x24）才开始。"}'></div>
+
+  <p class="small">顺带记住 CSRC 的顺序：<strong>SSRC（12 字节固定头）→ CSRC 列表（CC × 4 字节）→ 扩展头（4 字节）→ 扩展数据（length × 4 字节）→ 载荷</strong>。任何一步少算 4 字节，后面的解析就全错位。很多“能收到包但画面全绿”的故障，根源就是解析器没处理 X 或 CC。</p>
+
+  <h3>RTCP 五种报文：一份公共头，五种身体</h3>
+  <p>所有 RTCP 报文都以同一个 32 位公共头开头。它像快递单最上面的那行“单据类型 + 后面还有几联”：版本、填充位、报告数（反馈报文里这个字段改叫 FMT）、报文类型（PT）、以及整包长度（以 32 位字计，且<strong>不包含</strong>这 4 个字节本身）。</p>
+
+  <div class="bits">RTCP 公共头 · 前 32 bit（SR / RR / SDES / BYE / APP / 反馈报文通用）</div>
+  <div class="bitfield">
+    <div class="bf" style="flex:2"><b>V</b><i>2 bit</i></div>
+    <div class="bf" style="flex:1"><b>P</b><i>1 bit</i></div>
+    <div class="bf" style="flex:5"><b>RC / FMT</b><i>5 bit</i></div>
+    <div class="bf" style="flex:8"><b>PT</b><i>8 bit · 200–206</i></div>
+    <div class="bf" style="flex:16"><b>length</b><i>16 bit · 以 32 位字计</i></div>
+  </div>
+  <p class="small">RC（Report Count）在 SR/RR 里表示“后面有几个报告块”；在 NACK/PLI 这类反馈报文里，同一块字段改称 FMT（Feedback Message Type），用来区分同类报文的不同子类型。这就是为什么 <code>RTCP PT=205 FMT=1</code> 才是 Generic NACK。</p>
+
+  <h4>① SR：发货汇报，兼带时钟对齐</h4>
+  <p>SR 是发送端的“发货小结”：一共发了多少包、多少字节，以及<strong>发货那一刻的墙上时间（NTP）</strong>和<strong>对应的 RTP 时间戳</strong>。接收端拿到这一对映射，才能把音频的 48 kHz 时钟和视频的 90 kHz 时钟对齐——这就像两个乐队各自数拍子，SR 是那句“现在整点，双方都记一下”。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTCP SR（PT=200，无报告块，共 28 字节）","bytes":"80 C8 00 06 5A 3C 6F 12 EE 92 51 00 00 00 00 00 00 05 4A 2C 00 00 03 E8 00 0F 42 40","fields":[{"name":"V / P / RC","start":0,"end":0,"bits":"2+1+5 bit","note":"0x80 = V=2、P=0、RC=0。RC=0 表示这个 SR 后面没有跟 RR 报告块；发送端通常只汇报自己，不附收货统计。"},{"name":"PT","start":1,"end":1,"bits":"8 bit","note":"0xC8 = 200，即 Sender Report。抓包时 rtcp.pt == 200 就是它。"},{"name":"length","start":2,"end":3,"bits":"16 bit","note":"0x0006 表示除这 4 字节公共头外还有 6 个 32 位字 = 24 字节，总长 28 字节。"},{"name":"发送端 SSRC","start":4,"end":7,"bits":"32 bit","note":"0x5A3C6F12，与 RTP 包的 SSRC 一致，接收端据此把这份汇报归到某一路流。"},{"name":"NTP 秒","start":8,"end":11,"bits":"32 bit","note":"0xEE925100 = 4,002,566,400，换算成 Unix 时间需要减去 2,208,988,800，得到 2026-11-02T00:00:00Z。"},{"name":"NTP 小数","start":12,"end":15,"bits":"32 bit · 2 的负 32 次方","note":"0x00000000 表示整秒。若为 0x80000000 就是半秒；它不是毫秒计数，而是“秒的小数部分”。"},{"name":"RTP 时间戳","start":16,"end":19,"bits":"32 bit · 90 kHz","note":"0x00054A2C = 346,668，约 3.85 秒。它与左边 NTP 构成一对映射：这一刻的墙上时间对应这个 RTP 刻度。"},{"name":"发送包数","start":20,"end":23,"bits":"32 bit","note":"0x000003E8 = 1000 包。接收端结合自己的收货数，可以算出累计丢包。"},{"name":"发送字节数","start":24,"end":27,"bits":"32 bit","note":"0x000F4240 = 1,000,000 字节（只算载荷，不含头）。用于估算实际码率。"}],"hint":"注意 NTP 是 32.32 定点数：高 32 位是秒，低 32 位是秒的小数部分。"}'></div>
+
+  <h4>② RR：收货统计，指出“少了哪几箱”</h4>
+  <p>RR 是接收端的“收货回执”：丢包率、累计丢包数、最高收到序号、抖动，以及“我上次收到你的 SR 是什么时候”。它像仓库回单：不但说少了 2 箱，还告诉你“我最后一次点货是在 1.5 秒前”，让发货方知道这份统计有多新。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTCP RR（PT=201，1 个报告块，共 32 字节）","bytes":"81 C9 00 07 0B AD CA FE 5A 3C 6F 12 00 00 00 02 00 00 03 EA 00 00 00 64 EE 92 51 00 00 00 00 96","fields":[{"name":"V / P / RC","start":0,"end":0,"bits":"2+1+5 bit","note":"0x81 = V=2、P=0、RC=1，表示后面跟 1 个报告块。RC 最大 31，但实际很少超过几个。"},{"name":"PT / length","start":1,"end":3,"bits":"8 + 16 bit","note":"PT=0xC9=201；length=7，表示总长 4 + 7×4 = 32 字节。抓包过滤器可写 rtcp.pt == 201。"},{"name":"报告者 SSRC","start":4,"end":7,"bits":"32 bit","note":"0x0BADCAFE 是“写这份回执的人”，也就是接收端自己的 SSRC；不要和被统计的那路流混淆。"},{"name":"被统计的 SSRC","start":8,"end":11,"bits":"32 bit","note":"0x5A3C6F12，正是上面那路视频流。一个 RR 可以带多个报告块，分别统计多路流。"},{"name":"fraction lost","start":12,"end":12,"bits":"8 bit · 百分比的 256 分之一","note":"0x00 表示本区间丢包率 0。值是 256 分之一为单位：0x40 约等于 25%。它只统计最近一个区间，不是历史总丢包率。"},{"name":"cumulative lost","start":13,"end":15,"bits":"24 bit","note":"0x000002 = 2 包。这是从会话开始累计的净丢包数（收到数减去期望数），可能为负，负数按 24 位有符号解释。"},{"name":"extended highest seq","start":16,"end":19,"bits":"32 bit","note":"0x000003EA = 1002，高 16 位是序号回绕次数，低 16 位是最后收到的序号。这就是“扩展序号”，跨回绕也不会算错。"},{"name":"interarrival jitter","start":20,"end":23,"bits":"32 bit · 时间戳单位","note":"0x00000064 = 100 个时间戳刻度。按 90 kHz 折算约 1.11 毫秒，是平滑后的到达间隔抖动。"},{"name":"LSR","start":24,"end":27,"bits":"32 bit","note":"0xEE925100 是上一次收到 SR 的 NTP 中间 32 位（只取秒部分）。没有收到过 SR 时填 0。"},{"name":"DLSR","start":28,"end":31,"bits":"32 bit · 单位 1/65536 秒","note":"0x00000096 = 150，表示 150 个 1/65536 秒，约 2.3 毫秒；它是“从收到上一个 SR 到现在”的时长。RTT 估算要用“当前 NTP − LSR − DLSR”，不是单看这个字段。"}],"hint":"RR 里的 lost、jitter、LSR、DLSR 是发送端做码率自适应与重传决策的原始输入。"}'></div>
+
+  <p class="small">上面 DLSR 的换算容易记混：它的单位是 <strong>1/65536 秒</strong>，所以 0x00000096 = 150 → 150 ÷ 65536 ≈ 0.00229 秒（约 2.3 毫秒）。工程上常把它与 LSR 一起用来估算 RTT：RTT ≈ 当前 NTP − LSR − DLSR。若 LSR 为 0，说明对方根本没收到过 SR，这个 RTT 估算也就无效。</p>
+
+  <h4>③ SDES：名片，告诉对方“我叫什么”</h4>
+  <p>SDES 是随包附上的名片，最重要的是 CNAME（规范名）。SSRC 是随机数，重启一次就变；CNAME 稳定，用来把同一台设备的音频流和视频流绑在一起。没有它，接收端只能靠时间戳猜“这两路是不是同一个人”。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTCP SDES（PT=202，1 个 CNAME 项，共 20 字节）","bytes":"81 CA 00 04 5A 3C 6F 12 01 09 75 73 65 72 40 68 6F 73 74 00","fields":[{"name":"公共头","start":0,"end":3,"bits":"32 bit","note":"0x81 = V=2、P=0、RC=1（1 个 chunk）；PT=0xCA=202；length=4，总长 20 字节。"},{"name":"SSRC","start":4,"end":7,"bits":"32 bit","note":"0x5A3C6F12，这个名片属于哪一路流。"},{"name":"CNAME 类型","start":8,"end":8,"bits":"8 bit","note":"0x01 表示 CNAME。其他常见类型：2=NAME（人名）、3=EMAIL、4=PHONE、5=LOC、6=TOOL、7=NOTE。"},{"name":"CNAME 长度","start":9,"end":9,"bits":"8 bit","note":"0x09 = 9 字节，后面正好是 user@host 这 9 个 ASCII 字符。长度按字节算，不是字符数。"},{"name":"CNAME 内容","start":10,"end":18,"bits":"9 字节 ASCII","note":"user@host。规范建议写成 用户名@主机 的形式，保证跨会话稳定且全局不重复。"},{"name":"END","start":19,"end":19,"bits":"8 bit","note":"0x00 是项列表结束符。SDES 的每个 chunk 必须补齐到 32 位边界，否则 length 对不上。"}],"hint":"ASCII 列可以直接看到 user@host，这是 SDES 调试时最直观的一点。"}'></div>
+
+  <h4>④ BYE：挂断电话</h4>
+  <p>BYE 就是“我要下线了”。它不带统计数据，只列出要结束的 SSRC；可选的 reason 字段能写一句“为什么断”。收到 BYE 后，接收端应释放抖动缓冲、清理该 SSRC 的状态，而不是继续等包。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTCP BYE（PT=203，无 reason，共 8 字节）","bytes":"81 CB 00 01 5A 3C 6F 12","fields":[{"name":"公共头","start":0,"end":3,"bits":"32 bit","note":"0x81 = V=2、P=0、RC=1（1 个 SSRC）；PT=0xCB=203；length=1，总长 8 字节。"},{"name":"SSRC","start":4,"end":7,"bits":"32 bit","note":"0x5A3C6F12。RC 可以大于 1，表示一次告别多个同步源；reason 若存在，会跟在 SSRC 列表之后。"}],"hint":"BYE 之后不应再为该 SSRC 保留解码器状态；否则列表里会残留幽灵流。"}'></div>
+
+  <h4>⑤ APP：自定义便条</h4>
+  <p>APP 是留给厂商的“自定义便条”：前 4 个字节写应用名（ASCII），后面随便放私有数据。规范只规定信封格式，不规定内容，所以跨厂商基本不通用。看到 APP 不要慌，先查是哪家设备、哪个版本定义的。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTCP APP（PT=204，应用名 AV01，共 20 字节）","bytes":"80 CC 00 04 5A 3C 6F 12 41 56 30 31 00 00 00 01 00 03 D0 90","fields":[{"name":"公共头","start":0,"end":3,"bits":"32 bit","note":"0x80 = V=2、P=0、RC=0；PT=0xCC=204；length=4，总长 20 字节。"},{"name":"SSRC","start":4,"end":7,"bits":"32 bit","note":"0x5A3C6F12，便条属于哪一路流。"},{"name":"应用名","start":8,"end":11,"bits":"4 字节 ASCII","note":"AV01，相当于“这是 AV01 应用定义的扩展”。名字必须恰好 4 个 ASCII 字符，大小写敏感。"},{"name":"私有数据","start":12,"end":19,"bits":"8 字节","note":"示例里是 00 00 00 01 00 03 D0 90，含义完全由应用自己定义；对着厂商文档才能解释。它不是标准字段，Wireshark 也只能显示为原始字节。"}],"hint":"APP 只保证信封格式；内容解释权归定义它的应用。"}'></div>
+
+  <h3>NTP 与 RTP 时间戳：两把尺子怎么换算</h3>
+  <p>NTP 用的是“自 1900 年起算的秒”，RTP 用的是“自某个随机起点起算的 90 kHz 刻度”。这就像两个人都从不同日期开始记“第几天”：单看数字毫无意义，必须先拿到一次<strong>同时发生的双记录</strong>（SR），之后才能用一个差值互相推算。</p>
+
+  <div class="math-b">
+    unix_sec = NTP_sec − 2,208,988,800<br>
+    秒 = NTP_sec + NTP_frac / 2<sup>32</sup> − 2,208,988,800<br>
+    RTP_B = RTP_SR + (NTP_B − NTP_SR) × 90,000 &nbsp;&nbsp;(mod 2<sup>32</sup>)
+  </div>
+  <p class="small">逐项解释：<code>NTP_sec</code> 是 SR 里的高 32 位（1900 起算的秒），减去 2,208,988,800 就是 Unix 秒；<code>NTP_frac</code> 是低 32 位，除以 2<sup>32</sup> 得到秒的小数部分；<code>RTP_SR</code> 与 <code>NTP_SR</code> 是 SR 给出的一对同时记录；<code>NTP_B</code> 是你要换算的目标时刻。<strong>90,000</strong> 是视频时钟频率，音频要换成 48,000 或 8,000。最后取模 2<sup>32</sup>，因为 RTP 时间戳是 32 位、会回绕。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>算一遍：0.5 秒之后的 RTP 刻度</h4>
+      <p class="small">SR 说：NTP = <code>0xEE925100 00000000</code>（2026-11-02 00:00:00 UTC），RTP = <code>0x00054A2C</code> = 346,668。0.5 秒后：346,668 + 0.5 × 90,000 = 391,668 = <code>0x0005F9F4</code>。反过来，看到两个 RTP 时间戳相差 45,000，就是相差 0.5 秒。</p>
+    </div>
+    <div class="card">
+      <h4>回绕周期：别用“小于”直接比较</h4>
+      <p class="small">32 位时间戳在 90 kHz 下约 13.25 小时回绕一次；48 kHz 音频约 24.85 小时；8 kHz 约 6.2 天。比较大小时要用“有符号差值”或扩展序号，直接写 <code>if (a &lt; b)</code> 会在回绕点把新包当成旧包。</p>
+    </div>
+  </div>
+
+  <h3>抖动：为什么不能只看“平均延迟”</h3>
+  <p>抖动不是“延迟有多大”，而是“相邻两个包的时间间隔，和发送端原本的间隔差了多少”。像等公交：平均 10 分钟一班不代表体验好，如果一班 2 分钟、下一班 18 分钟，队伍就会积压。RFC 3550 用一阶平滑递推来估计它：</p>
+  <div class="math-b">
+    D(i−1, i) = (R<sub>i</sub> − R<sub>i−1</sub>) − (S<sub>i</sub> − S<sub>i−1</sub>)<br>
+    J = J + ( |D(i−1, i)| − J ) / 16
+  </div>
+  <p class="small"><code>R</code> 是接收端到达时刻（换算成 RTP 时间单位），<code>S</code> 是包里的发送时间戳；两者相减得到“这一对包的实际间隔偏差”<code>D</code>；取绝对值后，用 1/16 的权重更新滑动平均 <code>J</code>。这就是 RR 里 <code>interarrival jitter</code> 字段的来源。它回答的是“抖动缓冲该开多大”，而不是“网络延迟多高”。</p>
+
+  <h3>NACK 与 RTX：补的是包，不是帧</h3>
+  <p>NACK 像收件人打电话说“第 1001 箱没到，麻烦补发”。发送端如果还留着这包的副本，就原样再发一次；如果已经清出缓存，只能等下一个关键帧。WebRTC 里的 <strong>RTX</strong>（RFC 4588）更讲究：重传包走<strong>独立的 SSRC 和独立的序号空间</strong>，载荷开头 2 字节写“原包序号（OSN）”，接收端据此把补发的包塞回原来的位置。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"丢包 → NACK → RTX 重传：序号如何补回原位","actors":["接收端","发送端","传输网络"],"steps":[{"from":1,"to":0,"label":"收到 seq 1000、1002，发现 1001 缺失","detail":"接收端比较扩展序号，发现跳号；先放进抖动缓冲，等待补包，不立刻上报丢包。","color":"#7c3aed"},{"from":0,"to":1,"label":"RTCP NACK：FMT=1，请求 seq 1001","detail":"NACK 的 FCI 里可以一次列多组 PID + BLP（位图），一次请求多个连续缺失序号，避免每丢一包发一条。","color":"#e11d48"},{"from":1,"to":1,"label":"发送端查重传缓存","detail":"缓存通常只保留最近若干 GOP；命中就重传，未命中就标记为不可恢复，等待接收端发 PLI。","color":"#f59e0b"},{"from":1,"to":0,"label":"RTX 包：独立 SSRC、独立 seq，载荷前 2 字节写 OSN=1001","detail":"RTX 的 payload type 由 SDP 的 a=rtpmap:97 rtx/90000 与 a=fmtp:97 apt=96 声明；接收端按 OSN 还原原序号 1001。","color":"#0891b2"},{"from":0,"to":2,"label":"按原时间戳插入抖动缓冲","detail":"还原后的包与原帧其他包共享同一 RTP 时间戳，所以能直接参与这一帧的组装，不会打乱播放顺序。","color":"#10b981"},{"from":0,"to":0,"label":"帧完整，交给解码器","detail":"若该帧是关键帧且所有包补齐，解码器正常输出；若补不齐，接收端发 PLI 请求新的 IDR。","color":"#10b981"}]}'></div>
+
+  <pre class="code"><span class="cm"># SDP 里声明 NACK 与 RTX 的典型写法</span>
+a=rtpmap:96 H264/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+
+<span class="cm"># 重传包的关键：RTX 自己的 seq 是新的，原序号藏在载荷头 2 字节</span>
+RTX packet: SSRC=0x0BADCAFE seq=5001 PT=97 payload=00 03 E9 ... <span class="cm"># OSN=0x03E9=1001</span></pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别把重传当丢包：</b>开启 RTX 后，同一路媒体会出现两个 SSRC、两套序号。只按“序号跳变”统计丢包，会把重传误判成新的丢包，丢包率越算越高。正确做法是先按 OSN 还原，再按原 SSRC 与时间戳统计。</span></div>
+</section>
+
 <section id="rtsp">
   <h2>🍽️ RTSP：先看菜单，再下单，最后上菜</h2>
   <p class="lead">RTSP（Real-Time Streaming Protocol）像在餐厅点菜：<strong>DESCRIBE</strong> 是看菜单（这路流有哪些轨道、什么编码、地址在哪），<strong>SETUP</strong> 是告诉服务员“用哪张桌子、哪个端口上菜”，<strong>PLAY</strong> 才是真正下单开做。它只负责“点菜和撤单”，菜（媒体）由 RTP 另外端上来——这就是所谓的<strong>带外控制</strong>。</p>
@@ -246,6 +410,107 @@ RTP-Info: url=rtsp://192.168.1.64:554/Streaming/Channels/101/trackID=0;seq=1000;
   </div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>RTSP 的“延迟”经常不是协议本身：</b>默认播放器会缓冲几秒；编码器 GOP 太长会让首帧等待更久；TCP 复用遇到丢包会阻塞整条连接。先分别验证“首帧时间、缓冲深度、丢包重传”，再决定改哪一层。</span></div>
+</section>
+
+<section id="rtsp-methods">
+  <h2>📋 RTSP 方法全集：从看菜单到撤单的每个口令</h2>
+  <p class="lead">RTSP 像餐厅里的一套标准服务口令：<strong>OPTIONS</strong> 是先问“你们提供哪些服务”，<strong>DESCRIBE</strong> 是看菜单，<strong>SETUP</strong> 是订座位，<strong>PLAY</strong> 是下单，<strong>PAUSE</strong> 是“先别上”，<strong>TEARDOWN</strong> 是结账走人。推流场景则反过来：<strong>ANNOUNCE</strong> 先把菜单递过去，<strong>SETUP</strong> 订好上菜口，<strong>RECORD</strong> 才开始收货。每个方法都带 <code>CSeq</code> 配对，服务器按序号判断哪条回复对应哪条请求。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方法</th><th>方向</th><th>它在做什么</th><th>关键头 / 参数</th><th>典型坑</th></tr></thead>
+      <tbody>
+        <tr><td><b>OPTIONS</b></td><td class="num">客户端 → 服务器</td><td>查询服务器支持哪些方法与 URL 范围</td><td><code>Public</code> 响应头、<code>Require</code></td><td>200 只说明“会这个动词”，不代表这路流能播</td></tr>
+        <tr><td><b>DESCRIBE</b></td><td class="num">客户端 → 服务器</td><td>取 SDP：有几条轨道、什么编码、control 地址</td><td><code>Accept: application/sdp</code></td><td>SDP 里的 <code>a=control</code> 可能是相对路径，拼错就 SETUP 404</td></tr>
+        <tr><td><b>ANNOUNCE</b></td><td class="num">客户端 → 服务器</td><td>推流前把媒体描述交给服务器（相当于“我要上架这些菜”）</td><td><code>Content-Type: application/sdp</code> + SDP body</td><td>摄像头一般不用；编码器、推流软件才用；body 长度必须与 Content-Length 一致</td></tr>
+        <tr><td><b>SETUP</b></td><td class="num">客户端 → 服务器</td><td>为某条轨道建立传输：UDP 端口对或 TCP 交织通道</td><td><code>Transport</code>、可选 <code>Session</code></td><td>interleaved 通道号必须与服务器返回一致；UDP 端口对要成对</td></tr>
+        <tr><td><b>PLAY</b></td><td class="num">客户端 → 服务器</td><td>开始或继续播放；可带时间范围</td><td><code>Session</code>、<code>Range: npt=0.000-</code></td><td>直播流用 <code>npt=now-</code> 可直接跳到当前；回放才用绝对时间</td></tr>
+        <tr><td><b>PAUSE</b></td><td class="num">客户端 → 服务器</td><td>暂停媒体，但保留会话与端口</td><td><code>Session</code></td><td>暂停不等于释放；长时间不操作仍会被 timeout 回收</td></tr>
+        <tr><td><b>RECORD</b></td><td class="num">客户端 → 服务器</td><td>开始接收/录制媒体（推流端真正开始发数据的信号）</td><td><code>Session</code>、<code>Range</code></td><td>与 PLAY 通常互斥；发 RECORD 前必须先 ANNOUNCE + SETUP</td></tr>
+        <tr><td><b>TEARDOWN</b></td><td class="num">客户端 → 服务器</td><td>结束会话，释放端口与解码资源</td><td><code>Session</code></td><td>不发也能靠超时回收，但会拖住服务器端口，批量场景要主动发</td></tr>
+        <tr><td><b>GET_PARAMETER</b></td><td class="num">双向</td><td>读取参数；工程上最常被拿来当“保活心跳”</td><td><code>Session</code></td><td>有的设备必须带 body 才回 200，空 body 可能直接 400</td></tr>
+        <tr><td><b>SET_PARAMETER</b></td><td class="num">客户端 → 服务器</td><td>写参数：OSD 文字、倍速、码率等</td><td><code>Session</code>、<code>Content-Type</code></td><td>参数名与取值是厂商私有约定，换品牌就不通用</td></tr>
+        <tr><td><b>REDIRECT</b></td><td class="num">服务器 → 客户端</td><td>告诉客户端“这路流搬到另一台服务器了”</td><td><code>Location</code>，配合 3xx 状态码</td><td>负载均衡/级联时常见；客户端不跟随就会一直连旧地址</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>推流方向：ANNOUNCE → SETUP → RECORD</h3>
+  <p>前面 RTSP 章节讲的是“拉流”，这里把反方向的报文补齐。推流像把自家厨房搬到对方仓库：先把<strong>菜单（SDP）</strong>交过去（ANNOUNCE），再约定<strong>卸货口（SETUP 的 server_port）</strong>，最后喊一声“开始卸”（RECORD）。注意 SETUP 的方向相反——这次是服务器告诉你“往我的 17000 端口发”。</p>
+
+  <pre class="code">ANNOUNCE rtsp://192.168.1.10:8554/live/stream RTSP/1.0
+CSeq: 5
+Content-Type: application/sdp
+Content-Length: 292
+
+v=0
+o=- 0 0 IN IP4 192.168.1.10
+s=Live
+t=0 0
+a=range:npt=0-
+m=video 0 RTP/AVP 96
+a=rtpmap:96 H264/90000
+a=control:trackID=0
+
+RTSP/1.0 200 OK
+CSeq: 5
+Session: 99887766;timeout=60
+
+SETUP rtsp://192.168.1.10:8554/live/stream/trackID=0 RTSP/1.0
+CSeq: 6
+Session: 99887766
+Transport: RTP/AVP;unicast;client_port=16000-16001
+
+RTSP/1.0 200 OK
+CSeq: 6
+Session: 99887766
+Transport: RTP/AVP;unicast;client_port=16000-16001;server_port=17000-17001
+
+RECORD rtsp://192.168.1.10:8554/live/stream RTSP/1.0
+CSeq: 7
+Session: 99887766
+Range: npt=0.000-
+
+RTSP/1.0 200 OK
+CSeq: 7
+Session: 99887766</pre>
+  <p class="small">这里的 <code>client_port</code> 是推流端自己的本地端口（它要在这两个端口上收 RTCP 回执），<code>server_port</code> 才是服务器让推流端发送的目标端口。搞反了就会“服务器一直收不到包”。推流端通常在 RECORD 的 200 OK 之后才开始发 RTP，提前发会被丢弃，因为会话还没进入 RECORDING 状态。</p>
+
+  <h3>RTP over TCP：用 <code>$</code> 把媒体塞进同一条连接</h3>
+  <p>很多企业网只放行 TCP 554，UDP 一律封。RTSP 的解决办法是“把菜和点菜单塞进同一个服务员手里”：在 RTSP 的 TCP 连接上，媒体数据用 <strong>interleaved</strong> 格式混流，每条消息前加 4 个字节——<code>$</code>、通道号、2 字节长度。看到 <code>0x24</code> 开头，就说明下面不是 RTSP 文本，而是 RTP/RTCP。</p>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"RTSP over TCP 交织包：$ + 通道 + 长度 + RTP 头（长度 300，此处截前 12 字节）","bytes":"24 00 01 2C 80 E0 12 34 00 0F 42 40 5A 3C 6F 12","fields":[{"name":"$ 标识","start":0,"end":0,"bits":"8 bit","note":"固定 0x24，ASCII 的美元符号。TCP 流里只要出现 0x24 就进入交织包解析状态；RTSP 正文里若恰好有 0x24，要靠状态机与长度字段避免误判。"},{"name":"通道号","start":1,"end":1,"bits":"8 bit","note":"0x00 表示 RTP，0x01 通常是 RTCP。这个编号来自 SETUP 的 interleaved=0-1；服务器与客户端必须用同一套编号。"},{"name":"长度","start":2,"end":3,"bits":"16 bit · 大端","note":"0x012C = 300 字节，只算后面的媒体数据，不含这 4 字节头。若写错长度，下一条 RTSP 响应就会被当成媒体吞掉。"},{"name":"RTP 开头","start":4,"end":15,"bits":"96 bit","note":"0x80 E0 12 34 ... 就是普通 RTP 头：V=2、PT=96、seq=0x1234。注意这种模式没有 UDP 端口，RTCP 也走 channel 1。"}],"hint":"抓包时如果只过滤 tcp port 554，会同时看到 RTSP 文本与这种 0x24 交织数据；Wireshark 能自动拆开，但自写解析器必须处理状态切换。"}'></div>
+
+  <pre class="code"><span class="cm"># ffmpeg 强制用 RTSP over TCP（即 interleaved）</span>
+ffplay -rtsp_transport tcp rtsp://user:pass@192.168.1.64/Streaming/Channels/101
+
+<span class="cm"># 让 ffmpeg 打印底层协议，确认到底走了 TCP 还是 UDP</span>
+ffprobe -v verbose -rtsp_transport tcp \
+  rtsp://user:pass@192.168.1.64/Streaming/Channels/101</pre>
+
+  <h3>状态码：服务器到底在抱怨什么</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>状态码</th><th>含义</th><th>最常见的真实原因</th></tr></thead>
+      <tbody>
+        <tr><td class="num">200 OK</td><td>请求成功</td><td>正常；但 PLAY 200 后仍可能收不到 RTP（端口/防火墙问题）</td></tr>
+        <tr><td class="num">301 / 302</td><td>资源已移动</td><td>服务器换地址或级联，需跟随 <code>Location</code></td></tr>
+        <tr><td class="num">400 Bad Request</td><td>报文格式不对</td><td>缺 <code>CSeq</code>、Content-Length 与实际 body 不符、URL 里有非法字符</td></tr>
+        <tr><td class="num">401 Unauthorized</td><td>需要鉴权</td><td>没带 <code>Authorization</code>，或 Digest 的 nonce/realm/response 算错</td></tr>
+        <tr><td class="num">403 Forbidden</td><td>拒绝访问</td><td>账号能看到菜单但没有这路流的权限；或 IP 白名单限制</td></tr>
+        <tr><td class="num">404 Not Found</td><td>URL 或 track 不存在</td><td>通道号写错（如 101 写成 102）、<code>a=control</code> 拼接错误</td></tr>
+        <tr><td class="num">405 Method Not Allowed</td><td>当前状态不允许该方法</td><td>没 SETUP 就 PLAY，或对已 TEARDOWN 的 Session 再 PLAY</td></tr>
+        <tr><td class="num">451 Parameter Not Understood</td><td>参数看不懂</td><td>Transport 里带了厂商不认识的选项（如自定义 <code>mode=...</code>）</td></tr>
+        <tr><td class="num">454 Session Not Found</td><td>会话不存在</td><td>Session 过期、服务器重启、负载均衡把请求转到了另一台机器</td></tr>
+        <tr><td class="num">455 Method Not Valid in This State</td><td>状态机不匹配</td><td>已在 PLAYING 又发 RECORD，或未 ANNOUNCE 直接 RECORD</td></tr>
+        <tr><td class="num">457 Invalid Range</td><td>时间范围无效</td><td>回放请求的 npt 超出录像区间，或 <code>Range</code> 语法写错</td></tr>
+        <tr><td class="num">500 / 501 / 503</td><td>服务器内部错误 / 未实现 / 忙</td><td>并发到上限、转码进程崩了、方法不支持；重试往往无效，要看服务端日志</td></tr>
+        <tr><td class="num">505 RTSP Version Not Supported</td><td>版本不支持</td><td>请求行写成了 RTSP/2.0 之类的非实现版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>鉴权别只盯着密码：</b>Digest 的 <code>response</code> 是把 username、realm、nonce、uri、method 一起做哈希的结果；URI 必须与请求行里的完全一致（含 query），method 也要一致。很多“密码明明对却 401”，就是客户端把 <code>DESCRIBE</code> 的 URI 拿去算了 <code>PLAY</code> 的哈希。</span></div>
 </section>
 
 <section id="rtmp">
@@ -352,6 +617,146 @@ seg122.ts
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>工程口诀：</b>GOP 等于切片时长、切片从 IDR 开始、清单用相对路径、所有码率共用同一时间轴。做到这四点，HLS 的“莫名卡顿”会少一大半。</span></div>
 </section>
 
+<section id="hls-tags">
+  <h2>🏷️ HLS 标签全集：清单是一本会自己更新的目录</h2>
+  <p class="lead">m3u8 清单像一本活页目录：每一行以 <code>#EXT</code> 开头的都是<strong>排版规则</strong>，不带 # 的行才是<strong>真正要取的文件名</strong>。<code>#EXTINF</code> 是“这一集多长”，<code>#EXT-X-KEY</code> 是“这一集上了锁”，<code>#EXT-X-MAP</code> 是“先读这页说明书才能解码”。LL-HLS 则更进一步：目录还没印完，就允许你先撕下正在印的那几行——靠的是<strong>部分分片（PART）</strong>与<strong>阻塞式刷新</strong>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>标签</th><th>所属清单</th><th>作用</th><th>示例值</th><th>最容易踩的坑</th></tr></thead>
+      <tbody>
+        <tr><td><code>#EXTM3U</code></td><td>两种</td><td>声明这是 m3u 扩展格式</td><td><code>#EXTM3U</code></td><td>必须是文件第一行；缺了部分播放器直接拒绝解析</td></tr>
+        <tr><td><code>#EXT-X-VERSION</code></td><td>两种</td><td>标签兼容版本</td><td><code>3</code> / <code>7</code> / <code>9</code></td><td>版本写低了却用了高版本标签（如 MAP、PART），播放器会忽略或报错</td></tr>
+        <tr><td><code>#EXT-X-TARGETDURATION</code></td><td>媒体</td><td>所有分片时长的上限，整数秒</td><td><code>4</code></td><td>实际 <code>#EXTINF</code> 超过它，严格实现会拒绝播放</td></tr>
+        <tr><td><code>#EXT-X-MEDIA-SEQUENCE</code></td><td>媒体</td><td>清单里第一个分片的序号</td><td><code>120</code></td><td>直播滚动窗口靠它判断新旧；回退或乱跳会让播放器重新拉流</td></tr>
+        <tr><td><code>#EXT-X-DISCONTINUITY-SEQUENCE</code></td><td>媒体</td><td>此前发生过多少次不连续</td><td><code>2</code></td><td>多 Period/广告插入后漏更新，播放器时间轴会错位</td></tr>
+        <tr><td><code>#EXTINF</code></td><td>媒体</td><td>下一段的时长（可带小数）</td><td><code>4.000,</code></td><td>逗号可带标题；切片必须从 IDR 开始，否则拼接花屏</td></tr>
+        <tr><td><code>#EXT-X-BYTERANGE</code></td><td>媒体</td><td>从同一个大文件里按字节范围取片段</td><td><code>120000@0</code></td><td>长度与偏移算错会读到别的分片；CDN 需支持 Range 请求</td></tr>
+        <tr><td><code>#EXT-X-DISCONTINUITY</code></td><td>媒体</td><td>标记时间轴/编码参数发生跳变</td><td><code>#EXT-X-DISCONTINUITY</code></td><td>广告、切码率、切源后漏写，音画不同步最难查</td></tr>
+        <tr><td><code>#EXT-X-KEY</code></td><td>媒体</td><td>声明加密方式与取密钥的 URL</td><td><code>METHOD=SAMPLE-AES,URI=...</code></td><td>密钥跨域、鉴权失败、IV 写错都会整段黑屏；<code>METHOD=NONE</code> 才能解除</td></tr>
+        <tr><td><code>#EXT-X-MAP</code></td><td>媒体</td><td>fMP4 的初始化分片（init 段）</td><td><code>URI="init.mp4"</code></td><td>缺它解码器建不起来；<code>#EXT-X-MAP</code> 也必须遵守 BYTERANGE</td></tr>
+        <tr><td><code>#EXT-X-PROGRAM-DATE-TIME</code></td><td>媒体</td><td>给某个分片打上墙上时间锚点</td><td><code>2026-11-02T00:00:00.000Z</code></td><td>时区/格式写错会让播放器“回到过去”；用于直播回看与对时</td></tr>
+        <tr><td><code>#EXT-X-STREAM-INF</code></td><td>主</td><td>声明一个码率版本，下一行是子清单 URI</td><td><code>BANDWIDTH=2500000,...</code></td><td>BANDWIDTH 虚标会导致弱网选到高码率；CODECS 写错会选错解码器</td></tr>
+        <tr><td><code>#EXT-X-MEDIA</code></td><td>主</td><td>声明音频/字幕组，供 STREAM-INF 的 GROUP-ID 引用</td><td><code>TYPE=AUDIO,GROUP-ID="aud"</code></td><td>GROUP-ID 拼错，播放器就找不到音轨，只剩画面</td></tr>
+        <tr><td><code>#EXT-X-I-FRAME-STREAM-INF</code></td><td>主</td><td>只含关键帧的清单，用于拖动预览</td><td><code>URI="iframe.m3u8"</code></td><td>没有独立 IDR 清单时，快进只能重新解码整段</td></tr>
+        <tr><td><code>#EXT-X-INDEPENDENT-SEGMENTS</code></td><td>两种</td><td>声明所有分片都能独立解码</td><td><code>#EXT-X-INDEPENDENT-SEGMENTS</code></td><td>实际并非独立却声明了，切码率时会出现花屏</td></tr>
+        <tr><td><code>#EXT-X-PART</code></td><td>媒体 · LL</td><td>声明一个部分分片（part）及其时长/独立标志</td><td><code>DURATION=0.5,URI="seg120.p0.ts"</code></td><td>part 必须能被独立解码时才能标 <code>INDEPENDENT=YES</code>；标错会花屏</td></tr>
+        <tr><td><code>#EXT-X-PART-INF</code></td><td>媒体 · LL</td><td>声明 part 的目标时长</td><td><code>PART-TARGET=0.5</code></td><td>与实际 part 时长偏差过大，播放器的 hold-back 计算会失准</td></tr>
+        <tr><td><code>#EXT-X-SERVER-CONTROL</code></td><td>媒体 · LL</td><td>告诉播放器服务器支持哪些低延迟能力</td><td><code>CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.5</code></td><td>写了 CAN-BLOCK-RELOAD 但服务端不支持，播放器会一直等到超时</td></tr>
+        <tr><td><code>#EXT-X-PRELOAD-HINT</code></td><td>媒体 · LL</td><td>提前给出下一个 part 的 URL，让播放器先发请求</td><td><code>TYPE=PART,URI="seg121.p3.ts"</code></td><td>URL 猜错会 404；文件还没生成时请求应被挂起而不是立刻失败</td></tr>
+        <tr><td><code>#EXT-X-RENDITION-REPORT</code></td><td>媒体 · LL</td><td>报告其他码率清单的最新 MSN/part，便于切码率</td><td><code>LAST-MSN=124,LAST-PART=2</code></td><td>不更新会让码率切换卡在旧位置，切完要等很久</td></tr>
+        <tr><td><code>#EXT-X-SKIP</code></td><td>媒体 · LL</td><td>告诉播放器可以跳过哪些已缓存的分片</td><td><code>SKIPPED-SEGMENTS=3</code></td><td>delta 更新用；客户端不支持时会退化成全量刷新</td></tr>
+        <tr><td><code>#EXT-X-ENDLIST</code></td><td>媒体</td><td>声明点播结束，不会再有新分片</td><td><code>#EXT-X-ENDLIST</code></td><td>直播清单误写，播放器会认为已完结并停止刷新</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Master Playlist 完整示例：一份目录，三种画质、一条音轨</h3>
+  <p>主清单不装媒体，只装“子清单的索引”。它像商场的楼层导览：告诉你 3 楼是影院、5 楼是餐厅，但不会把商品摆在大厅。播放器先读它，再按带宽和屏幕尺寸挑一条子清单。</p>
+
+  <pre class="code">#EXTM3U
+#EXT-X-VERSION:4
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="中文",LANGUAGE="zh",DEFAULT=YES,AUTOSELECT=YES,CHANNELS="2",URI="audio_zh.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=800000,AVERAGE-BANDWIDTH=650000,RESOLUTION=640x360,FRAME-RATE=25.000,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aud"
+v360/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2600000,AVERAGE-BANDWIDTH=2100000,RESOLUTION=1280x720,FRAME-RATE=25.000,CODECS="avc1.64001f,mp4a.40.2",AUDIO="aud"
+v720/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=6000000,AVERAGE-BANDWIDTH=4800000,RESOLUTION=1920x1080,FRAME-RATE=25.000,CODECS="avc1.640028,mp4a.40.2",AUDIO="aud"
+v1080/index.m3u8
+#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=180000,RESOLUTION=1280x720,CODECS="avc1.64001f",URI="v720/iframe.m3u8"</pre>
+  <p class="small">注意 <code>CODECS</code> 的写法是 <code>avc1.PPCCLL</code> 与 <code>mp4a.40.2</code>：前者是 H.264 的 profile/constraint/level，后者是 AAC-LC。写错不会立刻报错，但播放器可能选到不支持的解码路径。另外，每个 <code>#EXT</code> 标签必须完整写在同一行：m3u8 不支持把属性列表换行续写，换行本身会被当成行结束，后半截属性会被当作 URI，播放器直接解析失败——生产上宁可长行，也不要做“美化换行”。</p>
+
+  <h3>LL-HLS：把 2 秒分片再切成 4 个 0.5 秒的“部分分片”</h3>
+  <p>普通 HLS 要等一整段 2 秒写完才能下发，LL-HLS 则把这一段再切成 4 个 0.5 秒的 part，写完一个就能发一个。这像连载小说：不等整本印刷完，作者每写完一章就先把这一章贴出来；读者还可以提前说“下一章写到第 3 页就叫我”（阻塞刷新）。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LL-HLS 部分分片与阻塞刷新">
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">LL-HLS：2 秒分片切成 4 个 0.5 秒 part，清单可被“挂起”等待</text>
+      <text x="20" y="48" font-size="11" fill="#64748b">媒体时间轴（每个 part 0.5 秒）</text>
+
+      <rect x="40" y="58" width="210" height="70" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="52" y="76" font-size="11" font-weight="700" fill="#5b21b6">seg120 · 2.000 s</text>
+      <rect x="52" y="86" width="42" height="26" rx="4" fill="#ddd6fe" stroke="#a78bfa"/>
+      <rect x="98" y="86" width="42" height="26" rx="4" fill="#ddd6fe" stroke="#a78bfa"/>
+      <rect x="144" y="86" width="42" height="26" rx="4" fill="#ddd6fe" stroke="#a78bfa"/>
+      <rect x="190" y="86" width="42" height="26" rx="4" fill="#ddd6fe" stroke="#a78bfa"/>
+      <text x="52" y="122" font-size="10" fill="#64748b">p0 … p3 已完整</text>
+
+      <rect x="254" y="58" width="210" height="70" rx="8" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="266" y="76" font-size="11" font-weight="700" fill="#0e7490">seg121 · 2.000 s</text>
+      <rect x="266" y="86" width="42" height="26" rx="4" fill="#cffafe" stroke="#22d3ee"/>
+      <rect x="312" y="86" width="42" height="26" rx="4" fill="#cffafe" stroke="#22d3ee"/>
+      <rect x="358" y="86" width="42" height="26" rx="4" fill="#cffafe" stroke="#22d3ee"/>
+      <rect x="404" y="86" width="42" height="26" rx="4" fill="#ecfeff" stroke="#67e8f9" stroke-dasharray="3 3"/>
+      <text x="266" y="122" font-size="10" fill="#64748b">p0–p2 已写，p3 正在写</text>
+
+      <rect x="468" y="58" width="210" height="70" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="480" y="76" font-size="11" font-weight="700" fill="#92400e">seg122 · 未生成</text>
+      <rect x="480" y="86" width="42" height="26" rx="4" fill="#fff" stroke="#fcd34d" stroke-dasharray="3 3"/>
+      <rect x="526" y="86" width="42" height="26" rx="4" fill="#fff" stroke="#fcd34d" stroke-dasharray="3 3"/>
+      <rect x="572" y="86" width="42" height="26" rx="4" fill="#fff" stroke="#fcd34d" stroke-dasharray="3 3"/>
+      <rect x="618" y="86" width="42" height="26" rx="4" fill="#fff" stroke="#fcd34d" stroke-dasharray="3 3"/>
+      <text x="480" y="122" font-size="10" fill="#92400e">#EXT-X-PRELOAD-HINT 预告 p0</text>
+
+      <rect x="40" y="150" width="190" height="42" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="135" y="168" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">播放器</text>
+      <text x="135" y="184" text-anchor="middle" font-size="10" fill="#64748b">需要 p2 才能继续</text>
+
+      <rect x="600" y="150" width="280" height="42" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="740" y="168" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">源站 / CDN 边缘</text>
+      <text x="740" y="184" text-anchor="middle" font-size="10" fill="#64748b">清单刷新 + 分片存储</text>
+
+      <line x1="120" y1="214" x2="800" y2="214" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="6 4"/>
+      <polygon points="800,214 792,209 792,219" fill="#7c3aed"/>
+      <text x="450" y="206" text-anchor="middle" font-size="11" fill="#5b21b6">GET index.m3u8?_HLS_msn=121&amp;_HLS_part=2（阻塞刷新）</text>
+
+      <line x1="800" y1="244" x2="120" y2="244" stroke="#10b981" stroke-width="1.6"/>
+      <polygon points="120,244 128,239 128,249" fill="#10b981"/>
+      <text x="450" y="236" text-anchor="middle" font-size="11" fill="#047857">200 OK：p2 一写完立即返回；最多挂起约一个 TARGETDURATION</text>
+
+      <text x="450" y="270" text-anchor="middle" font-size="10" fill="#64748b">超时则返回 204 或空清单，播放器重试；这就是“阻塞”不“卡死”的关键</text>
+    </svg>
+    <figcaption>紫色为已完整分片，青色为正在生成的分片，黄色为尚未开始；箭头表示一次阻塞式清单刷新。</figcaption>
+  </div>
+
+  <pre class="code">#EXTM3U
+#EXT-X-VERSION:9
+#EXT-X-TARGETDURATION:4
+#EXT-X-PART-INF:PART-TARGET=0.5
+#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.5,CAN-SKIP-UNTIL=12
+#EXT-X-MEDIA-SEQUENCE:120
+#EXT-X-PROGRAM-DATE-TIME:2026-11-02T00:00:00.000Z
+#EXT-X-PART:DURATION=0.5,URI="seg120.p0.ts",INDEPENDENT=YES
+#EXT-X-PART:DURATION=0.5,URI="seg120.p1.ts"
+#EXT-X-PART:DURATION=0.5,URI="seg120.p2.ts"
+#EXT-X-PART:DURATION=0.5,URI="seg120.p3.ts"
+#EXTINF:2.000,
+seg120.ts
+#EXT-X-PART:DURATION=0.5,URI="seg121.p0.ts",INDEPENDENT=YES
+#EXT-X-PART:DURATION=0.5,URI="seg121.p1.ts"
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI="seg121.p2.ts"
+#EXT-X-RENDITION-REPORT:URI="../720p/index.m3u8",LAST-MSN=120,LAST-PART=3</pre>
+  <p class="small">注意 <code>#EXTINF</code> 后面仍会出现完整的 <code>seg120.ts</code>：part 是“提前可用的碎片”，完整分片写完后仍要登记，供不支持的客户端回退。也就是说，LL-HLS 清单同时服务两类播放器：支持 part 的走低延迟，不支持的退回普通 HLS，延迟变大但不会播不了。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>PART-HOLD-BACK 怎么定</h4>
+      <p class="small">它表示“播放器至少要落后正在生成的 part 多久”。经验值取 <strong>3 倍 PART-TARGET</strong> 左右：0.5 秒 part 就设 1.5 秒。设太小会频繁缺 part，设太大等于把延迟又加回去。</p>
+    </div>
+    <div class="card">
+      <h4>阻塞刷新不是 HTTP 长轮询</h4>
+      <p class="small">它是在同一个 GET 上，让服务器“等到有数据再返回”。所以 CDN 边缘必须理解 <code>_HLS_msn</code> 参数或直接回源，否则会把请求当成普通清单缓存住，低延迟立刻失效。</p>
+    </div>
+    <div class="card">
+      <h4>PART 与 GOP 的关系</h4>
+      <p class="small">每个 part 最好从 IDR 开始，才能标 <code>INDEPENDENT=YES</code>；否则只能等整段结束，低延迟收益会被吃掉。切 part 的边界通常由编码器的帧边界决定，不是随便按时间切。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>上线前先验三件事：</b>① <code>#EXT-X-VERSION</code> 与使用的标签匹配；② 清单响应头 <code>Cache-Control</code> 是否允许短缓存（直播清单不能缓存几分钟）；③ CDN 是否透传 <code>_HLS_msn</code>/<code>_HLS_part</code> 查询参数。任何一条不满足，LL-HLS 都会“看起来支持、实际延迟十秒”。</span></div>
+</section>
+
 <section id="dash">
   <h2>📋 DASH：一份 MPD 清单，描述所有画质</h2>
   <p class="lead">DASH（MPEG-DASH，ISO/IEC 23009-1）和 HLS 是同一个思路的“标准化版本”：也用 HTTP 下载分片，但它用一份 XML 格式的 <strong>MPD</strong>（Media Presentation Description）描述“有哪些 Period、哪些画质、每段切片怎么命名”。HLS 的清单是逐行的文本，DASH 的清单是结构化的树。</p>
@@ -413,6 +818,156 @@ seg122.ts
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>选型不是“谁更先进”：</b>面向苹果生态、要走最成熟的 CDN，选 HLS；要做多 Period、多 DRM、与自有播放器深度集成，选 DASH；两者都做，就用 CMAF 共用切片，维护成本最低。</span></div>
 </section>
 
+<section id="dash-mpd">
+  <h2>🌳 DASH MPD 结构：一棵树，两种寻址</h2>
+  <p class="lead">MPD 像一份乐谱的总目录：<strong>MPD</strong> 是整本谱子，<strong>Period</strong> 是一个乐章，<strong>AdaptationSet</strong> 是“弦乐组/管乐组”，<strong>Representation</strong> 是组里具体的演奏者（码率版本），<strong>SegmentTemplate</strong> 则规定“第几页、第几小节去哪里取”。HLS 用逐行文本描述这些关系，DASH 用一棵 XML 树，所以它更能表达多 Period、多语言、多 DRM。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DASH MPD 层级结构">
+      <rect x="20" y="16" width="860" height="34" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="32" y="38" font-size="12" font-weight="700" fill="#5b21b6">MPD：type=dynamic、minimumUpdatePeriod=PT2S、availabilityStartTime</text>
+
+      <line x1="450" y1="50" x2="450" y2="68" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <rect x="50" y="68" width="800" height="34" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="62" y="90" font-size="12" font-weight="700" fill="#0e7490">Period id=p0：一段连续内容（广告/换源时在此切开）</text>
+
+      <line x1="230" y1="102" x2="230" y2="120" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <line x1="610" y1="102" x2="610" y2="120" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <rect x="80" y="120" width="300" height="34" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="92" y="142" font-size="12" font-weight="700" fill="#047857">AdaptationSet · 视频</text>
+      <rect x="460" y="120" width="300" height="34" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="472" y="142" font-size="12" font-weight="700" fill="#047857">AdaptationSet · 音频</text>
+
+      <line x1="130" y1="154" x2="130" y2="172" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <line x1="230" y1="154" x2="230" y2="172" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <line x1="330" y1="154" x2="330" y2="172" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <line x1="540" y1="154" x2="540" y2="172" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <rect x="90" y="172" width="80" height="30" rx="4" fill="#fff" stroke="#6ee7b7"/>
+      <text x="130" y="192" text-anchor="middle" font-size="10" fill="#0f172a">v360</text>
+      <rect x="190" y="172" width="80" height="30" rx="4" fill="#fff" stroke="#6ee7b7"/>
+      <text x="230" y="192" text-anchor="middle" font-size="10" fill="#0f172a">v720</text>
+      <rect x="290" y="172" width="80" height="30" rx="4" fill="#fff" stroke="#6ee7b7"/>
+      <text x="330" y="192" text-anchor="middle" font-size="10" fill="#0f172a">v1080</text>
+      <rect x="480" y="172" width="120" height="30" rx="4" fill="#fff" stroke="#6ee7b7"/>
+      <text x="540" y="192" text-anchor="middle" font-size="10" fill="#0f172a">a128</text>
+
+      <text x="400" y="192" font-size="10" fill="#64748b">Representation：同一内容的不同码率/分辨率版本</text>
+
+      <line x1="330" y1="202" x2="330" y2="230" stroke="#cbd5e1" stroke-dasharray="4 4"/>
+      <rect x="90" y="230" width="640" height="40" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="102" y="250" font-size="11" font-weight="700" fill="#92400e">SegmentTemplate：media=v720/$Number%05d$.m4s</text>
+      <text x="102" y="264" font-size="10" fill="#92400e">initialization=v720/init.mp4 · timescale=1000 · duration=2000</text>
+
+      <text x="90" y="296" font-size="11" fill="#0f172a" font-weight="700">两种寻址：</text>
+      <text x="180" y="296" font-size="11" fill="#334155">duration + startNumber（按序号）</text>
+      <text x="470" y="296" font-size="11" fill="#334155">SegmentTimeline（按时间显式列出）</text>
+      <text x="90" y="316" font-size="10" fill="#64748b">一个 Period 内的每个 AdaptationSet 都可有自己的 SegmentTemplate；音频与视频的 timescale 不必相同。</text>
+    </svg>
+    <figcaption>MPD 的嵌套关系：MPD → Period → AdaptationSet → Representation → SegmentTemplate，越往下越具体。</figcaption>
+  </div>
+
+  <h3>一份真实可用的 MPD：视频双码率 + 音频单码率</h3>
+  <pre class="code">&lt;MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+     profiles="urn:mpeg:dash:profile:isoff-live:2011"
+     availabilityStartTime="2026-11-02T00:00:00Z"
+     publishTime="2026-11-02T00:05:00Z"
+     minimumUpdatePeriod="PT2S"
+     timeShiftBufferDepth="PT30S"
+     suggestedPresentationDelay="PT3S"
+     minBufferTime="PT2S"&gt;
+  &lt;Period id="period-1" start="PT0S"&gt;
+    &lt;AdaptationSet mimeType="video/mp4" segmentAlignment="true"
+                   startWithSAP="1"&gt;
+      &lt;Representation id="rep-v720" bandwidth="2500000"
+                    codecs="avc1.64001f" width="1280" height="720"
+                    frameRate="25"&gt;
+        &lt;SegmentTemplate timescale="1000" duration="2000" startNumber="120"
+          initialization="v720/init.mp4"
+          media="v720/$Number%05d$.m4s"/&gt;
+      &lt;/Representation&gt;
+      &lt;Representation id="rep-v1080" bandwidth="6000000"
+                    codecs="avc1.640028" width="1920" height="1080"
+                    frameRate="25"&gt;
+        &lt;SegmentTemplate timescale="1000" duration="2000" startNumber="120"
+          initialization="v1080/init.mp4"
+          media="v1080/$Number%05d$.m4s"/&gt;
+      &lt;/Representation&gt;
+    &lt;/AdaptationSet&gt;
+    &lt;AdaptationSet mimeType="audio/mp4" lang="zh"&gt;
+      &lt;Representation id="rep-a128" bandwidth="128000"
+                    codecs="mp4a.40.2" audioSamplingRate="48000"&gt;
+        &lt;SegmentTemplate timescale="48000" duration="96000" startNumber="120"
+          initialization="a128/init.mp4"
+          media="a128/$Number%05d$.m4s"/&gt;
+      &lt;/Representation&gt;
+    &lt;/AdaptationSet&gt;
+  &lt;/Period&gt;
+  &lt;UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-head:2014"
+             value="https://example.com/time"/&gt;
+&lt;/MPD&gt;</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>属性 / 元素</th><th>逐项解释</th><th>工程上的意义</th></tr></thead>
+      <tbody>
+        <tr><td><code>type=dynamic</code></td><td>这是直播清单，不是点播</td><td>播放器会按 <code>minimumUpdatePeriod</code> 持续刷新 MPD</td></tr>
+        <tr><td><code>availabilityStartTime</code></td><td>第 0 个分片“变得可用”的墙上时间</td><td>所有分片的时间都由它推算；写错会让直播“永远在开头”或“追不上”</td></tr>
+        <tr><td><code>publishTime</code></td><td>这份 MPD 的生成时间</td><td>用于判断清单是否过期；服务器时钟漂移会直接体现出来</td></tr>
+        <tr><td><code>minimumUpdatePeriod</code></td><td>清单最短刷新间隔</td><td>太短会打爆源站，太长会增加端到端延迟；常见 PT2S</td></tr>
+        <tr><td><code>timeShiftBufferDepth</code></td><td>直播窗口保留多久，可回看多长时间</td><td>设 30 秒就只能回看 30 秒；设太大存储与内存压力上升</td></tr>
+        <tr><td><code>suggestedPresentationDelay</code></td><td>建议播放器落后直播边缘多久</td><td>LL-DASH 用它换稳定；设太小会频繁卡顿，设太大延迟回升</td></tr>
+        <tr><td><code>startWithSAP=1</code></td><td>每个分片都从 SAP（关键帧）开始</td><td>保证切码率、随机拖动都能独立解码；与 HLS 的 IDR 对齐同理</td></tr>
+        <tr><td><code>timescale / duration</code></td><td>时间单位与每段时长（以 timescale 计）</td><td>1000 + 2000 表示 2 秒一段；48000 + 96000 也是 2 秒，但单位不同</td></tr>
+        <tr><td><code>$Number%05d$</code></td><td>用分片序号替换，格式化为 5 位补零</td><td>生成 00120.m4s 这样的文件名；格式化写错就 404</td></tr>
+        <tr><td><code>$Time$</code></td><td>用分片起始时间（timescale 单位）替换</td><td>与 SegmentTimeline 搭配，适合变长分片</td></tr>
+        <tr><td><code>$RepresentationID$</code></td><td>用 Representation 的 id 替换</td><td>可让多个码率共用同一个模板，减少 MPD 体积</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>两种寻址：按“第几段”还是按“第几秒”</h3>
+  <p>SegmentNumber 像按“第 120 集、第 121 集”取剧；SegmentTimeline 像按“从第 120 分钟开始、演 4 分钟”取片段。前者文件名简单、清单小，但要求每段时长固定、序号连续；后者能处理变长分片、丢段、拼接，代价是清单更大。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>SegmentNumber：duration + startNumber</h4>
+      <pre class="code">&lt;SegmentTemplate timescale="1000"
+  duration="2000" startNumber="120"
+  initialization="v720/init.mp4"
+  media="v720/$Number%05d$.m4s"/&gt;</pre>
+      <p class="small">序号本身只是文件名的一部分，媒体起点由 Period 的 <code>start</code>、<code>startNumber</code> 与固定 <code>duration</code> 一起推算：第 120 段相对第 119 段正好晚 2 秒。只要编码器不丢段、不改时长，这个映射就一直成立。</p>
+    </div>
+    <div class="card">
+      <h4>SegmentTimeline：显式时间线</h4>
+      <pre class="code">&lt;SegmentTemplate timescale="90000"
+  media="v720/$Time$.m4s"
+  initialization="v720/init.mp4"&gt;
+  &lt;SegmentTimeline&gt;
+    &lt;S t="0" d="360000" r="2"/&gt;
+    &lt;S t="1080000" d="360000"/&gt;
+    &lt;S t="1440000" d="180000"/&gt;
+  &lt;/SegmentTimeline&gt;
+&lt;/SegmentTemplate&gt;</pre>
+      <p class="small"><code>t</code> 是起点、<code>d</code> 是时长、<code>r</code> 是“后面再重复几次”。前三条是 0、360000、720000（r=2 表示额外重复 2 次），接着跳到 1080000，再一段 2 秒。多出来的 180000 就是一次变长分片。</p>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>SegmentNumber</th><th>SegmentTimeline</th></tr></thead>
+      <tbody>
+        <tr><td>URL 模板</td><td><code>$Number%05d$</code></td><td><code>$Time$</code> 或 <code>$Number$</code></td></tr>
+        <tr><td>依赖条件</td><td>每段时长固定、序号连续</td><td>每段起止时间显式给出，可不等长</td></tr>
+        <tr><td>适合场景</td><td>常规直播、点播、CDN 静态切片</td><td>广告拼接、丢段、变速、按事件切分</td></tr>
+        <tr><td>清单体积</td><td>小，只有一行模板</td><td>大，每个 S 元素都要写</td></tr>
+        <tr><td>典型坑</td><td>编码器丢段后序号跳变，播放器算错时间</td><td><code>r</code> 的“额外重复次数”理解错，少算或多算一段</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>时间轴不是“从 0 开始”那么简单：</b>DASH 的媒体时间 = Period.start + 段内偏移；直播还要叠加 <code>availabilityStartTime</code>。三层时间任何一层对不上，就会出现“清单能下、分片 404”或“播放器一直跳到最新位置”。排错时先打印 MPD 里的这三个时间，再和服务器时钟比对。</span></div>
+</section>
+
 <section id="srt">
   <h2>🛡️ SRT：宁可晚到，也要整箱到齐</h2>
   <p class="lead">公网丢包、抖动、带宽忽高忽低，UDP 直传会花屏，TCP 又会因为重传把延迟越拖越长。SRT（Secure Reliable Transport）的做法是：在 UDP 之上加一个<strong>可调的缓冲池</strong>，用 ARQ（自动重传请求）补丢包，用 AES 加密防偷看。它不追求“最快”，而是让你用<strong>可控的延迟</strong>换<strong>稳定的画面</strong>——像给快递加一个中转仓，晚一点，但箱子不会缺。</p>
@@ -459,6 +1014,89 @@ srt-live-transmit "srt://:9000?mode=listener" "srt://10.0.0.9:9000?mode=caller"<
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要把 SRT 当“万能加速器”：</b>它不能突破物理带宽，也不能修复源头编码问题。上行只有 5 Mbps，却推 8 Mbps 的 4K，SRT 只会用延迟和丢帧来“消化”这个不可能，最终画面照样烂。</span></div>
 </section>
 
+<section id="srt-rist">
+  <h2>🚐 SRT 与 RIST：公网回传为什么不再用 RTMP</h2>
+  <p class="lead">RTMP 跑在 TCP 上，像一条单轨铁路：只要前面一节车厢卡住，后面整列车都得等——这就是<strong>队头阻塞</strong>。公网丢包 2%、RTT 200 ms 时，TCP 的自动重传会把延迟越拖越长，而 RTMP 对此无能为力。SRT 换成了“越野车队 + 中转仓”：走 UDP，丢了哪箱补哪箱，用<strong>固定延迟预算</strong>把抖动关进笼子。RIST 则是广电行业的另一支镖局，规则更贴近 RTP 生态。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>RTMP（公网回传）</th><th>SRT</th></tr></thead>
+      <tbody>
+        <tr><td>传输层</td><td>TCP 1935（单条字节流）</td><td>UDP 单端口（消息式传输）</td></tr>
+        <tr><td>延迟可控性</td><td>由 TCP 重传与拥塞窗口决定，应用管不了</td><td><code>latency</code> 是显式预算，端到端可预期</td></tr>
+        <tr><td>丢包恢复</td><td>内核整体重传，可能队头阻塞</td><td>按序号 NAK，选择性重传，不阻塞其他包</td></tr>
+        <tr><td>加密</td><td>RTMPS（TLS）</td><td>自带 AES-CTR；口令与密钥长度两端一致</td></tr>
+        <tr><td>时间戳</td><td>3 字节毫秒，约 4.66 小时回绕</td><td>32 位微秒，约 71.6 分钟回绕（协议内部处理）</td></tr>
+        <tr><td>防火墙</td><td>TCP 1935，企业网易放行</td><td>一个 UDP 端口；但部分网络封 UDP，需要提前确认</td></tr>
+        <tr><td>典型角色</td><td>主播推流到平台</td><td>摄像机/演播室回传到机房，再转 HLS/WebRTC</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">RTMP 并没有“死”，它只是退回到它最擅长的位置：<strong>平台入口的推流协议</strong>。一旦链路上行是公网、丢包不可控、又要求秒级延迟，SRT 的“延迟预算 + 选择性重传”就更合适。两者经常接力出现：现场用 SRT 回传到机房，机房再转 RTMP 推给直播平台。</p>
+
+  <h3>ARQ 与 FEC：补票还是多买一张</h3>
+  <p>ARQ 像“丢件后打电话让仓库补发”：不额外占带宽，但要等一个往返；FEC 像“每寄 10 箱就多买 2 箱备份”：不等待，但无论丢不丢都要多付运费。SRT 以 ARQ 为主，RIST Main Profile 可以叠加 FEC；选择取决于你的丢包模型与延迟预算。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>机制</th><th>带宽开销</th><th>恢复延迟</th><th>适合的丢包形态</th><th>典型副作用</th></tr></thead>
+      <tbody>
+        <tr><td><b>ARQ</b>（自动重传）</td><td>接近 0，只有重传时才占</td><td>至少 1 个 RTT，抖动大</td><td>随机丢包、丢包率不高（&lt; 5%）</td><td>延迟预算不足时会“补不过来”，只能丢帧</td></tr>
+        <tr><td><b>FEC</b>（前向纠错）</td><td>固定 5%–20% 冗余</td><td>接近 0，无需等待</td><td>连续丢包、突发丢包、单向链路</td><td>带宽浪费；丢包超过冗余比例时仍然恢复不了</td></tr>
+        <tr><td><b>ARQ + FEC</b></td><td>冗余 + 偶尔重传</td><td>大部分即时恢复，少量等 RTT</td><td>公网长链路、卫星、跨国回传</td><td>参数调优复杂，两端实现必须匹配</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>握手、加密与延迟缓冲：SRT 的三根支柱</h3>
+  <p>SRT 建立连接像“两个仓库核对暗号”：双方先交换版本、加密能力、延迟预算与 streamid，确认后再开始收货。握手是四步（caller 发起 → listener 回应 → caller 结论 → listener 确认），任何一步参数不一致，连接都会停在“已发起但未就绪”的状态。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"SRT 建连与传输：握手 → 数据 → NAK 补包 → 关闭","actors":["发送端 caller","接收端 listener"],"steps":[{"from":0,"to":1,"label":"Handshake 请求（version=5，带加密标志与延迟）","detail":"包里带 SRT 版本、加密能力、初始延迟、streamid 等；listener 据此判断是否接受。","color":"#7c3aed"},{"from":1,"to":0,"label":"Handshake 响应（确认版本，交换 KM 参数）","detail":"若配置了 passphrase，双方在此交换密钥材料（KM）；口令不一致会直接失败而不是“连上但花屏”。","color":"#0891b2"},{"from":0,"to":1,"label":"Handshake 结论（扩展标志：latency、maxbw、streamid）","detail":"caller 把最终参数写进扩展字段；这些值必须与 listener 的接受范围相容。","color":"#7c3aed"},{"from":1,"to":0,"label":"结论确认，进入 RUNNING","detail":"四步握手完成；此后才开始发送媒体数据。","color":"#10b981"},{"from":0,"to":1,"label":"数据包：序号 + TSBPD 时间戳（32 位微秒）","detail":"时间戳约 71.6 分钟回绕一次，实现必须做回绕处理；接收端按 TSBPD 决定何时交给解码器。","color":"#f59e0b"},{"from":1,"to":0,"label":"ACK / ACKACK 往返；丢包时发 NAK","detail":"ACK 确认收到，ACKACK 确认“收到你的确认”；NAK 列出缺失序号，caller 从发送缓冲重传。","color":"#e11d48"},{"from":0,"to":1,"label":"Shutdown；或 keepalive 维持 NAT 映射","detail":"keepalive 默认会周期性发送，避免 NAT/防火墙把“长时间无流量”的 UDP 映射回收。","color":"#0891b2"}]}'></div>
+
+  <p><code>latency</code> 不是“越小越牛”，而是“你愿意为抖动与重传留多少时间”。经验规则是<strong>至少 4 倍 RTT</strong>：跨洲 RTT 200 ms，就至少给 800 ms 预算；同城 10 ms，200 ms 就绰绰有余。设得太小，晚到的包会被 TSBPD 直接丢弃，画面照样花；设得太大，观众会明显感到“慢半拍”。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>加密：AES-CTR，不是 TLS</h4>
+      <p class="small"><code>passphrase</code> 触发密钥派生，<code>pbkeylen</code> 可选 16 / 24 / 32 字节（AES-128/192/256）。它加密的是 SRT 载荷，不提供证书与身份体系；因此别把它当成 HTTPS 那种“可信站点验证”，密码泄露就等于钥匙泄露。</p>
+    </div>
+    <div class="card">
+      <h4>为什么时间戳只有 32 位</h4>
+      <p class="small">SRT 用 32 位微秒计数，约 71.6 分钟回绕一圈。这比 RTP 的 13 小时短得多，所以实现里到处都要处理“刚刚回绕”的判定；这也是长连接跑几天后“突然卡住”的经典诱因之一（实现 bug，而不是协议设计）。</p>
+    </div>
+  </div>
+
+  <pre class="code"><span class="cm"># 发送端：caller，200 ms 延迟预算，AES-256，限制带宽</span>
+ffmpeg -f mpegts -i input.ts -c copy -f mpegts \
+  "srt://10.0.0.8:9000?mode=caller&amp;latency=200&amp;passphrase=MySecret12&amp;pbkeylen=32&amp;maxbw=20000000&amp;streamid=live/1"
+
+<span class="cm"># 接收端：listener，同一口令；一个端口接多路流时用 streamid 区分</span>
+ffmpeg -f mpegts -i \
+  "srt://0.0.0.0:9000?mode=listener&amp;latency=200&amp;passphrase=MySecret12&amp;pbkeylen=32" \
+  -c copy out.ts
+
+<span class="cm"># 双方都在 NAT 后：rendezvous，两边同时向对方发起</span>
+srt-live-transmit "srt://1.2.3.4:9000?mode=rendezvous&amp;latency=300" \
+  "srt://5.6.7.8:9000?mode=rendezvous&amp;latency=300"</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“连上了但没画面”先查三件事：</b>① 两端 <code>passphrase</code> 与 <code>pbkeylen</code> 是否完全一致；② 是否真的在读 <code>srt://</code> 而不是把 URL 当文件名；③ <code>latency</code> 是否小于链路抖动，导致包被 TSBPD 丢弃。SRT 的统计里 <code>lost</code>、<code>retrans</code>、<code>drop</code> 是三个不同计数器，别只看其中一个。</span></div>
+
+  <h3>RIST：广电版的“另一支镖局”，一句话说清</h3>
+  <p>RIST（Reliable Internet Stream Transport）由 VSF（视频服务论坛）推动，目标同样是“在公网可靠传实时媒体”，但它<strong>以 RTP 为中心</strong>：媒体仍然走 RTP，可靠性与纠错作为附加能力叠上去。所以它更容易和现有广电设备、RTP 分析工具、封装格式对接。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>版本 / Profile</th><th>核心组合</th><th>适合谁</th><th>与 SRT 的差别</th></tr></thead>
+      <tbody>
+        <tr><td><b>RIST Simple Profile</b>（TR-06-1）</td><td>RTP + UDP + ARQ，单端口或端口对</td><td>轻量回传、设备互联</td><td>更贴近 RTP 生态；功能集比 SRT 小</td></tr>
+        <tr><td><b>RIST Main Profile</b>（TR-06-2）</td><td>在 Simple 之上增加自适应 FEC、多流复用、可选加密</td><td>广电级长链路、跨机构互联</td><td>纠错能力更强，但实现与互通复杂度更高</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">一句话对比：<strong>SRT 是“自成体系的 UDP 传输协议”，RIST 是“给 RTP 加可靠层的规范族”</strong>。两者都强调 ARQ、都可调缓冲、都面向公网；选型往往不是技术优劣，而是你的上下游设备支持谁、运维团队熟悉谁。</p>
+</section>
+
 <section id="webrtc">
   <h2>🧊 WebRTC：先交换名片，再验指纹，最后拉专线</h2>
   <p class="lead">WebRTC 的目标是“浏览器之间直接、低延迟、加密地传音视频”。它把最难的三件事拆开：<strong>SDP</strong> 谈“我会什么格式”，<strong>ICE</strong> 找“我们之间哪条路能通”，<strong>DTLS-SRTP</strong> 负责“把这条路加上锁”。三者缺一不可，而且信令（怎么把 SDP 和 candidate 传给对方）反而没有统一标准。</p>
@@ -498,6 +1136,211 @@ srt-live-transmit "srt://:9000?mode=listener" "srt://10.0.0.9:9000?mode=caller"<
   </div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“WebRTC 连不上”先分三层：</b>① SDP 有没有共同编码；② ICE 有没有一对候选双向通过；③ DTLS 指纹与证书是否匹配。只盯着“浏览器控制台报错”通常看不出是哪一层，必须看 <code>chrome://webrtc-internals</code> 的候选与统计。</span></div>
+</section>
+
+<section id="webrtc-stack">
+  <h2>🏗️ WebRTC 协议栈全图：四层积木怎么搭起来</h2>
+  <p class="lead">WebRTC 不是“一个协议”，而是一套<strong>四层积木</strong>：SDP 谈“我会什么”，ICE 找“哪条路能通”，DTLS 给这条路“上锁并交换钥匙”，SRTP 才真正“搬画面”。再加一条侧路 SCTP/DataChannel 搬文字与二进制。把它想成寄贵重物品：先电话确认（SDP），再找一条能走的路线（ICE），然后双方验指纹、上锁（DTLS），最后才把箱子搬上车（SRTP）。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WebRTC 协议栈分层">
+      <text x="30" y="24" font-size="13" font-weight="700" fill="#0f172a">WebRTC 协议栈：媒体面在左，信令面在右</text>
+      <text x="30" y="44" font-size="10" fill="#64748b">媒体面：真正搬运音视频与数据</text>
+      <text x="610" y="44" font-size="10" fill="#64748b">信令面：只协商，不搬媒体</text>
+
+      <rect x="30" y="52" width="500" height="40" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="42" y="77" font-size="11" font-weight="700" fill="#5b21b6">应用层：采集 / 编码 / 渲染 · DataChannel API</text>
+
+      <rect x="30" y="100" width="500" height="40" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="42" y="125" font-size="11" font-weight="700" fill="#0e7490">RTP / RTCP：分包、序号、时间戳、NACK / PLI / TWCC</text>
+
+      <rect x="30" y="148" width="500" height="40" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="42" y="173" font-size="11" font-weight="700" fill="#047857">SRTP：用 DTLS 导出的密钥加密 RTP（只加密，不握手）</text>
+
+      <rect x="30" y="196" width="500" height="40" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="42" y="221" font-size="11" font-weight="700" fill="#92400e">DTLS 1.2：证书交换、指纹校验、导出 SRTP 密钥</text>
+
+      <rect x="30" y="244" width="500" height="40" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="42" y="269" font-size="11" font-weight="700" fill="#0f172a">ICE / STUN / TURN · UDP：候选收集与连通性检查</text>
+
+      <rect x="600" y="52" width="280" height="40" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="612" y="70" font-size="11" font-weight="700" fill="#5b21b6">SDP：m=、a=rtpmap、a=group:BUNDLE</text>
+      <text x="612" y="84" font-size="9" fill="#64748b">还有 a=fingerprint、a=setup:actpass</text>
+
+      <rect x="600" y="100" width="280" height="40" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="612" y="118" font-size="11" font-weight="700" fill="#0e7490">信令通道：HTTPS / WebSocket</text>
+      <text x="612" y="132" font-size="9" fill="#64748b">WHIP 已标准化；WHEP 仍以草案为主</text>
+
+      <rect x="600" y="148" width="280" height="40" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="612" y="166" font-size="11" font-weight="700" fill="#047857">Trickle ICE：候选随到随发</text>
+      <text x="612" y="180" font-size="9" fill="#64748b">不必等全部收集完再交换</text>
+
+      <rect x="600" y="196" width="280" height="40" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="612" y="214" font-size="11" font-weight="700" fill="#92400e">鉴权 / 会话管理</text>
+      <text x="612" y="228" font-size="9" fill="#92400e">信令层最自由，也最容易出安全问题</text>
+
+      <rect x="600" y="244" width="280" height="40" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="612" y="262" font-size="11" font-weight="700" fill="#0f172a">媒体不经过信令服务器</text>
+      <text x="612" y="276" font-size="9" fill="#64748b">SFU / TURN 除外，它们是转发节点</text>
+
+      <line x1="600" y1="170" x2="540" y2="170" stroke="#7c3aed" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <polygon points="540,170 548,165 548,175" fill="#7c3aed"/>
+      <text x="570" y="164" font-size="9" fill="#5b21b6">协商结果</text>
+
+      <text x="30" y="312" font-size="11" fill="#334155" font-weight="700">口诀：SDP 谈格式 → ICE 找路径 → DTLS 上锁 → SRTP 搬货；DataChannel 另走 SCTP。</text>
+    </svg>
+    <figcaption>WebRTC 的分层：信令只负责“谈”，ICE 负责“通”，DTLS 负责“锁”，SRTP/SCTP 负责“运”。</figcaption>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>层</th><th>协议 / 规范</th><th>你要看的关键字段</th><th>失败时的典型现象</th></tr></thead>
+      <tbody>
+        <tr><td>会话描述</td><td>SDP（RFC 8866）、Offer/Answer（RFC 3264）</td><td><code>m=</code>、<code>a=rtpmap</code>、<code>a=fmtp</code>、<code>a=group:BUNDLE</code>、<code>a=rtcp-mux</code></td><td>两端没有共同编码；<code>m=</code> 行被拒（端口写 0）</td></tr>
+        <tr><td>网络穿越</td><td>ICE（RFC 8445）、STUN（RFC 8489）、TURN（RFC 8656）</td><td><code>candidate</code> 的 typ、priority、ufrag；<code>selected pair</code></td><td>只有 relay 候选；连通性检查全部超时</td></tr>
+        <tr><td>安全</td><td>DTLS 1.2（RFC 6347）、DTLS-SRTP（RFC 5764）</td><td><code>a=fingerprint:sha-256</code>、<code>a=setup</code> 的角色</td><td>指纹不匹配、证书过期、DTLS alert</td></tr>
+        <tr><td>媒体</td><td>RTP/RTCP、SRTP（RFC 3711）</td><td>SSRC、seq、timestamp、NACK/PLI/TWCC</td><td>花屏、卡顿、码率不降、音画不同步</td></tr>
+        <tr><td>数据</td><td>SCTP（RFC 9260）、DCEP（RFC 8832）</td><td>DataChannel 的 <code>sid</code>、label、ordered 标志</td><td>SCTP 协商失败；DataChannel 一直 connecting</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>ICE 候选收集：先找近路，再找备用路，最后才求 relay</h3>
+  <p>ICE 像给两个陌生人规划见面路线：先看“同小区直接走过去”（host），再问“门卫我出门后长什么样”（STUN 反射地址 srflx），实在不行才让“快递中转站”代收（TURN relay）。每条候选都带一个优先级，客户端按优先级从高到低两两配对，做 STUN 连通性检查，先通过且双向可达的那对就被锁定。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"ICE 候选收集与连通性检查：host → srflx → relay","actors":["浏览器 A","STUN / TURN 服务器","浏览器 B"],"steps":[{"from":0,"to":0,"label":"枚举本地网卡，生成 host candidate","detail":"同一局域网内优先级最高（type preference 126）；如果双方在同一网段，这条最省钱、延迟最低。","color":"#7c3aed"},{"from":0,"to":1,"label":"STUN Binding Request（经 NAT 发出）","detail":"请求里带 ufrag 等认证信息；STUN 服务器看到的是 NAT 之后的公网地址与端口。","color":"#0891b2"},{"from":1,"to":0,"label":"返回 XOR-MAPPED-ADDRESS → srflx candidate","detail":"text 里的映射地址就是 srflx（server reflexive），优先级通常 110；它能穿部分 NAT，但不保证双向可用。","color":"#10b981"},{"from":0,"to":1,"label":"对称 NAT 时再走 TURN Allocate → relay","detail":"relay 优先级最低（0），因为所有媒体都要绕服务器，带宽成本与延迟都由它承担。","color":"#f59e0b"},{"from":0,"to":2,"label":"通过信令 trickle 发送自己的候选列表","detail":"候选可以边收集边发送（trickle），不必等全部收集完；每条候选都能单独到达对方。","color":"#7c3aed"},{"from":2,"to":0,"label":"B 回传自己的候选列表","detail":"双方此时拥有两套地址；接下来对每一对做连通性检查，而不是只看一条。","color":"#0891b2"},{"from":0,"to":2,"label":"STUN Binding 连通性检查（带 ufrag / pwd）","detail":"按优先级从高到低尝试；检查成功的 pair 会被记录，双向都成功才算可用。","color":"#e11d48"},{"from":0,"to":2,"label":"锁定 selected pair，DTLS 开始握手","detail":"选定后媒体走这条五元组；若中途网络变化，ICE restart 会重新收集候选。","color":"#10b981"}]}'></div>
+
+  <pre class="code"><span class="cm"># SDP 里的候选不是“一个 IP”，而是一整行结构化文本</span>
+candidate:842163049 1 udp 1862270975 203.0.113.5 61722 typ srflx
+  raddr 192.168.1.20 rport 61722 generation 0 ufrag 8hHf network-cost 999
+
+<span class="cm"># 拆开看：</span>
+<span class="cm"># foundation 842163049 | component 1(RTP) | udp | priority 1862270975</span>
+<span class="cm"># ip 203.0.113.5 | port 61722 | typ srflx | raddr/rport 是 NAT 内侧地址</span>
+<span class="cm"># generation 0 | ufrag 8hHf | network-cost 999（移动网络成本更高）</span></pre>
+
+  <p class="small">优先级的官方算法是 <code>priority = (2<sup>24</sup>) × typePref + (2<sup>8</sup>) × localPref + (256 − componentID)</code>。逐项解释：<code>typePref</code> 是“候选类型偏好”（host 126、srflx/prflx 110、relay 0），它占最高位，所以类型优先于一切；<code>localPref</code> 是“同一类型内，这块网卡/这条路径的相对偏好”；最后一项保证同一 IP:port 上 RTP（component 1）比 RTCP（component 2）略高。数值越大越优先，但最终仍以连通性检查结果为准。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>DTLS 的角色</h4>
+      <p class="small"><code>a=setup:actpass</code> 表示“我两种角色都能演”；对方回 <code>active</code> 或 <code>passive</code>，避免双方都等对方发起。角色定错，握手会一直停在 ClientHello。</p>
+    </div>
+    <div class="card">
+      <h4>指纹为什么能防中间人</h4>
+      <p class="small">证书本身可以是自签的，但 <code>a=fingerprint</code> 的哈希写在 SDP 里，而 SDP 经过你信任的信令通道。攻击者换了证书，哈希就对不上。</p>
+    </div>
+    <div class="card">
+      <h4>DataChannel 走哪条路</h4>
+      <p class="small">它不经过 RTP，而是 SCTP over DTLS：先 DCEP 建链（协商 sid 与可靠性），再传消息。可靠有序像 TCP，不可靠无序更像 UDP。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>排查顺序不要颠倒：</b>先看 SDP 有没有共同编码（谈不成），再看 <code>selected pair</code> 是哪一类（通不了），最后看 DTLS 指纹与 SRTP 统计（锁不上/搬不动）。在 <code>chrome://webrtc-internals</code> 里，这三类信息分别落在 SDP、ICE candidate pair、transport 统计三块，不要混着看。</span></div>
+</section>
+
+<section id="quic-moq">
+  <h2>⚡ QUIC 与 MoQ：给每条数据流发一辆独立货车</h2>
+  <p class="lead">TCP 像一条把所有货物串在一起的长龙：最前面一节车厢卡住，后面全部停摆。QUIC 把一条连接拆成许多<strong>独立 stream</strong>，每个 stream 有自己的序号与重传，A 流丢包不会堵住 B 流；再叠加 TLS 1.3 与 0-RTT，连接建立也更快。MoQ（Media over QUIC）则是在这套“多车道”上，重新定义直播的发布/订阅模型。</p>
+
+  <h3>QUIC 长包头：第一个字节就说明“这是什么包”</h3>
+  <p>QUIC 的包头像快递面单上的分区格：第一位告诉你是长头还是短头，接着两位是包类型（Initial / 0-RTT / Handshake / Retry），再往后才是版本号与连接 ID。连接 ID 是关键设计——它让连接不再绑死在“源 IP + 源端口”这个四元组上，手机从 Wi‑Fi 切到 5G，IP 变了，连接仍可继续。</p>
+
+  <div class="bits">QUIC 长包头 · 第 1 字节（Initial / 0-RTT / Handshake / Retry 共用布局）</div>
+  <div class="bitfield">
+    <div class="bf" style="flex:1"><b>Form</b><i>1 bit · 1=长头</i></div>
+    <div class="bf" style="flex:1"><b>Fixed</b><i>1 bit · 必须=1</i></div>
+    <div class="bf" style="flex:2"><b>Type</b><i>00 Initial / 01 0-RTT / 10 Handshake / 11 Retry</i></div>
+    <div class="bf" style="flex:2"><b>Reserved</b><i>2 bit · 必须=0</i></div>
+    <div class="bf" style="flex:2"><b>PN Len</b><i>2 bit · 0=1 字节 … 3=4 字节</i></div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>字段</th><th>长度</th><th>含义</th><th>真实取值示例</th></tr></thead>
+      <tbody>
+        <tr><td>Header Form / Type</td><td>1 + 2 bit</td><td>长头 + 包类型</td><td>Initial 的首字节常见 <code>0xC0</code>–<code>0xC3</code> 区间（PN 长度不同）</td></tr>
+        <tr><td>Version</td><td>32 bit</td><td>QUIC 版本号</td><td>QUIC v1 = <code>0x00000001</code>；v2 = <code>0x6B3343CF</code></td></tr>
+        <tr><td>DCID Len + DCID</td><td>8 bit + N</td><td>目标连接 ID，接收端据此找连接</td><td>长度通常 8–20 字节，由服务端生成</td></tr>
+        <tr><td>SCID Len + SCID</td><td>8 bit + N</td><td>源连接 ID，供对方回包时使用</td><td>客户端首包通常也会带一个随机 SCID</td></tr>
+        <tr><td>Token</td><td>变长</td><td>仅 Initial 包：地址验证令牌</td><td>Retry 后客户端必须原样带回</td></tr>
+        <tr><td>Length</td><td>变长整数</td><td>剩余长度（含包号与载荷）</td><td>受头部保护，抓包不能直接明文读</td></tr>
+        <tr><td>Packet Number</td><td>1–4 字节</td><td>包号，用于重传与丢包检测</td><td>长度由首字节 PN Len 决定，不是固定值</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">注意：QUIC 的包头也受<strong>头部保护（header protection）</strong>，抓包工具在没有密钥时只能看到部分字段。Wireshark 需要导入 TLS 密钥日志（<code>SSLKEYLOGFILE</code>）才能解出 HTTP/3 与 QUIC 内部结构。别把“看不懂 QUIC 包”误判成“协议坏了”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>TCP + TLS 1.3 + HTTP/2</th><th>QUIC + HTTP/3</th></tr></thead>
+      <tbody>
+        <tr><td>连接建立</td><td>TCP 三次握手 + TLS 握手，通常 2 个 RTT</td><td>1 个 RTT；会话恢复可 0-RTT</td></tr>
+        <tr><td>队头阻塞</td><td>整条连接一个字节流，丢一个段全等</td><td>每个 stream 独立重传，只阻塞自己</td></tr>
+        <tr><td>连接标识</td><td>四元组；换网/换端口即断</td><td>Connection ID；支持路径迁移</td></tr>
+        <tr><td>加密范围</td><td>TLS 在应用层，TCP 头明文</td><td>TLS 1.3 内建，头部也受保护</td></tr>
+        <tr><td>实现位置</td><td>内核协议栈，升级慢</td><td>用户态，可随应用一起升级</td></tr>
+        <tr><td>现实阻力</td><td>中间设备普遍友好</td><td>部分网络封 UDP 443，需要回退 HTTP/2</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>0-RTT 快在哪</h4>
+      <p class="small">客户端复用上一次会话的密钥材料，第一个包就能带应用数据，省掉一整个握手往返。代价是“重放风险”：攻击者可复制首个 0-RTT 请求再发一次，所以只应对幂等请求开启。</p>
+    </div>
+    <div class="card">
+      <h4>无队头阻塞的边界</h4>
+      <p class="small">它只保证“stream 之间不互相堵”。同一个 stream 内丢包，仍要等重传；所以把大文件切成多个 stream，才有收益。</p>
+    </div>
+    <div class="card">
+      <h4>怎么确认走了 HTTP/3</h4>
+      <p class="small"><code>curl --http3-only -I https://example.com</code>；或看响应头 <code>alt-svc: h3=":443"</code>。浏览器 DevTools 的 Protocol 列会显示 <code>h3</code>。</p>
+    </div>
+  </div>
+
+  <h3>MoQ：把“推流”改成“订阅”</h3>
+  <p>MoQ 的核心变化是：不再由播放器反复拉清单、拉分片，而是<strong>发布者把内容挂到一棵命名树上，订阅者按名字订阅</strong>，之后新对象由传输层主动送达。这像从“每天去报摊买报纸”变成“在报社登记：有新一期就送到我家”。中转节点（relay）可以缓存、转发、按订阅裁剪，既降低延迟也降低源站压力。</p>
+
+  <div class="flow">
+    <div class="node">采集 / 编码</div>
+    <div class="ar">→</div>
+    <div class="node">发布端 publisher</div>
+    <div class="ar">→</div>
+    <div class="node">MoQ Relay（缓存 + 转发）</div>
+    <div class="ar">→</div>
+    <div class="node">边缘 Relay</div>
+    <div class="ar">→</div>
+    <div class="node">订阅者 subscriber</div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>概念</th><th>含义</th><th>类比</th><th>工程上关心什么</th></tr></thead>
+      <tbody>
+        <tr><td><b>Namespace</b></td><td>命名空间，通常按直播事件/频道划分</td><td>“某个电视台的某个频道”</td><td>命名冲突、权限边界、CDN 缓存键</td></tr>
+        <tr><td><b>Track</b></td><td>一条可订阅的媒体轨（视频/音频/数据）</td><td>“频道里的画面信号”</td><td>编码参数、时间基、是否可独立解码</td></tr>
+        <tr><td><b>Object</b></td><td>Track 内的最小投递单元（常对应一个分片/帧组）</td><td>“一期报纸”</td><td>对象大小、序号、时间戳、缓存策略</td></tr>
+        <tr><td><b>Group</b></td><td>一组可独立解码的对象集合</td><td>“一期里有多个版面”</td><td>关键帧边界、切换码率时的对齐</td></tr>
+        <tr><td><b>Subscription</b></td><td>订阅某 Track，并声明从哪个对象/组开始</td><td>“登记从下一期开始送”</td><td>起始过滤器、断线续订、重复投递</td></tr>
+        <tr><td><b>Filter</b></td><td>订阅筛选条件，如最新对象、下一组开始</td><td>“只要最新一期”</td><td>延迟与完整性的取舍</td></tr>
+        <tr><td><b>Relay</b></td><td>中间转发节点，可缓存并服务多个订阅者</td><td>“区域配送站”</td><td>扇出、缓存命中、回源压力</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>MoQ 还在草案阶段：</b>截至 2026 年，MoQ 传输仍由 IETF MoQ 工作组以 Internet-Draft 推进，<strong>尚未成为 RFC</strong>，字段名、消息类型和过滤器语义都可能随草案更新。生产环境若现在采用，务必锁定具体 draft 版本、做好互通测试，不要假设“所有实现都一样”。浏览器侧通常通过 WebTransport（HTTP/3）接入，而不是原生 QUIC API。</span></div>
+
+  <pre class="code"><span class="cm"># 确认服务端是否支持 HTTP/3（先看 alt-svc，再用 curl 强制 h3）</span>
+curl -sI https://example.com | grep -i alt-svc
+<span class="cm"># alt-svc: h3=":443"; ma=86400</span>
+
+curl --http3-only -I https://example.com
+
+<span class="cm"># Wireshark 想解 QUIC/HTTP3，需要 TLS 密钥日志</span>
+SSLKEYLOGFILE=$HOME/keys.log chrome
+<span class="cm"># Wireshark：Preferences → Protocols → TLS → (Pre-)Master-Secret log filename</span></pre>
 </section>
 
 <section id="gb28181">
@@ -664,6 +1507,252 @@ rtcp.pt == 206</pre>
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>最小验证链：</b>同机回环 → 同网段 → 跨网段 → 公网。每跨一步只加一个变量（防火墙、NAT、CDN、转码）。能把问题钉在某一跳，比读十篇协议文档更快。</span></div>
 </section>
 
+<section id="capture">
+  <h2>🎥 抓包实战：从 tcpdump 到 RTP 载荷导出</h2>
+  <p class="lead">抓包像给公路装监控：先决定<strong>拍哪条路</strong>（capture filter），再决定<strong>拍多久</strong>（-c / -G 轮转），最后决定<strong>拍多清晰</strong>（-s 0 抓整包）。拍错了路段，后面分析再细也没用；拍漏了字节，载荷就拼不回来。这一节把命令、过滤器、导出链路和 Telephony 分析串成一条可执行的路。</p>
+
+  <pre class="code"><span class="cm"># 1) 控制面：RTSP 的信令、SDP 都在 554 上，整包保存</span>
+sudo tcpdump -i any -nn -s 0 -w rtsp.pcap 'tcp port 554'
+
+<span class="cm"># 2) 媒体面：RTP 端口是协商出来的，常抓一段端口范围</span>
+sudo tcpdump -i eth0 -nn -s 0 -w media.pcap 'udp portrange 10000-20000'
+
+<span class="cm"># 3) 只想在终端看 RTSP 明文，不落盘（-A 按 ASCII 显示）</span>
+sudo tcpdump -i eth0 -nn -A -c 20 'tcp port 554'
+
+<span class="cm"># 4) 长跑场景：每 600 秒切一个文件，避免单文件过大</span>
+sudo tcpdump -i eth0 -nn -s 0 -G 600 -w 'rtp-%Y%m%d-%H%M%S.pcap' 'udp port 9000'
+
+<span class="cm"># 5) Windows：dumpcap 的 -f 是 capture filter，-b 控制轮转</span>
+dumpcap -D
+dumpcap -i 1 -f "udp port 9000" -w srt.pcapng -b filesize:100000</pre>
+
+  <p class="small"><code>-s 0</code> 表示抓完整包（不截断）；旧版默认 96 字节，会把 RTP 载荷截掉，导出的载荷自然拼不成一帧。<code>-G</code> 的单位是秒，配合 <code>-w</code> 里的 strftime 占位符才能自动换文件；只写文件名会被反复覆盖。抓 WebRTC 时，除了 3478 的 STUN，还要覆盖高位 UDP 端口，否则只会看到候选交换，看不到媒体。</p>
+
+  <h3>抓包过滤器 vs 显示过滤器：两道不同的筛子</h3>
+  <p>抓包过滤器（BPF）是“在门口就拦下”，语法受限但省磁盘；显示过滤器是“先全收进来，再在 Wireshark 里筛”，语法丰富但已经占用了磁盘与内存。排障时常用组合是：<strong>抓的时候宽一点，显示的时候窄一点</strong>，避免抓漏关键包。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>目的</th><th>Wireshark 显示过滤器</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>只看 RTP / RTCP / RTSP</td><td><code>rtp</code> · <code>rtcp</code> · <code>rtsp</code></td><td>最粗的三把筛子；先确认“有没有”，再细分</td></tr>
+        <tr><td>锁定某一路流</td><td><code>rtp.ssrc == 0x5a3c6f12</code></td><td>多路复用环境必用；SSRC 可从 SDP 或首包读出</td></tr>
+        <tr><td>定位丢包</td><td><code>rtp.seq == 1001</code> 或 <code>rtp.seq &gt;= 1000 &amp;&amp; rtp.seq &lt;= 1010</code></td><td>序号是 16 位，超过 65535 会回绕，跨回绕要写扩展条件</td></tr>
+        <tr><td>看某一时间窗口</td><td><code>rtp.timestamp &gt;= 346668 &amp;&amp; rtp.timestamp &lt;= 391668</code></td><td>差值 45000 = 0.5 秒（90 kHz）；比按序号更贴近播放时间</td></tr>
+        <tr><td>找关键帧结尾</td><td><code>rtp.marker == 1</code></td><td>marker 表示“这一帧的最后一个包”，不是“关键帧”</td></tr>
+        <tr><td>看动态载荷类型</td><td><code>rtp.p_type == 96</code></td><td>96–127 是动态类型，具体编码要看 SDP 的 a=rtpmap</td></tr>
+        <tr><td>RTCP 五类</td><td><code>rtcp.pt == 200</code>（SR）/ <code>201</code>（RR）/ <code>202</code>（SDES）/ <code>203</code>（BYE）/ <code>204</code>（APP）</td><td>先按 PT 分层，再看具体字段</td></tr>
+        <tr><td>重传请求</td><td><code>rtcp.pt == 205</code></td><td>PT=205 是 RTPFB；其 5 位 RC/FMT 字段为 1 时才是 Generic NACK</td></tr>
+        <tr><td>关键帧请求</td><td><code>rtcp.pt == 206</code></td><td>PT=206 是 PSFB；FMT=1 为 PLI，FMT=4 为 FIR，语义不同</td></tr>
+        <tr><td>RTSP 方法</td><td><code>rtsp.method == "DESCRIBE"</code></td><td>排查鉴权、SDP 拼接问题时按方法筛</td></tr>
+        <tr><td>HLS 清单</td><td><code>http.request.uri contains ".m3u8"</code></td><td>配合 <code>http.response.code == 403</code> 查鉴权</td></tr>
+        <tr><td>TCP 重传</td><td><code>tcp.analysis.retransmission</code></td><td>RTMP/HLS 卡顿先看这个，再看 RTT</td></tr>
+        <tr><td>IP 分片</td><td><code>ip.flags.mf == 1 || ip.frag_offset &gt; 0</code></td><td>看到分片就要怀疑 MTU；丢一片等于整包丢失</td></tr>
+        <tr><td>加密与穿越</td><td><code>stun</code> · <code>dtls</code> · <code>srtp</code> · <code>quic</code></td><td>WebRTC/HTTP3 排障入口；SRTP 需要密钥才能解内容</td></tr>
+        <tr><td>SRT / 自定义 UDP</td><td><code>udp.port == 9000</code></td><td>Wireshark 对 SRT 的解析因版本而异，先按端口看</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>从抓包导出 RTP 载荷：三步拼回二进制</h3>
+  <p>RTP 载荷不是“一个完整文件”，而是一帧被拆成很多包。导出像把一叠散页按序号排好、再去掉每页的页码栏：先用 tshark 按 SSRC 过滤，导出序号/时间戳/标记位/载荷十六进制，再拼成二进制。注意 <code>tshark</code> 只做拆包，不做 H.264 的 FU-A/STAP-A 重组，拼出来的 <code>.bin</code> 仍需按 RFC 6184 还原，或交给 ffmpeg 处理。</p>
+
+  <pre class="code"><span class="cm"># 0) 先看协议分层，确认抓到的确实是 RTP 而不是“看起来像”</span>
+tshark -r media.pcap -q -z io,phs
+
+<span class="cm"># 1) 按 SSRC 导出关键字段（制表符分隔，方便 Excel/awk）</span>
+tshark -r media.pcap -Y "rtp &amp;&amp; rtp.ssrc == 0x5a3c6f12" \
+  -T fields -e ip.src -e udp.srcport -e rtp.seq \
+  -e rtp.timestamp -e rtp.marker -e rtp.p_type -e rtp.payload &gt; rtp.tsv
+
+<span class="cm"># 2) 只留载荷，去掉冒号与换行，按十六进制还原成二进制</span>
+tshark -r media.pcap -Y "rtp &amp;&amp; rtp.ssrc == 0x5a3c6f12" \
+  -T fields -e rtp.payload | tr -d ':' | tr -d '\n' | xxd -r -p &gt; payload.bin
+
+<span class="cm"># 3) 更省事的路径：还原 SDP 后用 ffmpeg 解 RTP</span>
+<span class="cm"># 在 Wireshark 里 Follow → TCP/UDP Stream，复制 SDP 存为 session.sdp</span>
+ffmpeg -f sdp -i session.sdp -c copy out.mp4
+
+<span class="cm"># 或者直接从 RTSP 落一份裸 H.264（跳过 RTP 重组）</span>
+ffmpeg -rtsp_transport tcp -i rtsp://user:pass@host/Streaming/Channels/101 \
+  -an -c:v copy -f h264 out.h264</pre>
+
+  <p class="small"><code>-T fields -e rtp.payload</code> 输出的是冒号分隔的十六进制，例如 <code>41:42:43</code>；<code>tr -d ':'</code> 去掉冒号，<code>xxd -r -p</code> 再按纯十六进制还原。<code>-Y</code> 是显示过滤器，写法与 Wireshark 窗口里一致；<code>-e</code> 是字段名，写错不会报错，只会得到空列——这也是“导出的文件是 0 字节”的常见原因。</p>
+
+  <h3>Telephony → RTP：Wireshark 里怎么看一路流的好坏</h3>
+  <p>抓包只是“有录像”，Telephony 菜单才是“回放与体检”。它把同一 SSRC 的包聚成一条流，计算丢包、抖动、延迟，并把音频解码成波形。看一路流，建议按这个顺序：</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>① 先确认它被识别成 RTP</h4>
+      <p class="small">菜单 <code>Telephony → RTP → Show all streams</code>。如果列表为空，多半是动态端口没被识别：用 <code>Decode As…</code> 把该 UDP 端口指定为 RTP，或在 RTP 协议首选项里确认动态载荷类型映射（96 → H.264）是否与 SDP 一致。</p>
+    </div>
+    <div class="card">
+      <h4>② 再看流统计</h4>
+      <p class="small"><code>Statistics → RTP → Stream Analysis</code> 会列出每个 SSRC 的包数、丢失数、丢包率、抖动、最大延迟。先看 <strong>lost</strong> 与 <strong>jitter</strong> 是否随时间恶化，再看 <strong>max delay</strong> 是否出现尖峰——尖峰通常对应一次重传或路由切换。</p>
+    </div>
+    <div class="card">
+      <h4>③ 最后听/看波形</h4>
+      <p class="small"><code>Telephony → RTP → RTP Player</code> 可以选中一条流播放，界面上会标出丢失区间。波形断档、规律性爆音，往往比统计数字更直观；音频流还能通过 <code>Save Payload</code> 导出为可播放文件。</p>
+    </div>
+    <div class="card">
+      <h4>④ 加密流要先解密</h4>
+      <p class="small">SRTP 只能看到包长与节奏。Wireshark 的 <code>Preferences → Protocols → SRTP</code> 可填 key/salt（或使用 srtp-decrypt 工具）解密；没有密钥就只能做统计，不能听内容。别把“解不出音频”误判成编码损坏。</p>
+    </div>
+  </div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>抓包位置</th><th>能看到什么</th><th>看不到什么</th></tr></thead>
+      <tbody>
+        <tr><td>客户端网卡</td><td>客户端发出/收到的包，能判断“到没到客户端”</td><td>看不到服务端之前已经丢了多少</td></tr>
+        <tr><td>服务端网卡</td><td>到达服务端的包，能判断“源有没有发全”</td><td>看不到客户端侧的解码与缓冲问题</td></tr>
+        <tr><td>交换机镜像 / TAP</td><td>链路中间的真实流量，最接近“网络真相”</td><td>镜像口可能丢包，不能当绝对真值</td></tr>
+        <tr><td>容器 / 虚拟网卡</td><td>容器内看到的包</td><td>可能绕过宿主网卡，宿主机抓不到</td></tr>
+        <tr><td>两端同时抓</td><td>把“发送—到达”对齐，定位丢包发生在哪一跳</td><td>需要时钟同步，否则时间差不可信</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>两条黄金习惯：</b>① 先抓“两端”再谈丢包，单侧抓包只能证明“我没收到”，不能证明“你没发”；② 抓包文件与 <code>ffprobe</code> 输出、服务端日志放在同一时间轴（先对时，再对日志），否则你会在“先后顺序”上得出完全相反的结论。</span></div>
+</section>
+
+<section id="faq">
+  <h2>🩺 排障 FAQ：八个“看起来像协议坏了”的真问题</h2>
+  <p class="lead">下面每一条都对应一个高频现场：现象很吓人，根因往往只在一层。先按“最小验证链”缩小范围，再用命令取一次证，别靠猜。</p>
+
+  <details class="b">
+    <summary>❓ 公司/酒店网络封了 UDP，RTSP、WebRTC、SRT 全连不上怎么办？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">先确认是“UDP 被封”还是“端口没放行”：同网段用 <code>nc -vzu 192.168.1.64 8000</code>，或在对端抓包看有没有收到你的包。若 UDP 确实出不去，按场景降级：</p>
+      <pre class="code"># RTSP：强制媒体走 TCP interleaved（只用 554）
+ffplay -rtsp_transport tcp rtsp://user:pass@host/Streaming/Channels/101
+
+# WebRTC：把 TURN 配在 TCP/TLS 443 上（turns:443），让媒体绕道 TLS
+# SRT：没有 TCP 回退，只能换端口/走专线/隧道；或改用 RTMP(S)/HLS 过渡
+# HLS/DASH/HTTP-FLV：天然走 443，通常是“最后还能用”的路径</pre>
+      <p class="small"><b>关键判断：</b>如果 <code>tcpdump</code> 只看到你的出站包、看不到任何回包，问题在网络策略；如果能看到回包但应用仍失败，问题在应用层或 NAT 映射。别把“公司防火墙”和“服务器没启动”混为一谈。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ 有声音没画面（或反过来），但 ffprobe 显示流正常？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">“流正常”只代表容器和编码参数能被解析，不代表<strong>播放器拿到了正确的 RTP 分支</strong>。按顺序查：</p>
+      <div class="scroll-x">
+        <table class="cmp">
+          <thead><tr><th>检查点</th><th>怎么查</th><th>典型结论</th></tr></thead>
+          <tbody>
+            <tr><td>SDP 的 PT 映射</td><td>看 <code>a=rtpmap:96</code> 是 H264 还是 H265；浏览器是否支持</td><td>H.265 在部分浏览器里只有音频能播</td></tr>
+            <tr><td>SSRC / 端口</td><td><code>rtp.ssrc</code> 与 SETUP 返回的端口是否对得上</td><td>多轨复用时选错了轨道，拿到的是音频流</td></tr>
+            <tr><td>首个关键帧</td><td>过滤 <code>rtp.marker == 1</code>，再找 H.264 NAL type 5（IDR）</td><td>只收到 P 帧，解码器一直等 IDR</td></tr>
+            <tr><td>解码错误</td><td><code>ffmpeg -v debug</code> 看 <code>decode_slice_header error</code></td><td>编码参数（profile/level）不被硬解支持</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small"><b>快速验证：</b><code>ffmpeg -rtsp_transport tcp -i rtsp://... -map 0:v:0 -c copy -f h264 test.h264</code>。若这个文件能播，问题在播放器/浏览器；若不能播，问题在取流或关键帧。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ 跑了十几个小时后突然卡顿、音画不同步，是时间戳回绕吗？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">很可能。不同协议的回绕周期差别很大：RTP 序号 16 位（65535 个包就回绕）、RTP 时间戳 32 位（90 kHz 约 13.25 小时，48 kHz 约 24.85 小时）、RTMP 时间戳 3 字节毫秒（约 4.66 小时）、SRT 时间戳 32 位微秒（约 71.6 分钟）。</p>
+      <pre class="code"># 错误写法：直接比大小，回绕点会把新包当成旧包
+if (seq_b &lt; seq_a) { /* 误判为回退 */ }
+
+# 正确写法：有符号差值，或维护扩展序号
+int16_t d = (int16_t)(seq_b - seq_a);      // 跨回绕仍能得到 +1
+int32_t dt = (int32_t)(ts_b - ts_a);       // 时间戳同理
+
+# 扩展序号 = 回绕次数 * 65536 + 当前 seq；RTCP RR 的 extended highest seq 就是它</pre>
+      <p class="small"><b>验证：</b>看卡顿是否发生在“整点/固定周期”附近，且 <code>rtp.seq</code> 从 65535 跳到 0；RTMP 则看时间戳是否从 <code>0xFFFFFF</code> 回到 0。把“回绕”当成“重置”，就会出现持续十几小时正常、随后永久错位。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ tcpdump 明明抓到了包，应用还是丢包/卡顿？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">抓包点在<strong>网卡</strong>，而丢包可能发生在<strong>内核 socket 缓冲区</strong>：包已经进了网卡、也进了 tcpdump，但应用来不及读，缓冲区满了就被内核丢掉。这不是网络丢包，是“接收端自己丢”。</p>
+      <pre class="code"># 看 UDP 接收缓冲错误计数（持续增长就是它）
+nstat -az UdpRcvbufErrors
+netstat -su | grep -i "buffer"
+
+# 看 socket 当前排队与内存
+ss -uanm | grep 9000
+
+# 放大接收缓冲（示例 32 MB；需 root，且应用也要设置 SO_RCVBUF）
+sysctl -w net.core.rmem_max=33554432
+sysctl -w net.core.rmem_default=33554432
+
+# ffmpeg 读 UDP 时同步放大 socket buffer，并允许溢出后继续
+ffmpeg -i "udp://239.0.0.1:1234?buffer_size=33554432&amp;overrun_nonfatal=1" -c copy out.ts</pre>
+      <p class="small"><b>判断口诀：</b>tcpdump 有包 + 应用计数丢包 + <code>UdpRcvbufErrors</code> 增长 = 本机来不及读；tcpdump 就没包 = 上游没送到或网络丢。前者调缓冲区/线程，后者查链路。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ 播放 30 秒到 2 分钟就断，重新 PLAY 又恢复？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">典型 NAT/防火墙映射超时。UDP 没有连接状态，NAT 设备靠“最近有没有包”维持映射；若一段时间只有下行、没有上行，映射会被回收，后续 RTP 就进不来。很多家用 NAT 的 UDP 映射只有 30–120 秒。</p>
+      <p class="small"><b>解法：</b>让客户端周期性发上行包——RTSP 用 <code>GET_PARAMETER</code>/<code>OPTIONS</code> 保活（20–30 秒一次），RTCP 保持 RR 发送，WebRTC 开 <code>a=rtcp-mux</code> 并保持 STUN 连通性检查，SRT 依赖 keepalive。若仍断，换 TCP 交织、TURN/TLS 443，或让两端都在同一内网。</p>
+      <p class="small"><b>验证：</b>断流时抓包看是否还有上行包；对比 NAT 设备的会话表老化时间；把心跳从 60 秒改成 20 秒，若断流时间随之变化，基本可以确认。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ 小包正常、一大动作就花屏，是 MTU 分片吗？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">很典型。IP 分片后，任意一片丢失，整个原始数据报都无法重组；关键帧/大切片往往由很多大包组成，所以“平时没事，一动就花”。链路 MTU 可能不是 1500：PPPoE 常见 1492，VXLAN 约 1450，WireGuard 约 1420。</p>
+      <pre class="code"># Linux：禁止分片，逐步试到不通为止（1472 + 28 = 1500）
+ping -M do -s 1472 8.8.8.8
+
+# Windows
+ping -f -l 1472 8.8.8.8
+
+# 编码侧把 RTP 包控小，减少分片概率（示例上限 1200 字节）
+ffmpeg ... -pkt_size 1200
+
+# Wireshark 确认是否真的分片
+ip.flags.mf == 1 || ip.frag_offset &gt; 0</pre>
+      <p class="small"><b>注意：</b>降低 <code>pkt_size</code> 会增加包头开销与包数；真正要根治，应让整条链路 MTU 一致，或在隧道入口做正确的分片/探测（PMTUD）。别只在编码器上“压小包”就以为解决了。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ RTCP 显示丢包率 0，画面却在花，为什么？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">“0”可能只是<strong>统计没送到</strong>，不是“真的没丢”。常见原因：</p>
+      <div class="scroll-x">
+        <table class="cmp">
+          <thead><tr><th>原因</th><th>证据</th><th>处理</th></tr></thead>
+          <tbody>
+            <tr><td>RTCP 反向路径被防火墙挡住</td><td>抓包只看得到 RTP，没有 <code>rtcp.pt == 201</code> 的 RR</td><td>放行反向上行；或让发送端主动发 SR 触发回执</td></tr>
+            <tr><td>NACK/PLI 未被实现或未开启</td><td>丢包后没有 <code>rtcp.pt == 205 / 206</code></td><td>在 SDP 加 <code>a=rtcp-fb</code>，确认发送端支持重传缓存</td></tr>
+            <tr><td>抖动缓冲太小</td><td>包到了但播放时间已过，被 TSBPD/缓冲丢弃</td><td>增大 jitter buffer / latency 预算</td></tr>
+            <tr><td>统计口径把 RTX 当成新流</td><td>两个 SSRC、两套 seq，丢包率越算越高</td><td>按 OSN 还原原序号后再统计</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small"><b>关键：</b>“丢包率 0”只说明接收端<strong>上报</strong>的区间内没有缺口；如果连 RR 都没收到，这个 0 毫无意义。先确认反馈链路通了，再谈丢包率。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary>❓ HLS 清单能打开，播放器却一直转圈/报 403？ <span class="ar">▸</span></summary>
+    <div class="bd">
+      <p class="small">清单是“目录”，能打开不代表“商品能取”。按这四项查：</p>
+      <p class="small"><b>① CORS：</b>浏览器跨域拉 m3u8/ts 需要 <code>Access-Control-Allow-Origin</code>；用 <code>curl -H "Origin: https://你的站点" -I</code> 看响应头。<b>② Range：</b>用了 <code>#EXT-X-BYTERANGE</code> 就必须支持 <code>Range</code> 请求，否则分片读不出来。<b>③ 鉴权过期：</b>清单里的 token 有时效，CDN 缓存了旧清单会导致 403；检查 <code>Cache-Control</code> 与签名时间。<b>④ 时间轴：</b><code>#EXT-X-PROGRAM-DATE-TIME</code> 与实际时钟偏差过大，部分播放器会判定“直播已结束”。</p>
+      <pre class="code">curl -I "https://example.com/live/index.m3u8"
+curl -H "Origin: https://player.example.com" -I "https://example.com/live/index.m3u8"
+curl -I "https://example.com/live/seg120.ts"
+ffprobe -v error -show_streams "https://example.com/live/index.m3u8"</pre>
+      <p class="small"><b>经验：</b>Chrome 能播、Safari 不能播，优先查 CODECS 与 fMP4 的 <code>#EXT-X-MAP</code>；全部播放器都不能播，优先查 403/CORS/分片 404。</p>
+    </div>
+  </details>
+</section>
+
 <section id="glossary">
   <h2>📖 术语表</h2>
   <div class="scroll-x">
@@ -699,6 +1788,259 @@ rtcp.pt == 206</pre>
       </div>
     </div>
   </div>
+</section>
+
+<section id="nat">
+  <h2>🏠 NAT 四种类型：哪些能互穿</h2>
+  <p class="lead">NAT 像<strong>小区门卫</strong>：内网住户出门办事，门卫会帮你在大门上贴一张"出门单"（公网 IP + 端口），回来时必须凭这张单子"原号返回"才能进。四种 NAT 的区别就在于门卫认不认"谁"、认不认"从哪个门牌号来"——这直接决定了 WebRTC 能不能在两端之间打直洞。</p>
+
+  <h3>NAT 的"洞"存的是什么 key</h3>
+  <p>所有 NAT 本质上都在维护一张"洞表"：<strong>流出 → 生成一条映射；流入 → 按 key 查表，匹配就转发，不匹配就丢</strong>。四种 NAT 的差异就是 key 包含哪些字段——字段越短越"傻大胆"，越长越"警惕"。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>NAT 类型</th><th>流出映射的 key</th><th>流入允许的条件</th><th>警惕程度</th><th>常见度</th></tr></thead>
+      <tbody>
+        <tr><td><b>Full Cone</b>（完全锥型）</td><td>内网 IP:Port</td><td>任何公网主机，任何端口，都能往这张映射里塞包</td><td>最松</td><td>少见（运营商级设备几乎不用）</td></tr>
+        <tr><td><b>Restricted Cone</b>（IP 限制锥型）</td><td>内网 IP:Port</td><td>只有我发过包的公网 <b>主机 IP</b> 才能回来（不管对方用哪个端口）</td><td>中等</td><td>较少见</td></tr>
+        <tr><td><b>Port Restricted Cone</b>（端口限制锥型）</td><td>内网 IP:Port</td><td>只有我发过包的那个 <b>IP:Port</b> 组合才能回来</td><td>较严</td><td>最常见（企业/家用路由默认）</td></tr>
+        <tr><td><b>Symmetric NAT</b>（对称 NAT）</td><td>内网 IP:Port + <b>目的 IP:Port</b></td><td>不仅对方的 IP:Port 要匹配，我发往不同目的地时 NAT 分配的端口还会变</td><td>最严</td><td>运营商级 NAT（4G/5G 网络、企业 VPN）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 820 280" role="img" aria-label="四种 NAT 的洞表 key 对比">
+      <text x="20" y="24" font-size="12" font-weight="700" fill="#0f172a">NAT 洞表 key 越长，穿透越难（颜色从绿到红）</text>
+
+      <rect x="20" y="36" width="185" height="100" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="32" y="56" font-size="11" font-weight="700" fill="#047857">Full Cone</text>
+      <text x="32" y="76" font-size="10" fill="#334155">key = (内网 IP, 内网 Port)</text>
+      <text x="32" y="94" font-size="10" fill="#64748b">value = NAT 公网 Port</text>
+      <text x="32" y="116" font-size="10" fill="#64748b">条件：任何外部主机都能入</text>
+      <text x="32" y="128" font-size="9" fill="#047857">✅ 最容易穿透</text>
+
+      <rect x="220" y="36" width="185" height="100" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="232" y="56" font-size="11" font-weight="700" fill="#0e7490">Restricted Cone</text>
+      <text x="232" y="76" font-size="10" fill="#334155">key = (内网 IP, 内网 Port)</text>
+      <text x="232" y="94" font-size="10" fill="#64748b">value = NAT Port + [远程 IP, …]</text>
+      <text x="232" y="116" font-size="10" fill="#64748b">条件：远程 IP 必须在名单里</text>
+      <text x="232" y="128" font-size="9" fill="#0e7490">⚠️ 需要对方先"敲门"</text>
+
+      <rect x="420" y="36" width="185" height="100" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="432" y="56" font-size="11" font-weight="700" fill="#92400e">Port Restricted Cone</text>
+      <text x="432" y="76" font-size="10" fill="#334155">key = (内网 IP, 内网 Port)</text>
+      <text x="432" y="94" font-size="10" fill="#64748b">value = NAT Port + [(远程 IP, Port), …]</text>
+      <text x="432" y="116" font-size="10" fill="#64748b">条件：远程 IP:Port 必须在名单里</text>
+      <text x="432" y="128" font-size="9" fill="#92400e">⚠️ 最常见，也最难</text>
+
+      <rect x="620" y="36" width="185" height="100" rx="6" fill="#fff1f2" stroke="#fda4af"/>
+      <text x="632" y="56" font-size="11" font-weight="700" fill="#9f1239">Symmetric NAT</text>
+      <text x="632" y="76" font-size="10" fill="#334155">key = (内网 IP,内网 Port,</text>
+      <text x="632" y="90" font-size="10" fill="#334155">  远程 IP,远程 Port)</text>
+      <text x="632" y="108" font-size="10" fill="#64748b">value = NAT Port（每次不同）</text>
+      <text x="632" y="128" font-size="9" fill="#9f1239">❌ 几乎无直洞可能</text>
+
+      <line x1="20" y1="170" x2="800" y2="170" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 3"/>
+
+      <text x="20" y="196" font-size="11" font-weight="700" fill="#0f172a">穿透能力矩阵（A 行 → B 列，打勾=两边都能直连）</text>
+      <rect x="20" y="204" width="780" height="60" rx="4" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="42" y="222" font-size="10" font-weight="700" fill="#047857">Full</text>
+      <text x="130" y="222" font-size="10" font-weight="700" fill="#0e7490">Restricted</text>
+      <text x="270" y="222" font-size="10" font-weight="700" fill="#92400e">Port Restr.</text>
+      <text x="420" y="222" font-size="10" font-weight="700" fill="#9f1239">Symmetric</text>
+      <text x="20" y="244" font-size="10" fill="#334155">Full → 四象限全 ✅</text>
+      <text x="20" y="258" font-size="10" fill="#334155">Restricted → 除 Symmetric 外均可 ✅</text>
+      <text x="260" y="244" font-size="10" fill="#334155">Port Restr. → Full/Restricted 可 ✅</text>
+      <text x="410" y="244" font-size="10" fill="#334155">Symmetric → 几乎只能靠 TURN relay ❌</text>
+    </svg>
+    <figcaption>四种 NAT 的洞表 key 越长，穿透越难。Symmetric 把目的地址也算进 key 里，同一个出口端口对不同目的地会分配不同的公网端口——对方根本无法"猜中"我在哪个端口上。</figcaption>
+  </div>
+
+  <h3>RFC 3489 的 NAT 类型检测（三步判定）</h3>
+  <p>早期 RFC 3489 用两台有不同 IP/端口的协调服务器 s1/s2，通过几次 UDP 往返就能把 NAT 类型判出来。RFC 5780 后来用"Mapping / Filtering"两个维度重新命名（End-Independent / Address-Dependent / Port-Dependent Mapping + Address-Dependent / Port-Dependent / Symmetric Filtering），但工程上还是用四种 NAT 的名字多——WebRTC 浏览器内部的候选优先级与穿透性模型，本质上还是建立在"对方是哪种 NAT"的判断之上。</p>
+
+  <pre class="code"><span class="cm"># 用 pystun 检测自己所在网络的 NAT 类型</span>
+pip install pystun
+pystun -H stun.l.google.com -d
+<span class="cm"># 或</span>
+pystun3 -H stun.l.google.com:19302</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>现实比 RFC 复杂：</b>运营商级 NAT（CGNAT）常常是"对内表现为 Port Restricted Cone，对外表现为 Symmetric"，即<strong>对不同 STUN 服务器返回的映射地址不同</strong>——这会让 srflx 候选在 NAT 切换后立即失效。WebRTC 的 fallback 策略（直连失败 → relay）就是为这种场景准备的。</span></div>
+</section>
+
+<section id="stun">
+  <h2>🔮 STUN：一眼看穿我长什么样</h2>
+  <p class="lead">STUN（Session Traversal Utilities for NAT）像<strong>门卫用对讲机问前台"门外现在看到我是什么样子"</strong>：内网主机通过 NAT 向 STUN 服务器发一个 Binding Request，服务器回包里就带着"我从外面看你时看到的 IP:Port"（XOR-MAPPED-ADDRESS）。这就是 srflx（server reflexive）候选的来源。它不搬运媒体，只帮你"照镜子"。</p>
+
+  <h3>STUN Binding Request/Response 报文</h3>
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"STUN Binding Request / Response（RFC 5389）","bytes":"00 01 00 00 21 12 A4 42 34 45 46 47 48 49 4A 4B 4C 4D 4E 4F","fields":[{"name":"Message Type","start":0,"end":1,"bits":"16 bit","note":"0x0001 = Binding Request；响应是 0x0101（Binding Success）或 0x0111（Binding Error）。前 2 bit 为 Class：00=Request、10=Success、11=Error。"},{"name":"Message Length","start":2,"end":3,"bits":"16 bit","note":"后面所有 TLV 载荷的总长度（字节），不含 20 字节头本身。没有属性时为 0。必须是 4 的倍数。"},{"name":"Magic Cookie","start":4,"end":7,"bits":"32 bit","note":"固定 0x2112A442。STUN 客户端收到 UDP 包后先扫这 4 个字节——对得上才把它当 STUN 包（RFC 5389 新增，防止非 STUN 包被误读）。"},{"name":"Transaction ID","start":8,"end":19,"bits":"96 bit","note":"每次请求生成一个随机 12 字节 ID，请求和响应匹配就靠它（不是端口号也不是序列号，是一个独立 96 位随机值）。"}],"hint":"请求本身只有 20 字节头，没有属性。响应里会追加 MAPPED-ADDRESS（或 XOR-MAPPED-ADDRESS，优先后者）属性，里面就是服务器看到的映射地址。"}'></div>
+
+  <p><b>XOR-MAPPED-ADDRESS 的小技巧：</b>RFC 5389 把地址做了"异或伪装"：IPv4 整个 4 字节与 Magic Cookie 异或，IPv6 与 Magic Cookie + Transaction ID 异或。原因是早期 NAT 设备会扫描 UDP payload 里的 IP 字段并改写——XOR 后 NAT 看不到明文 IP，就不会乱改。客户端再用同样的异或恢复即可。</p>
+
+  <h3>STUN 服务器清单（测试用）</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>提供商</th><th>地址</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>Google</td><td><code>stun.l.google.com:19302</code></td><td>最常用，多 IP 冗余</td></tr>
+        <tr><td>Google</td><td><code>stun1.l.google.com:19302</code> 到 <code>stun4…</code></td><td>四个节点</td></tr>
+        <tr><td>Mozilla</td><td><code>stun:stun.services.mozilla.com</code></td><td>Firefox 默认</td></tr>
+        <tr><td>Open Relay（免费 TURN）</td><td><code>stun:openrelay.metered.ca:80</code></td><td>同时提供 STUN + TURN</td></tr>
+        <tr><td>国内自建</td><td>自己部署 coturn</td><td>企业内网必须有自己的 STUN 节点，不能全靠公网</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 命令行直接照镜子（turnutils_stunclient 来自 coturn）</span>
+turnutils_stunclient stun.l.google.com 19302
+
+<span class="cm"># 或用 curl 查 HTTP 版（不是 STUN 协议，但效果等价）</span>
+curl -L ip.tool.lu</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>STUN 失败不等于 NAT 太严：</b>如果 NAT 禁止所有"非回复性"入站 UDP（Firewall 型），STUN 包会被直接丢，浏览器表现为只有 host 候选。先确认防火墙放行 UDP 到外网，再怀疑 NAT 类型。</span></div>
+</section>
+
+<section id="turn">
+  <h2>🔁 TURN：实在不行就让服务器代转</h2>
+  <p class="lead">TURN（RFC 8656）是 STUN 的"付费升级包"：当 NAT 类型是 Symmetric、两边都 Port Restricted Cone、或防火墙封了入站 UDP——STUN 给的 srflx 候选根本通不了，这时候就走 TURN：你把媒体发给 TURN 中继服务器，服务器再转交给对方。像<strong>寄快递时找不到对门地址，就交给中转站代送</strong>——肯定能到，但中转站收手续费（带宽、延迟、成本）。</p>
+
+  <h3>TURN 核心报文：Allocate、CreatePermission、ChannelBind</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>Allocate</h4>
+      <p class="small">客户端告诉 TURN "帮我开一个中继端口，用于接收来自对端的媒体"。服务器分配一个 relayed transport address（公网 IP + 端口）并回给客户端——这就是 ICE 的 relay 候选来源。</p>
+    </div>
+    <div class="card">
+      <h4>CreatePermission</h4>
+      <p class="small">客户端告诉 TURN "允许从对端 A 的公网 IP:Port 进来的包使用这个中继地址"。TURN 的安全策略：只有被 CreatePermission 显式授权的对端，才能往这个中继地址写数据。</p>
+    </div>
+    <div class="card">
+      <h4>ChannelBind</h4>
+      <p class="small">为了省带宽（STUN 包带 overhead），绑定一个 2 字节 channel number。之后客户端和 TURN 之间就可以用"4 字节 channel 头 + 载荷"的精简格式。是可选的性能优化。</p>
+    </div>
+  </div>
+
+  <h3>coturn 搭建：一台服务器搞定 STUN + TURN</h3>
+  <p>coturn（<code>turnserver</code>）是 WebRTC 工程里最常见的 STUN/TURN 服务器，单二进制同时提供两种服务。</p>
+
+  <pre class="code"><span class="cm"># 1. 安装（Ubuntu / Debian）</span>
+sudo apt install coturn
+
+<span class="cm"># 2. 最小配置 /etc/turnserver.conf</span>
+listening-port=3478               <span class="cm"># STUN + TURN 默认端口</span>
+tls-listening-port=5349           <span class="cm"># TURN over TLS（企业网常放 HTTPS 端口）</span>
+fingerprint                       <span class="cm"># STUN 报文加 Fingerprint 属性，防中间人</span>
+lt-cred-mech                      <span class="cm"># 长期凭证鉴权（推荐，比短期更稳）</span>
+realm=your.domain.com
+user=alice:password-for-alice
+user=bob:password-for-bob
+no-stdout-log                     <span class="cm"># 生产环境关掉 stdout 日志，改 syslog</span>
+
+<span class="cm"># 3. 启动</span>
+sudo systemctl enable coturn --now
+
+<span class="cm"># 4. 用 turnutils 测试（coturn 自带）</span>
+<span class="cm"># 先起一个 peer 监听（模拟对端）</span>
+turnutils_peer -v
+
+<span class="cm"># 再让 uclient 连 TURN 服务器，尝试通过中继向 peer 发数据</span>
+turnutils_uclient -v YOUR_TURN_IP -u alice -w password-for-alice -e PEER_IP</pre>
+
+  <h3>在浏览器里怎么用 TURN</h3>
+  <p>把 TURN 服务器地址（带鉴权）写进 <code>RTCPeerConnection</code> 的 iceServers 数组里。TURN 服务器也可以兼做 STUN 服务器（同一个 3478 端口）。</p>
+
+  <pre class="code"><span class="cm">// 极简 ICE 配置：STUN 一个 + TURN 一个</span>
+const pc = new RTCPeerConnection({
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'turn:your.domain.com:3478',
+      username: 'alice', credential: 'password-for-alice' }
+  ]
+});
+
+<span class="cm"># 生产环境建议用短期凭证（time-limited），防止密码外泄</span>
+<span class="cm"># coturn 的 turn-admin 或 ownTurnRest 可以在后端签发</span></pre>
+
+  <div class="callout callout-r"><span class="ic">💰</span><span><b>TURN 的成本账：</b>relay 模式下媒体流量<strong>100% 经过服务器</strong>，所以带宽费是主要瓶颈。一条 1Mbps 的 HD 视频，两端都走 relay 的话，服务器进出各算 1Mbps，即 <strong>2Mbps / 通话</strong>。2000 路同时通话就需要 4Gbps 总带宽——这是"为什么 WebRTC 只有 SFU + 少量 relay 点"的根本原因。</span></div>
+</section>
+
+<section id="ice-detail">
+  <h2>🔗 ICE 连通性检查：从候选到一条路</h2>
+  <p class="lead">WebRTC 里<strong>最难的不是"找到候选"，而是"把一堆候选配对并选一条"</strong>。ICE（RFC 8445）把这件事拆成五步法：收集候选 → 形成候选对 → 按优先级排序成 check list → 逐对做 STUN 连通性检查 → 锁定第一条双向可达的 pair。每一步都涉及 NACK、定时器、fallback 策略。</p>
+
+  <h3>Step 1：候选收集的细节</h3>
+  <p>浏览器在创建 <code>RTCPeerConnection</code> 后，会依次做这些事：</p>
+  <ol>
+    <li><b>枚举本地网卡地址</b>：包括 IPv4/IPv6、Wi‑Fi/有线/TUN 接口、VPN 接口、Docker 虚拟网卡，统统生成 host 候选。优先级由网卡顺序决定。</li>
+    <li><b>向 STUN 服务器发 Binding Request</b>（UDP 3478），收到 XOR-MAPPED-ADDRESS 后生成一个 srflx 候选。注意：如果 NAT 是 Symmetric，不同 STUN 服务器回的映射地址不同——浏览器只保留"第一次拿到的那个"，后续检测到 NAT 变化会触发 restart。</li>
+    <li><b>向 TURN 服务器发 Allocate 请求</b>（UDP 3478 / TLS 5349），拿到 relayed transport address，生成 relay 候选。<b>Relay 优先级固定最低（typePref=0）</b>，只在所有直连尝试都失败后才会被选中。</li>
+    <li><b>可选：mDNS 本地发现</b>：iOS/macOS 上浏览器会用 mDNS（.local）找到同一局域网里的候选——这在同一个家庭里两个 iOS 设备视频通话时最常见，而且完全不依赖 STUN。</li>
+  </ol>
+
+  <h3>Step 2：候选对（Candidate Pair）是怎么配对出来的</h3>
+  <p>A 端有候选 {Ah1, As1, Ar1}，B 端有候选 {Bh1, Bs1, Br1}，理论上可以两两组合成 9 对。但 ICE 会按规则过滤掉"明显没戏"的组合，再给剩下的每对算一个本地优先级。过滤规则的核心是：<b>类型相同或降级</b>（host 只能对 host，srflx 可以对 host/srflx，relay 只能对 relay），加上"IP 地址族一致或可降级"（IPv6 只能对 IPv6，IPv4 可以对 IPv4）。</p>
+
+  <h3>Step 3：check list 排序（优先级公式）</h3>
+  <p>优先级越高越优先检查。单端候选的优先级公式在现有章节已给出；<b>候选对的总体优先级</b>：</p>
+  <p class="small"><span class="math">pair priority = min(priority_local, priority_remote) × 2 + (priority_local > priority_remote ? 1 : 0)</span>。换句话说：本地优先级 × 2 减对手优先级 × 2，再加一个固定规则"谁优先级高谁当 controlling 端"。</p>
+
+  <h3>Step 4：连通性检查与 prflx 的来历</h3>
+  <p>开始逐对发 STUN Binding Request。在检查过程中，会出现一种特殊候选：<strong>prflx（peer reflexive）</strong>。它怎么来的？</p>
+  <p>举个例子：A 发了一个 STUN 检查包，源地址是 A 的 srflx 候选地址 <code>A_srflx:36000</code>。B 收到后，看到"从对方的 srflx 候选地址（不是 A 的 relay 候选）发来的包"，就把"我看到的 A 地址"记下来——这是一种"在检查过程中新发现的、从对方视角出发的反射候选"。prflx 的优先级是 110（和 srflx 一样），比 relay 高得多，一旦发现就会被插入 check list 的前面重新排序。<b>这就是为什么"两边都是 Port Restricted Cone 仍有可能打穿"：</b>双方先"敲门"各自一个包，对方 NAT 就记下了"允许来自对方 srflx 地址"的映射——这包进来了对方 NAT，就形成了双向通路。</p>
+
+  <h3>Step 5：锁定 selected pair 与 DTLS</h3>
+  <p>第一条"双向 STUN 检查都成功"的 pair 被锁定为 selected pair。浏览器会在 <code>chrome://webrtc-internals</code> 的 ICE candidate pair 列表里把它标成"the one"。选定后，DTLS 握手直接在这个五元组上进行；媒体流用同一个 socket（RTCP mux 后）。<b>此时网络路径就锁定了，不会再动态换路</b>——除非触发 ICE restart（网络接口切换、WiFi→5G、或手动调用 <code>pc.restartIce()</code>）。</p>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"ICE 连通性检查：host→srflx→relay + prflx 发现","actors":["A（controlling 端）","B（controlled 端）"],"steps":[{"from":0,"to":1,"label":"host↔host：双方同网段时直接过","detail":"1000ms 超时；双向检查成功就锁定，结束 ICE。","color":"#7c3aed"},{"from":0,"to":1,"label":"srflx↔srflx：跨 NAT 但防火墙放行 UDP","detail":"此时如果 A 的 srflx 是 203.0.113.5:36000，B 的 NAT 允许来自该地址的入站，就通了。","color":"#0891b2"},{"from":1,"to":0,"label":"B 检查时发现 prflx：从 A 的 srflx 来的包","detail":"B 记下 \"我看到 A 的地址是 203.0.113.5:36000\"，生成 prflx 候选，插入 check list 前面。","color":"#f59e0b"},{"from":0,"to":1,"label":"relay↔relay：所有直连都失败时才走","detail":"TURN 中继成本最高，只在 Symmetric NAT + 严格防火墙时才是最后唯一通路。","color":"#e11d48"}]}'></div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>ICE restart 的触发源：</b>① 浏览器检测到本机 IP 变化（WiFi 切 5G）；② WebSocket 信令重新拉起；③ 手动调用 <code>pc.restartIce()</code>。触发后候选会重新收集一遍，selected pair 可能换一条——这是 WebRTC 在移动网络下保持通话的关键机制。</span></div>
+</section>
+
+<section id="webrtc-faq">
+  <h2>🩺 WebRTC 排障实战</h2>
+  <p class="lead">排障顺序<strong>绝对不能颠倒</strong>：先确认 SDP 谈没谈成 → 再确认 ICE 有没有一条双向可达 → 最后看 DTLS 锁不锁、SRTP 搬不搬。只盯着"浏览器控制台报错"通常看不出是哪一层。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>现象</th><th>最可能的层</th><th>检查点</th><th>修复</th></tr></thead>
+      <tbody>
+        <tr><td>连接建立但只有一方有画面 / 声音</td><td>SDP（编码不匹配）</td><td><code>m=video</code> 行里有没有共同的 <code>pt</code>；<code>a=rtpmap</code> 是否双方都有 H.264 / VP8 / VP9</td><td>强制要求双方都支持的编码（<code>codec negotiation</code> 里过滤），或升级浏览器</td></tr>
+        <tr><td>连接一直停在 ICE gathering state = gathering / checking</td><td>ICE（NAT / 防火墙）</td><td><code>chrome://webrtc-internals</code> 的 ICE candidate pair 列表——有没有成功的 STUN 检查？有没有 relay 候选？</td><td>双方都在 Symmetric NAT → 必须有 TURN relay；<code>turnutils_nat</code> 先测自己 NAT 类型</td></tr>
+        <tr><td>selected pair 是 relay 不是 srflx</td><td>ICE（直连失败）</td><td>看 NAT 类型表：双方都是 Port Restricted / Symmetric → srflx 通不了；双方都是 Full/Restricted → srflx 应该能通</td><td>部署 coturn 做 relay 兜底；STUN 服务器选 Google 或自建，不要用被运营商限速的节点</td></tr>
+        <tr><td>DTLS 握手一直卡在 ClientHello / ServerHello</td><td>DTLS（证书或 UDP 丢包）</td><td><code>chrome://webrtc-internals</code> 的 transport 里有无 <code>fingerprint mismatch</code>；自签证书两端 <code>a=fingerprint</code> 的哈希是否一致</td><td>重新生成证书；信令通道要 HTTPS（否则 SDP 会被中间人改掉指纹）</td></tr>
+        <tr><td>Media 状态是 connected 但没有任何媒体</td><td>SRTP / RTP</td><td><code>chrome://webrtc-internals</code> 的 inbound-rtp/outbound-rtp 统计——packetsReceived 是否大于 0</td><td>防火墙/中间盒丢弃 SRTP（UDP 动态端口范围被禁），改走 TURN over TLS 5349</td></tr>
+        <tr><td>音视频卡顿 / 花屏 / 丢包多</td><td>RTP 丢包 + NACK</td><td><code>chrome://webrtc-internals</code> 的 transport-inbound-rtp：packetsLost、nackCount、pliCount</td><td>PLI 频繁 → 丢 P/I 帧，加大关键帧间隔（-g 60）或提高码率；TWCC / REMB 是否到达发送端</td></tr>
+        <tr><td>5G / WiFi 切换后通话断了</td><td>ICE（IP 变了，但没 trigger restart）</td><td>调用 <code>pc.restartIce()</code> 或重走信令流程，触发候选重新收集</td><td>监听 <code>iceconnectionstatechange</code>，一旦 disconnected → 立即 restart</td></tr>
+        <tr><td>Chrome 里正常，Safari 里连不上</td><td>SDP（BUNDLE / rtcp-mux 不兼容）</td><td>Safari 某些版本不支持 <code>a=group:BUNDLE</code> 的某些子集，或强制 DTLS 证书必须是 CA 签发</td><td>生成 CA 证书（Let's Encrypt 免费），去掉不必要的 BUNDLE 分组</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>chrome://webrtc-internals 里三个关键位置</h3>
+  <div class="grid-3">
+    <div class="card">
+      <h4>SDP</h4>
+      <p class="small">第一屏就能看到 Offer/Answer 的完整 SDP。先搜 <code>m=video</code> 和 <code>a=rtpmap</code>，确认两端有共同编码（比如 H.264 payload type 96）。</p>
+    </div>
+    <div class="card">
+      <h4>ICE candidate pair</h4>
+      <p class="small">按优先级排序的候选对，每对有 STUN 检查结果（succeeded / failed / in-progress）。找到 "the one" 那个状态，就是 selected pair。如果全是 failed → NAT 问题。</p>
+    </div>
+    <div class="card">
+      <h4>Transport / inbound-rtp</h4>
+      <p class="small">媒体是否真的到了：packetsReceived、bytesReceived、packetsLost、nackCount 是核心指标。received=0 → RTP 被中间盒丢了；lost 高 → 网络抖动或码率超了。</p>
+    </div>
+  </div>
+
+  <pre class="code"><span class="cm"># coturn 带的 NAT 类型测试（在 TURN 服务器或本机跑）</span>
+turnutils_nat
+<span class="cm"># 输出类似 "NAT type: port-restricted"</span>
+
+<span class="cm"># 用 Wireshark 抓 WebRTC 的 STUN / DTLS 包</span>
+<span class="cm"># 先在浏览器设 SSLKEYLOGFILE</span>
+$env:SSLKEYLOGFILE="$HOME\keylog.log"
+<span class="cm"># Wireshark 协议→TLS→Master-Secret log filename 指向这个文件</span></pre>
 </section>
 
 </main>

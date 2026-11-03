@@ -60,13 +60,23 @@
     <a href="#transform">变换：把画面拆成频率</a>
     <a href="#quant">量化：唯一不可逆的一步</a>
     <a href="#entropy">熵编码：CAVLC 与 CABAC</a>
+    <a href="#nal">H.264 NAL 与码流装箱</a>
     <a href="#gop">I/P/B 帧与 GOP</a>
+    <a href="#timing">DTS / PTS 与 B 帧重排</a>
     <a href="#profile">profile 与 level</a>
+    <a href="#levels">profile / level 对照表</a>
     <a href="#rate">码控：CBR / VBR / CRF</a>
+    <a href="#rc">码控实战：五种旋钮</a>
     <a href="#chroma">色度采样 4:2:0</a>
     <a href="#compare">H.264 / HEVC / VP9 / AV1</a>
+    <a href="#hevc">HEVC 深挖：CTU 与 35 模式</a>
+    <a href="#av1">AV1 与 VVC</a>
     <a href="#audio">AAC / Opus / MP3 / FLAC</a>
+    <a href="#audio2">音频进阶：AAC 档位与 Opus</a>
     <a href="#quality">质量指标与验证</a>
+    <a href="#metric">画质评价与 RD 曲线</a>
+    <a href="#toolbox">编码工具箱</a>
+    <a href="#theory">理论一角：DCT 与 zigzag</a>
     <a href="#glossary">术语表</a>
   </nav>
 </aside>
@@ -322,6 +332,84 @@ Y = H · X · Hᵀ      （X 为 4×4 残差块）
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>熵编码不能救回量化丢掉的信息。</b>它只是把“已经决定要传的符号”写得更省。QP 从 26 调到 40，熵编码再强也补不回细节；反过来，QP 很低但熵编码差，文件会不必要地大。</span></div>
 </section>
 
+<section id="nal">
+  <h2>📦 H.264 NAL：码流的最小包裹</h2>
+  <p class="lead">NAL 像快递面单：每个包裹外面贴一字节标签，写明“这是什么件、能不能丢、丢了后面的件会不会坏”。解码器先读标签，再决定把包交给参数集解析器、slice 解码器，还是当作填充物直接扔掉。</p>
+  <p><b>NAL</b>（Network Abstraction Layer，网络抽象层）把编码数据切成独立的 <strong>NAL 单元</strong>。每个单元都以 1 字节 NAL header 开头；在 Annex B 里它前面还有起始码，在 MP4 里则改成长度前缀。理解这一个字节，等于拿到了读码流的钥匙。</p>
+
+  <div class="bits">NAL header · 1 byte · bit 7 → bit 0</div>
+  <div class="bitfield">
+    <div class="bf" style="flex:1"><b>forbidden_zero_bit</b><i>1 bit · 必须 0</i></div>
+    <div class="bf" style="flex:2"><b>nal_ref_idc</b><i>2 bit · 0–3</i></div>
+    <div class="bf" style="flex:5"><b>nal_unit_type</b><i>5 bit · 0–31</i></div>
+  </div>
+  <p class="small">以 <code>0x67</code>（SPS）为例：<code>0 11 00111</code> → forbidden=0、nal_ref_idc=3、type=7；以 <code>0x65</code>（IDR）为例：<code>0 11 00101</code> → type=5。看到 <code>67 / 68 / 65</code> 连续出现，基本就是“SPS、PPS、IDR”三件套。</p>
+  <p><b>nal_ref_idc 不是“优先级”，而是“能不能丢”</b>：0 表示这个包不参与后续参考（B slice、SEI、AUD、filler 常见 0）；非 0 表示后面帧可能要用它，丢了会连带坏一片。SPS/PPS 与 IDR 的该字段必须非 0，x264 习惯写 3。</p>
+
+  <h3>nal_unit_type 全集（0–31）</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>值</th><th>类型</th><th>作用</th><th>实战要点</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td>Unspecified</td><td>未定义</td><td>保留位，不要依赖</td></tr>
+        <tr><td class="num">1</td><td>Non-IDR slice <span class="tag tag-p">重点</span></td><td>普通 P / B / I 图像片（不是 IDR）</td><td>不能当作安全 seek 点；open GOP 里可能是 leading picture，仍依赖前面的参考帧</td></tr>
+        <tr><td class="num">2</td><td>Slice data partition A</td><td>数据分区 A：slice 头与主要宏块数据</td><td>数据分区在消费级编码器里很少用，容错时才出现</td></tr>
+        <tr><td class="num">3</td><td>Slice data partition B</td><td>数据分区 B：次要残差</td><td>必须与 A 一起解码</td></tr>
+        <tr><td class="num">4</td><td>Slice data partition C</td><td>数据分区 C：剩余残差</td><td>必须与 A 一起解码</td></tr>
+        <tr><td class="num">5</td><td>IDR slice <span class="tag tag-p">重点</span></td><td>IDR 图像片</td><td>清空 DPB 与帧号，是安全的随机访问起点；比普通 I 帧更“贵”</td></tr>
+        <tr><td class="num">6</td><td>SEI <span class="tag tag-p">重点</span></td><td>补充增强信息：HDR 元数据、恢复点、用户数据、码流统计</td><td>不影响像素重建，但播放器/转码器会读；丢失通常不致命</td></tr>
+        <tr><td class="num">7</td><td>SPS <span class="tag tag-p">重点</span></td><td>序列参数集：分辨率、profile/level、帧号位宽、VUI 色彩与时序</td><td>同一个序列只需一份；丢了整条流无法解析</td></tr>
+        <tr><td class="num">8</td><td>PPS <span class="tag tag-p">重点</span></td><td>图像参数集：熵编码模式、初始 QP、参考帧数、slice group</td><td>可以每个 slice 换；与 SPS 搭配组成解码上下文</td></tr>
+        <tr><td class="num">9</td><td>AUD</td><td>访问单元分隔符</td><td>标记一帧的开始；TS 封装与广播里常见，消费级 MP4 常省略</td></tr>
+        <tr><td class="num">10</td><td>End of sequence</td><td>序列结束</td><td>通知解码器刷新状态</td></tr>
+        <tr><td class="num">11</td><td>End of stream</td><td>码流结束</td><td>文件/直播结束时出现</td></tr>
+        <tr><td class="num">12</td><td>Filler data</td><td>填充数据</td><td>CBR 输出用它凑满码率，内容通常是 0xFF，解码器丢弃</td></tr>
+        <tr><td class="num">13</td><td>SPS extension</td><td>SPS 扩展</td><td>SVC / MVC 等扩展里的附加参数</td></tr>
+        <tr><td class="num">14</td><td>Prefix NAL unit</td><td>SVC 前缀 NAL</td><td>给下一个 NAL 附加可分级信息</td></tr>
+        <tr><td class="num">15</td><td>Subset SPS</td><td>SVC / MVC 子集 SPS</td><td>可分级编码专用</td></tr>
+        <tr><td class="num">16</td><td>DPS</td><td>深度参数集（3D 扩展）</td><td>普通 2D 码流不会出现</td></tr>
+        <tr><td class="num">17–18</td><td>Reserved</td><td>保留</td><td>不要当作已知类型解析</td></tr>
+        <tr><td class="num">19</td><td>Auxiliary slice</td><td>辅助图像片（如 alpha 平面）</td><td>主画面之外的辅助数据</td></tr>
+        <tr><td class="num">20</td><td>Slice extension</td><td>SVC / MVC 扩展片</td><td>可分级/多视图编码专用</td></tr>
+        <tr><td class="num">21</td><td>Depth view slice</td><td>深度视图扩展片</td><td>3D 视频专用</td></tr>
+        <tr><td class="num">22–23</td><td>Reserved</td><td>保留</td><td>规范预留</td></tr>
+        <tr><td class="num">24–31</td><td>Unspecified</td><td>未定义</td><td>应用私有或未来扩展；解码器遇到未知类型只能跳过</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Annex B 与 AVCC：同一条 NAL，两种装箱法</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>Annex B：起始码分隔</h4>
+      <p class="small">每个 NAL 前面加 <code>00 00 01</code>（3 字节）或 <code>00 00 00 01</code>（4 字节）。TS、MPEG-2 PS、裸 <code>.h264</code>/<code>.264</code> 用它；参数集通常随流内联，解码器边读边建表。</p>
+      <p class="small"><b>代价：</b>负载里若出现 <code>00 00 00</code> / <code>00 00 01</code> 这种组合，会被误认成起始码，所以编码器插入<strong>防竞争字节</strong> <code>03</code>；解码器再删掉。原始 RBSP 里的 <code>00 00 01</code> 到码流里会变成 <code>00 00 03 01</code>。</p>
+    </div>
+    <div class="card">
+      <h4>AVCC：长度前缀</h4>
+      <p class="small">MP4 的 <code>avcC</code> 与 FLV 的 AVCDecoderConfigurationRecord 用“长度 + NAL”排列。长度通常是 4 字节（<code>lengthSizeMinusOne = 3</code>），SPS/PPS 集中放在 extradata 里，不占每个样本。</p>
+      <p class="small"><b>好处：</b>按样本取 NAL 容易，适合随机访问与编辑；代价是参数集与样本分离，封装器必须把 extradata 写对，否则播放器拿到一条“没有 SPS”的流。</p>
+    </div>
+  </div>
+
+  <pre class="code"><span class="cm"># MP4（AVCC）→ 裸流（Annex B）：只换装箱方式，不重编码</span>
+ffmpeg -i in.mp4 -c:v copy -bsf:v h264_mp4toannexb -f h264 out.h264
+
+<span class="cm"># 转 TS：过滤器会把 SPS/PPS 插到 IDR 前，满足广播/监控设备的要求</span>
+ffmpeg -i in.mp4 -c:v copy -bsf:v h264_mp4toannexb -f mpegts out.ts
+
+<span class="cm"># 反向（裸流 → MP4）：muxer 自动生成 avcC，不需要手写 bsf</span>
+ffmpeg -i out.h264 -c:v copy out.mp4</pre>
+
+  <p class="small"><b>一句话区分：</b>文件打开是一堆 <code>00 00 00 01</code>，那是 Annex B；打开是一串“长度 + NAL”，且 SPS/PPS 只在 <code>avcC</code> 里出现一次，那是 AVCC。两者可以无损互转，画质不会变化。</p>
+
+  <h3>拆一个真 SPS：1280×720 Baseline@L3.1</h3>
+  <p>这段 9 字节的 SPS 由 1280×720、Baseline、Level 3.1 的参数生成。它不包含 VUI（没有色彩与帧率描述），所以非常短；真实流里常见几十字节，因为还要写 HRD、色彩原色、时序等信息。</p>
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"SPS：1280×720 Baseline@L3.1（Annex B，9 字节）","bytes":"67 42 00 1F F4 02 80 2D C8","fields":[{"name":"NAL header","start":0,"end":0,"bits":"8 bit","note":"0x67 = 0110 0111：forbidden_zero_bit=0，nal_ref_idc=3，nal_unit_type=7，即 SPS。"},{"name":"profile_idc","start":1,"end":1,"bits":"8 bit","note":"0x42 = 66，Baseline profile。常见值：Main=77（0x4D），High=100（0x64）。"},{"name":"constraint_set_flags","start":2,"end":2,"bits":"8 bit","note":"0x00，未置位任何约束标志。若置位 constraint_set3，可表示 Constrained Baseline。"},{"name":"level_idc","start":3,"end":3,"bits":"8 bit","note":"0x1F = 31，即 Level 3.1。1280×720 正好是 3600 个宏块，30 fps 正好 108000 宏块每秒，贴着 Level 3.1 的上限。"},{"name":"seq_parameter_set_id 等","start":4,"end":4,"bits":"8 bit","note":"0xF4 = 1111 0100：seq_parameter_set_id=0、log2_max_frame_num_minus4=0、pic_order_cnt_type=0、log2_max_pic_order_cnt_lsb_minus4=0、max_num_ref_frames=1、gaps_in_frame_num_value_allowed_flag=0。"},{"name":"宽高（位打包）","start":5,"end":6,"bits":"16 bit · ue(v)","note":"pic_width_in_mbs_minus1=79，即 (79+1)×16=1280；pic_height_in_map_units_minus1=44 的高位也从这里开始。ue(v) 是变长码，不按字节对齐。"},{"name":"高度剩余位","start":7,"end":7,"bits":"8 bit","note":"0x2D 补齐 pic_height 的剩余比特：45×16=720。"},{"name":"帧结构与 VUI 标志","start":8,"end":8,"bits":"8 bit","note":"0xC8 = 1100 1000：frame_mbs_only_flag=1、direct_8x8_inference_flag=1、frame_cropping_flag=0、vui_parameters_present_flag=0，最后是 rbsp_stop_bit=1 与填充。"}],"hint":"这是一条 1280×720、Baseline、Level 3.1 的 SPS。真实码流里还会出现 00 00 03 的防竞争字节；这里没有插入。"}'></div>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么参数集要单独成包：</b>一帧的分辨率、量化、熵编码开关会在整段视频里反复使用。把 SPS/PPS 抽出来重复广播，比在每个 slice 里重复写几十字节便宜得多；代价是它们一旦丢失，后面的 slice 全成“无头数据”。</span></div>
+</section>
+
 <section id="gop">
   <h2>🔑 I/P/B 帧与 GOP：钥匙帧与补丁帧</h2>
   <p class="lead">GOP 像一串“钥匙 + 补丁”：I 帧是钥匙，能独立开门；P 帧是“在上一把钥匙基础上打补丁”；B 帧是“同时参考前后两把钥匙的补丁”。想跳到某一帧，必须先找到它之前最近的钥匙，再把中间的补丁全部贴上——这就是为什么长 GOP 的随机访问代价高。</p>
@@ -351,6 +439,135 @@ ffmpeg -i in.mp4 -c:v libx264 -tune zerolatency -g 50 -bf 0 out.mp4</pre>
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>B 帧的延迟账：</b>连续 3 个 B 帧时，解码器要等后续参考帧到达才能输出，显示延迟约 <code>(bframes + 1)</code> 帧；25 fps 下约 160 ms。视频会议、云游戏通常把 B 帧设为 0，就是为了这 100 多毫秒。</span></div>
 </section>
 
+<section id="timing">
+  <h2>⏱️ DTS / PTS：B 帧为什么让时间戳分家</h2>
+  <p class="lead">PTS 像电影票上的“第几分钟上映”，DTS 像演员“几点到片场”。B 帧要同时参考前后两帧，所以它前面的 P 帧必须先到片场解码；结果就是<strong>送进解码器的顺序</strong>和<strong>屏幕上出现的顺序</strong>不是同一个顺序。</p>
+  <p><b>PTS</b>（Presentation Time Stamp）决定什么时候显示；<b>DTS</b>（Decoding Time Stamp）决定什么时候送去解码。没有 B 帧时两者通常相同；有 B 帧时，解码器必须先拿到“未来”的参考帧，于是 P 帧的 DTS 提前，B 帧的 DTS 往后排。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 320" style="width:100%;height:auto" role="img" aria-label="B 帧的显示顺序、解码顺序与 DTS/PTS">
+      <text x="20" y="26" font-size="11" font-weight="700" fill="#475569">显示顺序（按 PTS 输出）</text>
+
+      <rect x="60" y="44" width="74" height="42" rx="5" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="97" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">I0</text>
+      <text x="97" y="77" text-anchor="middle" font-size="8.5" fill="#7c3aed">PTS 0</text>
+
+      <rect x="156" y="44" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="193" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B1</text>
+      <text x="193" y="77" text-anchor="middle" font-size="8.5" fill="#10b981">PTS 1</text>
+
+      <rect x="252" y="44" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="289" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B2</text>
+      <text x="289" y="77" text-anchor="middle" font-size="8.5" fill="#10b981">PTS 2</text>
+
+      <rect x="348" y="44" width="74" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="385" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#155e75">P3</text>
+      <text x="385" y="77" text-anchor="middle" font-size="8.5" fill="#0891b2">PTS 3</text>
+
+      <rect x="444" y="44" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="481" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B4</text>
+      <text x="481" y="77" text-anchor="middle" font-size="8.5" fill="#10b981">PTS 4</text>
+
+      <rect x="540" y="44" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="577" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B5</text>
+      <text x="577" y="77" text-anchor="middle" font-size="8.5" fill="#10b981">PTS 5</text>
+
+      <rect x="636" y="44" width="74" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="673" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#155e75">P6</text>
+      <text x="673" y="77" text-anchor="middle" font-size="8.5" fill="#0891b2">PTS 6</text>
+
+      <text x="20" y="204" font-size="11" font-weight="700" fill="#475569">解码顺序（按 DTS 送入解码器）</text>
+
+      <rect x="60" y="214" width="74" height="42" rx="5" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="97" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">I0</text>
+      <text x="97" y="247" text-anchor="middle" font-size="8.5" fill="#7c3aed">DTS 0</text>
+
+      <rect x="156" y="214" width="74" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="193" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#155e75">P3</text>
+      <text x="193" y="247" text-anchor="middle" font-size="8.5" fill="#0891b2">DTS 1</text>
+
+      <rect x="252" y="214" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="289" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B1</text>
+      <text x="289" y="247" text-anchor="middle" font-size="8.5" fill="#10b981">DTS 2</text>
+
+      <rect x="348" y="214" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="385" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B2</text>
+      <text x="385" y="247" text-anchor="middle" font-size="8.5" fill="#10b981">DTS 3</text>
+
+      <rect x="444" y="214" width="74" height="42" rx="5" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="481" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#155e75">P6</text>
+      <text x="481" y="247" text-anchor="middle" font-size="8.5" fill="#0891b2">DTS 4</text>
+
+      <rect x="540" y="214" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="577" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B4</text>
+      <text x="577" y="247" text-anchor="middle" font-size="8.5" fill="#10b981">DTS 5</text>
+
+      <rect x="636" y="214" width="74" height="42" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="673" y="232" text-anchor="middle" font-size="11" font-weight="700" fill="#047857">B5</text>
+      <text x="673" y="247" text-anchor="middle" font-size="8.5" fill="#10b981">DTS 6</text>
+
+      <line x1="97" y1="214" x2="97" y2="86" stroke="#7c3aed" stroke-width="1.6" opacity=".55"/>
+      <line x1="193" y1="214" x2="385" y2="86" stroke="#0891b2" stroke-width="1.6" opacity=".55"/>
+      <line x1="289" y1="214" x2="193" y2="86" stroke="#10b981" stroke-width="1.6" opacity=".55"/>
+      <line x1="385" y1="214" x2="289" y2="86" stroke="#10b981" stroke-width="1.6" opacity=".55"/>
+      <line x1="481" y1="214" x2="673" y2="86" stroke="#0891b2" stroke-width="1.6" opacity=".55"/>
+      <line x1="577" y1="214" x2="481" y2="86" stroke="#10b981" stroke-width="1.6" opacity=".55"/>
+      <line x1="673" y1="214" x2="577" y2="86" stroke="#10b981" stroke-width="1.6" opacity=".55"/>
+
+      <text x="20" y="286" font-size="9.5" fill="#475569">① 解码顺序是 I0 → P3 → B1 → B2 → P6 → B4 → B5：P 帧必须抢在依赖它的 B 帧之前解码。</text>
+      <text x="20" y="302" font-size="9.5" fill="#475569">② 屏幕顺序仍是 I0 → B1 → B2 → P3：交叉的连线就是解码器重排缓冲在等的帧。</text>
+    </svg>
+    <figcaption>同一个 GOP 的两条时间线：上排按 PTS 显示，下排按 DTS 解码。I0、P3 是锚点，B1/B2 夹在中间。</figcaption>
+  </div>
+
+  <h3>PTS 与 DTS 的差，不一定为正</h3>
+  <p>容器里通常还会记一个 <b>composition offset</b>（CTS，合成偏移），满足 <code>PTS = DTS + CTS</code>。对 B 帧来说，这个偏移可能是负的：它解码得晚，却要显示得早。MP4 常用 <code>elst</code>（edit list）把整条时间轴平移，避免出现负时间戳；播放器则只按 DTS 排队解码、按 PTS 排序显示。</p>
+  <p>没有 B 帧时，DTS 与 PTS 可以完全相同；一旦开了 <code>-bf 3</code>，编码器就需要一个重排缓冲（reorder buffer），直播端的延迟随之增加。这就是“画质换延迟”的第二笔账（第一笔是 lookahead）。</p>
+
+  <pre class="code"><span class="cm"># 看帧类型与 PTS / DTS：DTS 单调递增，PTS 在 B 帧处会“回退”</span>
+ffprobe -v error -select_streams v:0 -show_frames \
+  -show_entries frame=pict_type,pts,dts,pts_time,dts_time,key_frame -of csv in.mp4 | head -12
+
+<span class="cm"># 固定 2 秒 GOP、3 个连续 B 帧、closed GOP</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset medium \
+  -bf 3 -g 50 -keyint_min 50 -sc_threshold 0 -flags +cgop out.mp4
+
+<span class="cm"># 低延迟直播：不要 B 帧，也不做前瞻</span>
+ffmpeg -i in.mp4 -c:v libx264 -tune zerolatency -bf 0 -g 50 out.mp4</pre>
+
+  <p>把下面的帧条点一点，可以直观看到“解码顺序”和“显示顺序”的差别。短 GOP 与 2 个 B 帧的组合，正好适合观察重排：</p>
+  <div data-lazy-viz data-viz="gop" data-opts='{"gop":10,"bframes":2,"fps":25,"frames":20}'></div>
+
+  <h3>IDR 与普通 I 帧：都叫“关键帧”，权限不同</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>普通 I 帧（nal_unit_type = 1）</h4>
+      <p class="small">所有宏块都用帧内预测，不参考别的帧，但它<strong>不清空 DPB</strong>，也不重置 POC 与 frame_num。在 open GOP 里，它后面的 B 帧（leading pictures）仍可能参考前一个 GOP 的帧；从这一帧开始解码，未必能得到正确画面。</p>
+    </div>
+    <div class="card">
+      <h4>IDR 帧（nal_unit_type = 5）</h4>
+      <p class="small">IDR 把参考帧列表清空、重置 POC 与 frame_num，后续帧只能参考 IDR 之后的数据。它是<strong>绝对安全</strong>的随机访问点，也是直播丢包后请求“关键帧”时真正想要的东西。代价是它通常比普通 I 帧更大。</p>
+    </div>
+  </div>
+  <p class="small">open GOP 的流里，编码器还可能写入 <b>recovery point SEI</b>，告诉解码器“从这里开始可以恢复，但前面几帧可能不显示”。如果业务要求“任意拖动都能出画”，用 <code>-flags +cgop</code> 或 <code>-x264-params open-gop=0</code> 把 GOP 关成 closed，比事后猜 SEI 可靠。</p>
+
+  <h3>GOP 长度：延迟、画质、容错的三方交易</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>GOP 长度</th><th>25 fps 帧数</th><th>同画质码率</th><th>随机访问</th><th>丢包恢复</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>1 秒</td><td class="num">25</td><td>最高，约 +10–20%</td><td>最快，最多解 1 秒</td><td>1 秒内恢复</td><td>低延迟直播、云游戏、视频会议</td></tr>
+        <tr><td>2 秒</td><td class="num">50</td><td>基准</td><td>拖动需解 0–2 秒</td><td>2 秒内恢复</td><td>通用直播、监控主码流</td></tr>
+        <tr><td>5 秒</td><td class="num">125</td><td>约省 5–8%</td><td>最多解 5 秒</td><td>最坏黑 5 秒</td><td>点播、长视频</td></tr>
+        <tr><td>10 秒</td><td class="num">250</td><td>约省 8–15%</td><td>拖动明显变慢</td><td>丢一个 I 帧坏 10 秒</td><td>归档、离线转码</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">表里的码率收益是经验区间，不是保证值：内容越静止，I 帧占比越小，GOP 的影响越弱；运动越剧烈，长 GOP 的收益越明显，但一次花屏也传播得更久。工程上先定“可接受的首帧时间/恢复时间”，再反推 GOP，而不是先设 <code>-g 250</code>。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“关键帧”不等于“IDR”：</b>ffprobe 的 <code>key_frame=1</code> 只表示这一帧可以独立解码，不保证它清空 DPB。做精确 seek 或按关键帧切片时，要同时看 <code>pict_type=I</code> 与 NAL 类型是否为 5，或者直接让编码器全部输出 IDR（<code>-g 50 -keyint_min 50 -sc_threshold 0</code>）。</span></div>
+</section>
+
 <section id="profile">
   <h2>🎓 profile 与 level：工具箱与限高杆</h2>
   <p><strong>profile</strong> 决定“允许用哪些工具”，像驾照的准驾车型；<strong>level</strong> 决定“最大能开多快”，给出分辨率、帧率、码率的上限。两者组合写成 <code>High@L4.1</code>：工具集是 High，上限是 Level 4.1。解码器只要看到这个标签，就能判断自己能不能接。</p>
@@ -374,6 +591,95 @@ ffmpeg -i in.mp4 -c:v libx264 -tune zerolatency -g 50 -bf 0 out.mp4</pre>
   <div data-lazy-viz data-viz="hex" data-opts='{"title":"H.264 Annex B：SPS / PPS / IDR 起始码（截取示例）","bytes":"00 00 00 01 67 64 00 1F 00 00 00 01 68 00 00 00 01 65 88 84","fields":[{"name":"start_code","start":0,"end":3,"bits":"32 bit","note":"Annex B 的 4 字节起始码 0x00000001。广播/TS 里也常见 3 字节 0x000001。"},{"name":"NAL header (SPS)","start":4,"end":4,"bits":"8 bit","note":"0x67 = 0110 0111：forbidden_zero_bit=0，nal_ref_idc=3，nal_unit_type=7（SPS）。"},{"name":"profile_idc","start":5,"end":5,"bits":"8 bit","note":"0x64 = 100，即 High profile。Baseline 是 66，Main 是 77。"},{"name":"constraint_set_flags","start":6,"end":6,"bits":"8 bit","note":"0x00：未置位任何约束标志，表示不限制为 Baseline/Main 的子集。"},{"name":"level_idc","start":7,"end":7,"bits":"8 bit","note":"0x1F = 31，即 Level 3.1。常见 4.0 是 40，4.1 是 41。本示例只截取到 level_idc；真实 SPS 后面还有 seq_parameter_set_id、chroma_format_idc 等字段。"},{"name":"start_code + PPS","start":8,"end":12,"bits":"32 + 8 bit","note":"新起始码后 0x68 = type 8（PPS），携带量化与熵编码选择等参数。"},{"name":"start_code + IDR","start":13,"end":17,"bits":"32 + 8 bit","note":"0x65 = type 5（IDR slice）。IDR 会清空参考帧列表，是 seek 的安全起点。"},{"name":"slice payload","start":18,"end":19,"bits":"示例","note":"后续是 RBSP 与实际的宏块数据，长度随画面变化。"}],"hint":"用 ffprobe -show_streams 可直接看到 profile=High、level=31，不必手工拆 SPS。"}'></div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>profile/level 写错会直接导致“能解但不给解”：</b>例如把 10-bit HDR 标成 High（8 bit），或把 4K60 标成 Level 4.1。转码时显式指定 <code>-profile:v high -level 4.1</code>，比让编码器自动猜更稳。</span></div>
+</section>
+
+<section id="levels">
+  <h2>🎚️ profile / level 细则：工具箱与限高杆</h2>
+  <p class="lead">profile 是“准驾车型”：决定你能开大巴还是只能开小车；level 是“限高杆 + 载重上限”：决定这辆车最多能跑多快、装多少。两者都写在 SPS 里，解码器先看标签，再看自己有没有对应的工具和算力。</p>
+  <p>下面这张表把 H.264 的 profile 拆成四个最常被问的能力：能不能用 B 帧、能不能用 CABAC、能不能用 8×8 变换、支持什么位深与色度。注意“支持”不等于“默认开启”，具体还得看编码器参数与内容。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>profile</th><th>profile_idc</th><th>B 帧</th><th>CABAC</th><th>8×8 变换</th><th>位深 / 色度</th><th>常见场景</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline</td><td class="num">66</td><td>✗</td><td>✗</td><td>✗</td><td>8 bit 4:2:0</td><td>老设备、视频会议、低功耗终端</td></tr>
+        <tr><td>Main</td><td class="num">77</td><td>✓</td><td>✓</td><td>✗</td><td>8 bit 4:2:0</td><td>早期广播、机顶盒、部分安防设备</td></tr>
+        <tr><td>Extended</td><td class="num">88</td><td>✓</td><td>✗</td><td>✗</td><td>8 bit 4:2:0</td><td>SP/SI 切换、FMO 容错；实际产品很少用</td></tr>
+        <tr><td>High</td><td class="num">100</td><td>✓</td><td>✓</td><td>✓</td><td>8 bit 4:2:0</td><td>当今最通用的点播/直播</td></tr>
+        <tr><td>High 10</td><td class="num">110</td><td>✓</td><td>✓</td><td>✓</td><td>最高 10 bit 4:2:0</td><td>HDR、10 bit 中间片（H.264 生态里较少）</td></tr>
+        <tr><td>High 4:2:2</td><td class="num">122</td><td>✓</td><td>✓</td><td>✓</td><td>最高 10 bit 4:2:2</td><td>专业采集、演播室</td></tr>
+        <tr><td>High 4:4:4 Predictive</td><td class="num">244</td><td>✓</td><td>✓</td><td>✓</td><td>最高 14 bit 4:4:4</td><td>无损/接近无损母版、绿幕素材</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small"><b>High 10 / High 422 的区别只在“位深与色度”</b>，工具集与 High 相同；高 bit depth 是为了减少暗场 banding 与保留 HDR 的亮度范围，不是为了“更清晰”。另外，8×8 变换在 High 里是“允许使用”，编码器会根据 RDO 决定要不要开。</p>
+
+  <h3>Level：分辨率、帧率、码率、DPB 四条上限</h3>
+  <p>H.264 的 level 用四个硬指标约束解码器：<b>MaxFS</b>（单帧最大宏块数）、<b>MaxMBPS</b>（每秒最大宏块数）、<b>MaxDPB</b>（参考帧缓冲最大宏块数）、<b>MaxBR</b>（CPB 最大码率）。它们不是“推荐值”，而是解码器可以拒绝服务的上限。</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>Level</th><th>MaxFS（宏块）</th><th>MaxMBPS（宏块/秒）</th><th>MaxDPB（宏块）</th><th>MaxBR（High, kbit/s）</th><th>典型分辨率 @ 帧率</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="num">99</td><td class="num">1,485</td><td class="num">396</td><td class="num">80</td><td>176×144 @ 15</td></tr>
+        <tr><td>1b</td><td class="num">99</td><td class="num">1,485</td><td class="num">396</td><td class="num">160</td><td>176×144 @ 15（低码率）</td></tr>
+        <tr><td>1.1</td><td class="num">396</td><td class="num">3,000</td><td class="num">900</td><td class="num">240</td><td>176×144 @ 30</td></tr>
+        <tr><td>1.2</td><td class="num">396</td><td class="num">6,000</td><td class="num">2,376</td><td class="num">480</td><td>352×288 @ 15</td></tr>
+        <tr><td>1.3</td><td class="num">396</td><td class="num">11,880</td><td class="num">2,376</td><td class="num">960</td><td>352×288 @ 30</td></tr>
+        <tr><td>2</td><td class="num">396</td><td class="num">11,880</td><td class="num">2,376</td><td class="num">2,500</td><td>352×288 @ 30</td></tr>
+        <tr><td>2.1</td><td class="num">792</td><td class="num">19,800</td><td class="num">4,752</td><td class="num">5,000</td><td>480×576 @ 25（近似）</td></tr>
+        <tr><td>2.2</td><td class="num">1,620</td><td class="num">40,500</td><td class="num">8,100</td><td class="num">5,000</td><td>720×576 @ 25</td></tr>
+        <tr><td>3</td><td class="num">1,620</td><td class="num">40,500</td><td class="num">8,100</td><td class="num">12,500</td><td>720×576 @ 25</td></tr>
+        <tr><td>3.1</td><td class="num">3,600</td><td class="num">108,000</td><td class="num">18,000</td><td class="num">17,500</td><td>1280×720 @ 30（刚好封顶）</td></tr>
+        <tr><td>3.2</td><td class="num">5,120</td><td class="num">216,000</td><td class="num">20,480</td><td class="num">25,000</td><td>1280×720 @ 60</td></tr>
+        <tr><td>4</td><td class="num">8,192</td><td class="num">245,760</td><td class="num">32,768</td><td class="num">25,000</td><td>1920×1080 @ 30</td></tr>
+        <tr><td>4.1</td><td class="num">8,192</td><td class="num">245,760</td><td class="num">32,768</td><td class="num">62,500</td><td>1920×1080 @ 30（主流点播）</td></tr>
+        <tr><td>4.2</td><td class="num">8,704</td><td class="num">522,240</td><td class="num">34,816</td><td class="num">62,500</td><td>1920×1080 @ 60</td></tr>
+        <tr><td>5</td><td class="num">22,080</td><td class="num">589,824</td><td class="num">110,400</td><td class="num">168,750</td><td>2560×1440 @ 30</td></tr>
+        <tr><td>5.1</td><td class="num">36,864</td><td class="num">983,040</td><td class="num">184,320</td><td class="num">300,000</td><td>3840×2160 @ 30</td></tr>
+        <tr><td>5.2</td><td class="num">36,864</td><td class="num">2,073,600</td><td class="num">184,320</td><td class="num">300,000</td><td>3840×2160 @ 60</td></tr>
+        <tr><td>6</td><td class="num">139,264</td><td class="num">4,177,920</td><td class="num">696,320</td><td class="num">300,000</td><td>7680×4320 @ 30</td></tr>
+        <tr><td>6.1</td><td class="num">139,264</td><td class="num">8,355,840</td><td class="num">696,320</td><td class="num">600,000</td><td>7680×4320 @ 60</td></tr>
+        <tr><td>6.2</td><td class="num">139,264</td><td class="num">16,711,680</td><td class="num">696,320</td><td class="num">1,000,000</td><td>7680×4320 @ 120</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small"><b>怎么读：</b>先算宏块数：<code>MB = ceil(宽/16) × ceil(高/16)</code>，再算每秒宏块数：<code>MBPS = MB × fps</code>。720p30 是 3600 与 108000；1080p30 是 8160 与 244800；4K30 是 32400 与 972000。三个数字都落在哪一行，就至少需要那一级的 level。<b>MaxBR 是解码器 CPB 的上限</b>，不是“建议码率”：Level 4.1 允许 62.5 Mbps，但 1080p30 实际给 8 Mbps 也完全合法。</p>
+  <p class="small"><b>DPB 帧数</b> ≈ <code>MaxDPB / MaxFS</code>，并受编码器与 profile 约束。1080p 在 Level 4.1 下是 <code>32768 / 8192 = 4</code> 帧；Level 5.1 下是 <code>184320 / 36864 = 5</code> 帧。参考帧越多，压缩率通常越好，但解码器内存与延迟也越高。</p>
+
+  <div class="grid-4">
+    <div class="card">
+      <h4>老设备 / 软解</h4>
+      <p class="small">Baseline 或 Constrained Baseline，Level 3.0–3.1。没有 B 帧与 CABAC，码率略高，但几乎所有芯片都能解。</p>
+    </div>
+    <div class="card">
+      <h4>网页 / 点播</h4>
+      <p class="small">High@L4.1 是最稳的 1080p 组合；4K 若坚持 H.264，通常要 Level 5.1 以上，但同画质码率会明显高于 HEVC。</p>
+    </div>
+    <div class="card">
+      <h4>4K / HDR</h4>
+      <p class="small">HEVC Main10 + Level 5.1 是电视与手机的常见组合；H.264 的 High 10 在消费级硬件里支持面窄。</p>
+    </div>
+    <div class="card">
+      <h4>专业母版</h4>
+      <p class="small">High 4:2:2 / High 4:4:4 Predictive，保留色度与高位深。代价是文件大、播放器支持少。</p>
+    </div>
+  </div>
+
+  <p><b>MP4 里的 codec string 就是 avcC 前三字节：</b><code>avc1.42E01F</code> 是 Baseline@3.1（42=66，E0=约束标志，1F=31），<code>avc1.4D401F</code> 是 Main@3.1，<code>avc1.64001F</code> 是 High@3.1。浏览器与播放器很多判断只看这一串，不会去深度解析 SPS。</p>
+
+  <pre class="code"><span class="cm"># 明确写 H.264 的 profile 与 level，避免编码器自动猜</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset medium -crf 23 \
+  -profile:v high -level:v 4.1 -pix_fmt yuv420p out.mp4
+
+<span class="cm"># HEVC Main10 / Level 5.1（4K HDR 常见组合）</span>
+ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 26 -profile:v main10 \
+  -x265-params level-idc=5.1 -tag:v hvc1 out_hevc.mp4
+
+<span class="cm"># 验证实际写进码流的值，而不是只看命令行</span>
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,profile,level,codec_tag_string,pix_fmt -of default=nw=1 in.mp4</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>avc1 与 avc3、hvc1 与 hev1 不是同一个东西：</b><code>avc1</code>/<code>hvc1</code> 表示参数集只放在 avcC/hvcC 里，样本内不重复；<code>avc3</code>/<code>hev1</code> 允许参数集随样本内联。Apple 生态对 <code>hvc1</code> 更友好，转码时加 <code>-tag:v hvc1</code> 能避免“QuickTime 不认”的坑。</span></div>
 </section>
 
 <section id="rate">
@@ -409,6 +715,114 @@ ffmpeg -i in.mp4 -c:v libx264 -b:v 4M -pass 2 -c:a aac -b:a 128k out.mp4</pre>
   <p><b>CRF 的数字怎么选：</b>18 通常接近视觉无损，23 是 x264 默认的平衡点，28 开始明显省码率但细节下降。CRF 越低画质越好、文件越大；它不是“百分比”，也不能跨编码器直接比较（x265 的 CRF 28 与 x264 的 CRF 23 不能等同）。</p>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>VBV 缓冲是什么：</b>它模拟解码器的输入缓冲。<code>bufsize</code> 太小会让码率被强行压平、画质抖动；通常取 <code>maxrate × 1–2 秒</code>。CBR 直播里，<code>bufsize</code> 与 <code>nal-hrd=cbr</code> 要一起设，否则“标称 CBR”并不恒定。</span></div>
+</section>
+
+<section id="rc">
+  <h2>🧮 码率控制实战：五种旋钮与 preset</h2>
+  <p class="lead">码控像开车时的油门策略：CBR 是定速巡航，不管上坡下坡都咬住同一个速度；VBR 是看路况给油；ABR 是“这个月油费平均不能超”；CRF 是恒温器，只认体感温度；CQP 是把手动油门焊死。五种模式没有绝对好坏，只有“你要稳定带宽，还是要稳定画质”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>模式</th><th>一句话比喻</th><th>ffmpeg 关键参数</th><th>码率</th><th>画质</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr><td>CBR</td><td>定速巡航</td><td><code>-b:v 4M -minrate 4M -maxrate 4M -bufsize 4M</code></td><td>几乎平直</td><td>复杂场景被迫降</td><td>固定带宽直播、卫星/广播、TS 输出</td></tr>
+        <tr><td>VBR</td><td>按路况给油</td><td><code>-b:v 4M -maxrate 6M -bufsize 12M</code></td><td>围绕目标波动</td><td>复杂场景多分比特</td><td>点播、本地播放、带宽有余量</td></tr>
+        <tr><td>ABR</td><td>月度平均预算</td><td><code>-b:v 4M</code>（两遍更准）</td><td>平均接近目标</td><td>短片段可能偏离</td><td>目标文件体积、批量转码</td></tr>
+        <tr><td>CRF</td><td>恒温器</td><td><code>-crf 23</code></td><td>由内容决定</td><td>感知画质稳定</td><td>点播、归档、绝大多数“我要好看”的场景</td></tr>
+        <tr><td>CQP</td><td>油门焊死</td><td><code>-qp 24</code></td><td>波动最大</td><td>每帧“压缩力度”相同</td><td>算法对比、码流分析、固定 QP 实验</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>VBV：码率不是平均数，是“瞬时不能超”</h3>
+  <p><b>VBV</b>（Video Buffering Verifier）是解码器端的虚拟缓冲区模型。编码器一边编，一边模拟“这些比特到达解码器时，缓冲区会不会溢出或饿死”。它不是提高画质，而是给码率加一条<strong>瞬时包络</strong>，让网络与解码器都能跟得上。</p>
+  <div class="grid-3">
+    <div class="card">
+      <h4>maxrate</h4>
+      <p class="small">任意短时间窗口内的码率上限。超过它就触发 QP 上升，宁可牺牲这一小段画质，也不让缓冲区溢出。</p>
+    </div>
+    <div class="card">
+      <h4>bufsize</h4>
+      <p class="small">缓冲区容量。太小 → QP 剧烈波动、画面忽好忽坏；太大 → 约束形同虚设，突发码率仍然会打爆网络。</p>
+    </div>
+    <div class="card">
+      <h4>minrate</h4>
+      <p class="small">CBR 时的码率下限，靠填充数据（filler）凑满。只对“必须恒定输出”的链路有意义，普通点播不要设。</p>
+    </div>
+  </div>
+  <div class="math-b">缓冲时长 ≈ bufsize ÷ maxrate　→　例如 12M bufsize 配 6M maxrate，约等于 2 秒的“水库”</div>
+  <p class="small">缓冲区越大，编码器越能容忍短时复杂画面（先多花、后少花）；缓冲区越小，码率越“贴地”，但画质波动越明显。直播常把 bufsize 设成 0.5–2 秒的 maxrate，点播可以放到 2–4 秒。</p>
+
+  <pre class="code"><span class="cm"># 直播 CBR：码率、上下限、缓冲、HRD 一起设；nal-hrd=cbr 会让 x264 按 CBR 模型填充</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset veryfast \
+  -b:v 4M -minrate 4M -maxrate 4M -bufsize 4M \
+  -x264-params nal-hrd=cbr -g 50 -keyint_min 50 -sc_threshold 0 \
+  -f flv rtmp://live.example/app/stream
+
+<span class="cm"># 点播 capped CRF：质量优先，但复杂场景不许超过 6 Mbps</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset slow -crf 21 -maxrate 6M -bufsize 12M out.mp4
+
+<span class="cm"># 两遍 ABR：第一遍只收集统计，第二遍按统计分配比特</span>
+ffmpeg -y -i in.mp4 -c:v libx264 -preset slow -b:v 4M -pass 1 -an -f null -
+ffmpeg -y -i in.mp4 -c:v libx264 -preset slow -b:v 4M -pass 2 -c:a aac -b:a 128k out.mp4
+
+<span class="cm"># x265 的 VBV 单位是 kbit/s 与 kbit，写在 x265-params 里</span>
+ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 26 \
+  -x265-params vbv-maxrate=8000:vbv-bufsize=16000 out_hevc.mp4</pre>
+
+  <h3>CRF 与 CQP：都不是“码率目标”</h3>
+  <p><b>CRF</b>（Constant Rate Factor）追求的是“感知质量大致恒定”：简单画面多压一点，复杂画面少压一点，码率是结果而不是目标。数值越小越好看，x264 常用 18–28；<code>-crf 0</code> 才是无损，<code>-crf 18</code> 已经很高但绝不是无损。<b>CQP</b> 则是所有帧用同一个 QP，不做任何码率补偿，文件大小会随内容剧烈起伏，通常只用于实验对照。</p>
+  <p class="small">CRF 也不是“全自动”：它仍然受 <code>-maxrate</code>/<code>-bufsize</code> 的 VBV 约束；一旦触顶，编码器会临时升 QP。想要“稳定质量 + 网络不炸”，capped CRF 是点播最常见的选择。</p>
+
+  <h3>preset：用编码时间换压缩率</h3>
+  <p>preset 控制的是“编码器愿意花多少时间做搜索”。越慢的 preset 会尝试更多块划分、运动矢量、参考帧与 RDO，同 CRF 下通常得到更低的码率；但它不会改变 profile/level，也不会让解码端变慢。</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>x264 preset</th><th>相对速度（约）</th><th>同 CRF 码率（相对 medium）</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>ultrafast</td><td>10–20×</td><td>+60–100%</td><td>低配机器实时编码、只求能出画面</td></tr>
+        <tr><td>superfast</td><td>6–10×</td><td>+40–60%</td><td>快速批量、临时预览</td></tr>
+        <tr><td>veryfast</td><td>3–4×</td><td>+15–25%</td><td>直播、会议、游戏串流</td></tr>
+        <tr><td>faster</td><td>约 2×</td><td>+8–12%</td><td>批量转码、CPU 有余量</td></tr>
+        <tr><td>fast</td><td>约 1.4×</td><td>+4–8%</td><td>通用快速档</td></tr>
+        <tr><td>medium</td><td>1×</td><td>基准</td><td>默认，速度与压缩率的平衡点</td></tr>
+        <tr><td>slow</td><td>约 0.6×</td><td>−5–10%</td><td>点播、追求体积</td></tr>
+        <tr><td>slower</td><td>约 0.4×</td><td>−8–12%</td><td>高质量点播、离线</td></tr>
+        <tr><td>veryslow</td><td>约 0.25×</td><td>−10–15%</td><td>归档、母版</td></tr>
+        <tr><td>placebo</td><td>约 0.1×</td><td>比 veryslow 再省 1–2%</td><td>基本没有实际收益，不推荐</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">表里的百分比是经验区间，内容、分辨率、CRF 都会改变结果。一般规律是：<b>从 ultrafast 到 medium 收益最大，从 slow 到 veryslow 收益迅速递减</b>；如果 CPU 预算有限，优先选 veryfast/fast，而不是把 CRF 调得很低。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>tune film</h4>
+      <p class="small">真人影视，保留胶片颗粒与细节。大多数实拍内容可用。</p>
+    </div>
+    <div class="card">
+      <h4>tune animation</h4>
+      <p class="small">动漫、平涂、线条多。会调整去块与 psychovisual 策略，避免线条糊掉。</p>
+    </div>
+    <div class="card">
+      <h4>tune grain</h4>
+      <p class="small">强胶片颗粒素材，宁可多花码率也不把颗粒磨平。</p>
+    </div>
+    <div class="card">
+      <h4>tune zerolatency</h4>
+      <p class="small">关闭 B 帧与 lookahead，牺牲压缩率换最低延迟。直播/云游戏常用。</p>
+    </div>
+    <div class="card">
+      <h4>tune fastdecode</h4>
+      <p class="small">减少解码端负担（如关闭部分滤波工具），适合低端播放器，不一定让编码更快。</p>
+    </div>
+    <div class="card">
+      <h4>tune stillimage</h4>
+      <p class="small">单帧或幻灯片，优化静态细节，别用于运动视频。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>选型口诀：</b>要“固定带宽”选 CBR，要“固定体积”选两遍 ABR，要“固定观感”选 CRF，要“瞬时别超”加 maxrate + bufsize。<code>-crf</code> 与 <code>-b:v</code> 同时出现会让意图变模糊：CRF 仍会按质量走，<code>-b:v</code> 只在部分模式生效；要么 CRF + maxrate，要么纯 ABR。</span></div>
 </section>
 
 <section id="chroma">
@@ -494,6 +908,194 @@ ffmpeg -i in.mp4 -c:v libsvtav1 -preset 6 -crf 35 -c:a libopus out_av1.mkv</pre>
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>不要只看“省多少”</b>：HEVC 省 40% 带宽，但如果被迫转码、软解、或付出专利费，总成本可能更高。工程决策要算“带宽 + 算力 + 兼容 + 授权”四笔账。</span></div>
 </section>
 
+<section id="hevc">
+  <h2>🌳 HEVC：64×64 的四叉树与 35 个方向</h2>
+  <p class="lead">H.264 的宏块像 16×16 的固定瓷砖：墙面再平、再碎，也只能按同一块大小铺。HEVC 的 CTU 像一套带隔层的收纳箱：先给你 64×64 的大格子，遇到平坦墙面就用大格子，遇到细节就一层层拆成 32、16、8，直到够用为止。</p>
+  <p><b>CTU</b>（Coding Tree Unit，编码树单元）最大 64×64；它按<strong>四叉树</strong>递归拆成 <b>CU</b>（Coding Unit），最小可到 8×8。每个 CU 再分成 <b>PU</b>（预测单元，决定怎么预测）与 <b>TU</b>（变换单元，决定怎么做变换）。H.264 的 16×16 宏块也有子划分，但“块大小”这件事远没有 HEVC 灵活。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 300" style="width:100%;height:auto" role="img" aria-label="H.264 固定宏块与 HEVC 四叉树划分对比">
+      <text x="60" y="30" font-size="11" font-weight="700" fill="#475569">H.264：固定 16×16 宏块</text>
+      <rect x="60" y="44" width="200" height="200" fill="#ecfeff" stroke="#67e8f9" stroke-width="1.6"/>
+      <line x1="110" y1="44" x2="110" y2="244" stroke="#67e8f9" stroke-width="1"/>
+      <line x1="160" y1="44" x2="160" y2="244" stroke="#67e8f9" stroke-width="1"/>
+      <line x1="210" y1="44" x2="210" y2="244" stroke="#67e8f9" stroke-width="1"/>
+      <line x1="60" y1="94" x2="260" y2="94" stroke="#67e8f9" stroke-width="1"/>
+      <line x1="60" y1="144" x2="260" y2="144" stroke="#67e8f9" stroke-width="1"/>
+      <line x1="60" y1="194" x2="260" y2="194" stroke="#67e8f9" stroke-width="1"/>
+      <text x="85" y="72" text-anchor="middle" font-size="8.5" fill="#155e75">16×16</text>
+      <text x="160" y="268" text-anchor="middle" font-size="9" fill="#64748b">4×4 = 16 个宏块，边界固定在 16 的倍数</text>
+
+      <text x="430" y="30" font-size="11" font-weight="700" fill="#475569">HEVC：64×64 CTU，递归拆到 8×8</text>
+      <rect x="430" y="44" width="200" height="200" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="1.6"/>
+      <rect x="530" y="44" width="100" height="100" fill="#ecfeff" stroke="#67e8f9"/>
+      <rect x="430" y="144" width="100" height="100" fill="#fffbeb" stroke="#fcd34d"/>
+      <rect x="530" y="144" width="100" height="100" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <line x1="530" y1="44" x2="530" y2="244" stroke="#c4b5fd" stroke-width="1.4"/>
+      <line x1="430" y1="144" x2="630" y2="144" stroke="#c4b5fd" stroke-width="1.4"/>
+      <line x1="480" y1="44" x2="480" y2="144" stroke="#c4b5fd" stroke-width="1.1"/>
+      <line x1="430" y1="94" x2="530" y2="94" stroke="#c4b5fd" stroke-width="1.1"/>
+      <line x1="455" y1="44" x2="455" y2="94" stroke="#a78bfa" stroke-width="1"/>
+      <line x1="430" y1="69" x2="480" y2="69" stroke="#a78bfa" stroke-width="1"/>
+      <text x="580" y="96" text-anchor="middle" font-size="9" fill="#155e75">32×32</text>
+      <text x="480" y="198" text-anchor="middle" font-size="9" fill="#92400e">32×32</text>
+      <text x="580" y="198" text-anchor="middle" font-size="9" fill="#047857">32×32</text>
+      <text x="505" y="72" text-anchor="middle" font-size="8" fill="#155e75">16</text>
+      <text x="455" y="122" text-anchor="middle" font-size="8" fill="#92400e">16</text>
+      <text x="505" y="122" text-anchor="middle" font-size="8" fill="#92400e">16</text>
+      <text x="467" y="87" text-anchor="middle" font-size="8" fill="#5b21b6">8</text>
+      <text x="530" y="268" text-anchor="middle" font-size="9" fill="#64748b">按率失真代价决定在哪一层停止，平坦区用大块，细节区拆小块</text>
+    </svg>
+    <figcaption>同样是 64×64 的画面：左边固定切成 16 个宏块；右边是 CTU 的四叉树，32×32 与 16×16、8×8 混用。</figcaption>
+  </div>
+
+  <h3>35 个帧内方向，比 H.264 的 9 个细得多</h3>
+  <p>H.264 的 4×4/8×8 帧内预测有 <b>9 种</b>：DC 加 8 个方向；16×16 只有 4 种。HEVC 则给出 <b>35 种</b>：<b>Planar</b>（平面渐变）、<b>DC</b>（平均值），再加 33 个角度模式（模式 2–34）。角度以 1/32 像素精度采样，斜边、细线、渐变天空的预测都能更贴合。</p>
+  <p class="small">方向多不等于一定更好：编码器要为每个 CU 试更多模式，时间成本上升；但对 4K、细纹理与合成内容，方向精度带来的残差减少很可观。</p>
+
+  <h3>去块滤波 + SAO：先修边界，再修噪点</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>Deblocking（去块滤波）</h4>
+      <p class="small">在 8×8 网格边界上判断“这是真实边缘还是压缩块效应”，只对后者做平滑。HEVC 的滤波决策比 H.264 更细，能根据边界强度与 QP 自适应。</p>
+    </div>
+    <div class="card">
+      <h4>SAO（Sample Adaptive Offset）</h4>
+      <p class="small">去块之后，按 CTU 把像素分成“条带”或“边缘”类别，给每一类加一个小偏移。它专门修<strong>振铃</strong>与<strong>暗场 banding</strong>，开销只有每 CTU 几个比特。</p>
+    </div>
+  </div>
+  <p class="small">顺序是：预测/变换/量化 → 反变换 → 去块滤波 → SAO。两者都在解码环路里，编码器也要模拟一遍，所以它们会同时影响客观指标与主观观感。</p>
+
+  <h3>HEVC 与 H.264：工具集对照</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>能力</th><th>H.264 / AVC</th><th>HEVC / H.265</th></tr></thead>
+      <tbody>
+        <tr><td>最小编码单元</td><td>16×16 宏块，子划分有限</td><td>64×64 CTU，四叉树拆到 8×8 CU</td></tr>
+        <tr><td>帧内模式</td><td>4×4/8×8 共 9 种；16×16 共 4 种</td><td>35 种（33 角度 + DC + Planar）</td></tr>
+        <tr><td>变换</td><td>4×4 / 8×8 DCT（High profile 才有 8×8）</td><td>4×4–32×32 DCT；帧内 4×4 还可用 DST</td></tr>
+        <tr><td>运动预测</td><td>1/4 像素、多参考帧、MVP</td><td>1/4 像素、AMVP、Merge/Skip、更多参考</td></tr>
+        <tr><td>环路滤波</td><td>Deblocking</td><td>Deblocking + SAO</td></tr>
+        <tr><td>熵编码</td><td>CAVLC / CABAC</td><td>只有 CABAC</td></tr>
+        <tr><td>典型收益</td><td>基准</td><td>同画质约省 30–50% 码率，4K/10 bit 更明显</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">“省 40%”是公开测试里的常见中位值，不是每条内容都成立：低分辨率、强噪声、低码率场景的收益会缩水；高分辨率、平坦背景、慢运动场景可能更夸张。真正的验收要在自己的片源上跑 RD 曲线。</p>
+
+  <p><b>专利要单独算一笔：</b>HEVC 有多个专利池（Via LA / MPEG LA、HEVC Advance、Velos Media 等），不同池子的许可条件与覆盖范围不同。选 HEVC 不只是选压缩率，也是选一条授权路径；这也是 AV1 主打“免版税”的原因。</p>
+
+  <pre class="code"><span class="cm"># x265：固定 2 秒 GOP、4 个 B 帧、Main10，并打上 hvc1 标签</span>
+ffmpeg -i in.mp4 -c:v libx265 -preset medium -crf 28 -profile:v main10 \
+  -x265-params keyint=50:min-keyint=50:scenecut=0:bframes=4:rc-lookahead=20 \
+  -tag:v hvc1 -c:a copy out_hevc.mp4
+
+<span class="cm"># 实时档：x265 比 x264 重，直播通常用 fast/veryfast 或硬件编码器</span>
+ffmpeg -i in.mp4 -c:v libx265 -preset fast -crf 30 -tune zerolatency -tag:v hvc1 out_live.mp4</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>Main10 不只是给 HDR：</b>10 bit 还能减少暗场 banding 与量化误差，同码率下观感常优于 8 bit。但它要求解码端支持 Main10；老电视、老手机可能只认 Main。给 4K HDR 用 Main10，给最大兼容性用 Main。</span></div>
+</section>
+
+<section id="av1">
+  <h2>🧱 AV1 与 VVC：OBU、tile 与新工具箱</h2>
+  <p class="lead">AV1 的码流像一套活页说明书：每一页叫一个 <b>OBU</b>，页头写清“我是序列头、帧头还是数据页”，还写这一页有多长。整帧又像一张拼图，切成多个 <b>tile</b> 分给不同 CPU 核心同时拼——这就是它能在浏览器里流畅解码的原因之一。</p>
+
+  <div class="bits">AV1 OBU header · 1 byte · bit 7 → bit 0</div>
+  <div class="bitfield">
+    <div class="bf" style="flex:1"><b>forbidden</b><i>1 bit · 0</i></div>
+    <div class="bf" style="flex:4"><b>obu_type</b><i>4 bit · 0–15</i></div>
+    <div class="bf" style="flex:1"><b>extension_flag</b><i>1 bit</i></div>
+    <div class="bf" style="flex:1"><b>has_size_field</b><i>1 bit</i></div>
+    <div class="bf" style="flex:1"><b>reserved</b><i>1 bit · 0</i></div>
+  </div>
+  <p class="small">以 <code>0x0A</code> 为例：<code>0 0001 0 1 0</code> → forbidden=0、obu_type=1（Sequence Header）、extension_flag=0、has_size_field=1、reserved=0。紧跟着的 <code>0x0B</code> 是 leb128 长度编码，表示后面还有 11 字节的序列头负载。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>obu_type</th><th>名称</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td>Reserved</td><td>保留</td></tr>
+        <tr><td class="num">1</td><td>Sequence Header</td><td>分辨率、profile、level、色彩、tile 配置</td></tr>
+        <tr><td class="num">2</td><td>Temporal Delimiter</td><td>标记一个时间单元开始，便于封装与随机访问</td></tr>
+        <tr><td class="num">3</td><td>Frame Header</td><td>单帧头：帧类型、参考帧、量化、tile 信息</td></tr>
+        <tr><td class="num">4</td><td>Tile Group</td><td>一组 tile 的数据，可与帧头分开传</td></tr>
+        <tr><td class="num">5</td><td>Metadata</td><td>HDR、时间码、用户数据等</td></tr>
+        <tr><td class="num">6</td><td>Frame</td><td>帧头 + tile 数据合在一起，现代编码器最常用</td></tr>
+        <tr><td class="num">7</td><td>Redundant Frame Header</td><td>冗余帧头，提升容错</td></tr>
+        <tr><td class="num">8</td><td>Tile List</td><td>大帧/低延迟场景的 tile 索引</td></tr>
+        <tr><td class="num">9–14</td><td>Reserved</td><td>保留</td></tr>
+        <tr><td class="num">15</td><td>Padding</td><td>填充，便于字节对齐或带宽填充</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>tile：把一帧拆给多个核心</h3>
+  <p>AV1 可以把一帧切成最多 64 列 × 64 行的 <b>tile</b> 网格（实际数量受帧大小与规范约束），每个 tile 独立做熵编码与预测边界处理。好处是多核并行解码、某一块损坏不污染整帧；代价是 tile 边界不能共享上下文，压缩率会略降，tile 头也有一点开销。编码器的 <code>tile-columns</code> / <code>tile-rows</code> 就是在“并行度”与“压缩率”之间调平衡。</p>
+  <p>AV1 的 <b>superblock</b> 最大 128×128，变换最大 64×64；块划分同样递归，但工具更多。下面这些工具是它区别于 HEVC 的“新玩具”：</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>CfL（Chroma from Luma）</h4>
+      <p class="small">用同一块的亮度预测色度：先算亮度的 AC 分量，再乘一个缩放系数当色度预测。彩色边缘、文字边缘特别受益。</p>
+    </div>
+    <div class="card">
+      <h4>Palette（调色板）</h4>
+      <p class="small">块内颜色很少时（图标、截图、UI），直接传“几种颜色 + 索引”，比逐像素预测便宜得多。</p>
+    </div>
+    <div class="card">
+      <h4>IntraBC（帧内块复制）</h4>
+      <p class="small">在同一帧已解码区域里找相同块复制过来。屏幕共享、PPT、网页滚动是它的主场。</p>
+    </div>
+    <div class="card">
+      <h4>CDEF</h4>
+      <p class="small">Constrained Directional Enhancement Filter：沿边缘方向滤波，专治变换/量化带来的振铃，同时尽量不糊掉真实边缘。</p>
+    </div>
+    <div class="card">
+      <h4>Loop Restoration</h4>
+      <p class="small">在 CDEF 之后再修一遍：Wiener 滤波或自引导恢复（SGR），按 superblock 切换，进一步压低噪声与模糊。</p>
+    </div>
+    <div class="card">
+      <h4>Film Grain Synthesis</h4>
+      <p class="small">编码器把胶片颗粒“抹掉”，只传颗粒参数；解码器在播放端重建。码率省下来，观感仍是“有颗粒”的。</p>
+    </div>
+  </div>
+
+  <h3>AV1 的生态与命令</h3>
+  <p><b>AOMedia</b>（Alliance for Open Media）主导 AV1，标准免版税；Chrome、Firefox、Edge 都已支持，硬件解码在手机/电视上越来越普遍。它的软解 <b>dav1d</b> 很快，编码侧 <b>SVT-AV1</b> 把速度拉到了可用的程度（preset 0 最慢最好，13 最快）。</p>
+  <pre class="code"><span class="cm"># SVT-AV1：preset 6 是速度/质量的常用平衡点，CRF 30–40 常见</span>
+ffmpeg -i in.mp4 -c:v libsvtav1 -preset 6 -crf 35 -g 120 \
+  -c:a libopus -b:a 96k out_av1.webm
+
+<span class="cm"># 大分辨率想提高并行度：显式切 tile（tile 越多，压缩率略降）</span>
+ffmpeg -i in.mp4 -c:v libsvtav1 -preset 6 -crf 35 -g 120 \
+  -svtav1-params tile-columns=2:tile-rows=1 -c:a libopus -b:a 96k out_av1_tiles.webm
+
+<span class="cm"># 10 bit 源：让 SVT-AV1 保留 10 bit，而不是先降到 8 bit</span>
+ffmpeg -i in.mp4 -c:v libsvtav1 -preset 6 -crf 32 -pix_fmt yuv420p10le \
+  -c:a libopus -b:a 128k out_av1_10bit.webm</pre>
+  <p class="small">AV1 的 CRF 与 x264 的 CRF 不是同一把尺子：数值范围 0–63，内容与分辨率不同，不能直接照搬。AV1 在低码率、屏幕内容、4K 上的优势最明显；极低延迟直播仍要评估编码器算力与硬件支持。</p>
+
+  <h3>VVC / H.266：HEVC 的正式继任者</h3>
+  <p>VVC（ITU-T H.266 | ISO/IEC 23090-3）在 2020 年定稿，公开测试里相对 HEVC 常见 <strong>30–50%</strong> 的 BD-rate 收益。它把 CTU 扩到 128×128，用 <b>QTBT + MTT</b>（四叉树加二叉/三叉树）做更灵活的划分，新增 <b>ALF</b>（自适应环路滤波）、仿射运动、解码端运动修正、调色板与子图像等工具。</p>
+  <p class="small">代价是编码复杂度高、硬件支持铺开慢、专利池同样复杂。FFmpeg 新版可以通过 libvvdec 解码 VVC，编码侧多用 VVenC；生产环境要先确认播放链路，而不是只看压缩率。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>对比项</th><th>AV1</th><th>VVC / H.266</th></tr></thead>
+      <tbody>
+        <tr><td>主导组织</td><td>AOMedia（Google、Netflix、Intel 等）</td><td>ITU-T + MPEG（ISO/IEC）</td></tr>
+        <tr><td>定稿</td><td>2018（AV1 1.0）</td><td>2020</td></tr>
+        <tr><td>最大块</td><td>128×128 superblock</td><td>128×128 CTU</td></tr>
+        <tr><td>专利</td><td>免版税</td><td>多个专利池，需逐池评估</td></tr>
+        <tr><td>编码生态</td><td>SVT-AV1 / rav1e / aomenc</td><td>VVenC（慢），硬件编码器少</td></tr>
+        <tr><td>当前适合</td><td>网页、点播、屏幕内容、低码率</td><td>前沿压缩研究、逐步落地的高端链路</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>“免版税”不等于“零成本”：</b>AV1 省的是许可费，不是算力费。编码 AV1 通常比 x264 慢，老旧设备可能没有硬件解码；但它在浏览器与内容平台的生态已经形成正循环，这是 HEVC/VVC 的专利模式难以复制的优势。</span></div>
+</section>
+
 <section id="audio">
   <h2>🎧 音频编码：AAC / Opus / MP3 / FLAC</h2>
   <p>音频压缩利用的是人耳的<strong>掩蔽效应</strong>：一个强音旁边的小声音你听不见，干脆不编码。AAC、MP3、Opus 都基于 MDCT（改进离散余弦变换）与心理声学模型；FLAC 则完全不同，它只做无损的线性预测与熵编码。</p>
@@ -528,6 +1130,77 @@ ffmpeg -i in.wav -c:a flac -compression_level 8 out.flac</pre>
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>AAC 的“帧”不是“一秒钟”：</b>1024 个采样在 48 kHz 下只有 21.33 ms，一秒约 46.9 帧。音频时间戳通常以采样数为单位（timescale = 采样率），这也是容器里音频轨道 mdhd 常见 48000 的原因。</span></div>
 </section>
 
+<section id="audio2">
+  <h2>🎚️ 音频进阶：AAC 三档、Opus 低延迟与采样率账本</h2>
+  <p class="lead">AAC 的三档像同一首歌的三个压缩包：LC 是“完整版”，HE 是“把高频用说明书重建”，HEv2 再“用参数把立体声重建”。Opus 则像可变长度的快递箱：语音用短帧、音乐用长帧，帧长从 2.5 ms 到 60 ms 都能选，所以它特别适合实时通话。</p>
+
+  <h3>AAC：LC / HE / HEv2 到底差在哪</h3>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>档位</th><th>AOT</th><th>核心技术</th><th>立体声透明码率（经验）</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td>AAC-LC</td><td class="num">2</td><td>MDCT + 心理声学模型，最基础也最通用</td><td>128–192 kbps</td><td>MP4 默认、音乐点播、绝大多数播放器</td></tr>
+        <tr><td>HE-AAC v1</td><td class="num">5</td><td>LC + SBR：低频正常编码，高频用参数重建</td><td>48–64 kbps</td><td>低码率广播、移动端、流媒体</td></tr>
+        <tr><td>HE-AAC v2</td><td class="num">29</td><td>HE-AAC + PS：单声道核心 + 参数化立体声</td><td>32–48 kbps（立体声）</td><td>极低码率、语音为主的立体声</td></tr>
+        <tr><td>AAC-LD / ELD</td><td class="num">23 / 39</td><td>低延迟滤波器组，牺牲少量压缩率换延迟</td><td>64–128 kbps</td><td>会议、专业低延迟链路</td></tr>
+        <tr><td>xHE-AAC</td><td class="num">42</td><td>USAC，整合更多工具，面向极低码率</td><td>16–32 kbps</td><td>流媒体与广播的新链路（支持面较窄）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small"><b>SBR</b>（Spectral Band Replication）不是“凭空造高频”：它把低频的谐波结构搬到高频，再用少量参数修正包络。所以 HE-AAC 的核心采样率可以只有输出的一半，解码器再重建到 48 kHz；文件头仍然标 48 kHz。<b>PS</b>（Parametric Stereo）则只传一个声道加空间参数，解码端重建左右差异。</p>
+  <p class="small"><b>封装差别：</b>MP4 用 <code>mp4a</code> + <code>AudioSpecificConfig</code>（通常 2 字节，写 AOT、采样率索引、声道配置）；TS/ADTS 每帧带 7 字节头（带 CRC 是 9 字节），同步字是 12 个 1（<code>0xFFF</code>）。同一段 AAC，换封装不会改变音频数据。</p>
+
+  <pre class="code"><span class="cm"># 注意：ffmpeg 自带的 aac 编码器只支持 LC，写 aac_he 会报 Profile not supported</span>
+ffmpeg -i in.wav -c:a aac -b:a 128k out_lc.m4a
+
+<span class="cm"># HE-AAC / HEv2 需要 libfdk_aac（非自由构建）或外部编码器</span>
+ffmpeg -i in.wav -c:a libfdk_aac -profile:a aac_he -b:a 48k out_he.m4a
+ffmpeg -i in.wav -c:a libfdk_aac -profile:a aac_he_v2 -b:a 32k out_hev2.m4a
+
+<span class="cm"># 看实际写入的 profile、采样率、声道与码率</span>
+ffprobe -v error -select_streams a:0 \
+  -show_entries stream=codec_name,profile,sample_rate,channels,bit_rate -of default=nw=1 in.m4a</pre>
+
+  <h3>Opus：为什么实时通话偏爱它</h3>
+  <p>Opus 是 IETF 的 RFC 6716（2012），内部固定以 48 kHz 处理，把 <b>SILK</b>（语音、低码率）与 <b>CELT</b>（音乐、低延迟）拼在一个编解码器里；编码器可以逐帧切换，也可以走 Hybrid 模式。码率范围 <b>6–510 kbps</b>，帧长可选 <b>2.5 / 5 / 10 / 20 / 40 / 60 ms</b>。</p>
+  <p><b>延迟账：</b>Opus 的算法延迟可以低到约 <b>5 ms</b>（2.5 ms 短帧模式），最大约 <b>62.5 ms</b>（60 ms 长帧，另加前视与重采样开销）。相比之下，MP3 一帧 1152 个样本，48 kHz 下就是 24 ms，再叠加解码缓冲；AAC-LC 一帧 1024 个样本，约 21.3 ms。Opus 的短帧与低前视，是它在视频会议、云游戏、WebRTC 里胜出的关键。</p>
+  <p class="small">Opus 还内置 <b>FEC</b>（前向纠错，低码率冗余）、<b>DTX</b>（静音不传）、<b>CBR/VBR</b> 切换与丢包隐藏。它的“低延迟”不是单个数字，而是“短帧 + 小前视 + 抗丢包”的组合。</p>
+
+  <pre class="code"><span class="cm"># 语音实时：10 ms 帧、CBR、开 FEC，优先稳定与低延迟</span>
+ffmpeg -i in.wav -c:a libopus -b:a 48k -application voip \
+  -frame_duration 10 -vbr off -fec 1 out_voip.webm
+
+<span class="cm"># 音乐点播：20 ms 帧、VBR，优先听感</span>
+ffmpeg -i in.wav -c:a libopus -b:a 96k -application audio \
+  -frame_duration 20 -vbr on out_music.webm
+
+<span class="cm"># 极致低延迟：CELT-only 的 lowdelay 模式</span>
+ffmpeg -i in.wav -c:a libopus -b:a 64k -application lowdelay \
+  -frame_duration 10 out_lowdelay.webm</pre>
+
+  <h3>采样率、位深、声道与码率：四个数不是乘法</h3>
+  <p>无损 PCM 的码率才是“采样率 × 位深 × 声道”：48 kHz、16 bit、立体声 = <code>48000 × 16 × 2 = 1,536,000 bit/s</code>，即 1.536 Mbps。换成 24 bit 就是 2.304 Mbps；5.1 声道则是 4.608 Mbps。有损编码的码率是“目标值”，不是这个乘积，压缩比通常 10–25 倍。</p>
+  <div class="grid-3">
+    <div class="card">
+      <h4>采样率</h4>
+      <p class="small">决定能保留的最高频率（Nyquist = 采样率 ÷ 2）。视频行业统一 48 kHz；44.1 kHz 是 CD 遗留。48 kHz 与 44.1 kHz 的听感差异，远小于码率与编码器差异。</p>
+    </div>
+    <div class="card">
+      <h4>位深</h4>
+      <p class="small">决定量化噪声底。16 bit 约 96 dB 动态范围，24 bit 约 144 dB；制作与中间片用 24 bit，最终分发 16 bit 足够。AAC/Opus 内部精度更高，但输出文件不标“位深”。</p>
+    </div>
+    <div class="card">
+      <h4>声道</h4>
+      <p class="small">立体声不是简单翻倍：可以用联合立体声/PS 共享信息。5.1 常见 AAC 256–384 kbps、Opus 192–320 kbps；声道越多，空间信息越贵。</p>
+    </div>
+  </div>
+  <p class="small"><b>经验透明码率：</b>AAC-LC 立体声约 128–192 kbps；HE-AAC 48–64 kbps；HE-AACv2 32–48 kbps；Opus 立体声 64–96 kbps 已接近透明；MP3 需要 128–192 kbps 才勉强追平 AAC-LC。FLAC 无损通常是 PCM 的 50–60%，具体取决于内容。</p>
+
+  <p><b>MP3 的历史一句话：</b>Fraunhofer 在 1987 年展示，1993 年成为 MPEG-1 Layer III；核心专利 2017 年到期，所以今天可以免费使用。它的 1152 样本帧与较长的滤波器组，注定了延迟高于 Opus，但在兼容性上仍有价值。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别把“采样率 48 kHz”当成“高频一定到 24 kHz”：</b>有损编码会用心理声学模型砍掉听不见的高频，HE-AAC 甚至只传一半带宽再用 SBR 重建。采样率只是容器上限，真正保留了多少频带，要看码率与编码器策略。</span></div>
+</section>
+
 <section id="quality">
   <h2>📏 质量指标与验证：别只凭眼睛</h2>
   <p>“看起来差不多”不能写进验收标准。工程上用三类指标：像素误差（PSNR）、结构相似度（SSIM）、感知质量（VMAF）。它们各有盲区，最稳的做法是<strong>指标 + 抽帧主观对比</strong>。</p>
@@ -549,6 +1222,305 @@ ffprobe -select_streams v -show_frames \
   <p><b>BD-rate</b>（Bjøntegaard Delta rate）用来比较两个编码器：在相同质量下，平均码率相差多少百分比。BD-rate 为 <b>−30%</b> 表示“同等质量下省 30% 码率”。它依赖测试序列、质量指标与拟合方式，论文里的数字不能直接搬到你的业务内容上。</p>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>别用 PSNR 选 preset：</b>高 PSNR 可能来自“模糊但误差小”，观感反而更差。先定业务场景（人脸、文字、运动、暗场），再用对应素材做 A/B，指标只作为辅助。</span></div>
+</section>
+
+<section id="metric">
+  <h2>📐 画质评价进阶：三把尺子与一条 RD 曲线</h2>
+  <p class="lead">PSNR 像拿卷尺逐像素量“你和我差了几毫米”；SSIM 像看两张照片的“骨架、明暗、纹理”是不是同一副；VMAF 像请一群观众盲测打分，再把他们的偏好训练成一个裁判。三把尺子各有盲区，最稳的是“指标 + 抽帧 + 人眼”。</p>
+
+  <h3>PSNR：最直白，也最容易被“平均”骗</h3>
+  <p>先把两帧逐像素相减、平方、求平均，得到 <b>MSE</b>；再用 <code>PSNR = 10 · log₁₀(MAX² / MSE)</code> 换成对数刻度。8 bit 视频的 <code>MAX = 255</code>。对数的好处是：MSE 减半，PSNR 约 +3 dB；MSE 翻倍，约 −3 dB。所以 40 dB 不是“40% 好”，而是“误差已经很小”。</p>
+  <p class="small">PSNR 的盲区：它对“整体亮度偏移 1”与“局部糊成一片”一视同仁，对人眼敏感的块效应、振铃反而不够敏感；不同分辨率、不同内容之间也不能直接比。它适合做同一片源、同一分辨率的快速回归，不适合当唯一验收标准。</p>
+
+  <h3>SSIM：看结构，不只看像素差</h3>
+  <p><b>SSIM</b> 把局部窗口拆成三部分：亮度（均值）、对比度（方差）、结构（协方差），三项相乘得到 0–1 的分数，越接近 1 越像。它更接近人眼对“边缘与纹理是否还在”的判断，所以模糊、块效应通常会让 SSIM 明显下降。</p>
+  <p class="small">SSIM 也有盲区：对噪声、色彩偏移不敏感；不同尺度的结构权重不同，于是有了 <b>MS-SSIM</b>（多尺度）。工程上常把 SSIM 与 PSNR 一起看：PSNR 高但 SSIM 低，往往意味着“平均误差小，但结构被抹平”。</p>
+
+  <h3>VMAF：把“观众觉得好不好”变成分数</h3>
+  <p><b>VMAF</b>（Video Multimethod Assessment Fusion）提取一组特征（细节损失、运动、对比度等），再用训练好的模型融合成 0–100 的分数。它不是简单公式，而是“主观打分数据训练出的预测器”；因此模型文件与训练集决定了它的脾气。1080p 用 <code>vmaf_v0.6.1.json</code>，4K 用 <code>vmaf_4k_v0.6.1.json</code>，用错模型会系统性偏高或偏低。</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>指标</th><th>差</th><th>可接受</th><th>好</th><th>接近透明</th></tr></thead>
+      <tbody>
+        <tr><td>PSNR</td><td>&lt; 30 dB</td><td>30–35 dB</td><td>36–42 dB</td><td>&gt; 42 dB</td></tr>
+        <tr><td>SSIM</td><td>&lt; 0.90</td><td>0.90–0.95</td><td>0.95–0.98</td><td>&gt; 0.98</td></tr>
+        <tr><td>VMAF（1080p）</td><td>&lt; 70</td><td>70–85</td><td>85–93</td><td>&gt; 93</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">这些是经验参考线，不是验收规范：动画、体育、暗场、文字密度都会改变阈值。真正可用的做法是“同一片源、同一分辨率、同一帧对齐”，再结合业务码率定自己的红线。</p>
+
+  <pre class="code"><span class="cm"># PSNR：把统计写到日志，再取平均</span>
+ffmpeg -i enc.mp4 -i ref.mp4 -lavfi \
+  "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]psnr=stats_file=psnr.log" \
+  -f null -
+
+<span class="cm"># SSIM：同样的对齐方式</span>
+ffmpeg -i enc.mp4 -i ref.mp4 -lavfi \
+  "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]ssim=stats_file=ssim.log" \
+  -f null -
+
+<span class="cm"># VMAF：需要 ffmpeg 编译时带 libvmaf，并准备模型 JSON</span>
+ffmpeg -i enc.mp4 -i ref.mp4 -lavfi \
+  "libvmaf=model=path=/usr/share/model/vmaf_v0.6.1.json:log_path=vmaf.json:log_format=json" \
+  -f null -</pre>
+  <p class="small">模型文件不在 ffmpeg 二进制里，通常来自 Netflix/vmaf 仓库的 <code>model</code> 目录；Windows 下把路径换成本机实际位置。若你的 ffmpeg 版本较旧，可能要用 <code>model_path=...</code> 而不是 <code>model=path=...</code>。没有 libvmaf 时，PSNR/SSIM 仍然可用，但不要拿它们硬套 VMAF 阈值。</p>
+
+  <h3>RD 曲线：把“省 40% 码率”读出来</h3>
+  <p>RD 曲线（Rate–Distortion）横轴是码率、纵轴是质量。每个编码器在同一段内容上扫多个码率点，连成一条线。<b>曲线越靠左上越好</b>：同样的码率得到更高质量，或同样的质量只花更少码率。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 360" style="width:100%;height:auto" role="img" aria-label="H.264 与 HEVC 的率失真曲线，在 VMAF 90 处比较码率">
+      <line x1="80" y1="40" x2="80" y2="300" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="80" y1="300" x2="700" y2="300" stroke="#94a3b8" stroke-width="1"/>
+
+      <line x1="80" y1="235" x2="700" y2="235" stroke="#e2e8f0" stroke-width="0.8"/>
+      <line x1="80" y1="170" x2="700" y2="170" stroke="#e2e8f0" stroke-width="0.8"/>
+      <line x1="80" y1="105" x2="700" y2="105" stroke="#e2e8f0" stroke-width="0.8"/>
+      <line x1="204" y1="40" x2="204" y2="300" stroke="#f1f5f9" stroke-width="0.8"/>
+      <line x1="328" y1="40" x2="328" y2="300" stroke="#f1f5f9" stroke-width="0.8"/>
+      <line x1="452" y1="40" x2="452" y2="300" stroke="#f1f5f9" stroke-width="0.8"/>
+      <line x1="576" y1="40" x2="576" y2="300" stroke="#f1f5f9" stroke-width="0.8"/>
+
+      <text x="70" y="304" text-anchor="end" font-size="9" fill="#64748b">60</text>
+      <text x="70" y="239" text-anchor="end" font-size="9" fill="#64748b">70</text>
+      <text x="70" y="174" text-anchor="end" font-size="9" fill="#64748b">80</text>
+      <text x="70" y="109" text-anchor="end" font-size="9" fill="#64748b">90</text>
+      <text x="70" y="44" text-anchor="end" font-size="9" fill="#64748b">100</text>
+
+      <text x="80" y="318" text-anchor="middle" font-size="9" fill="#64748b">0</text>
+      <text x="204" y="318" text-anchor="middle" font-size="9" fill="#64748b">2</text>
+      <text x="328" y="318" text-anchor="middle" font-size="9" fill="#64748b">4</text>
+      <text x="452" y="318" text-anchor="middle" font-size="9" fill="#64748b">6</text>
+      <text x="576" y="318" text-anchor="middle" font-size="9" fill="#64748b">8</text>
+      <text x="700" y="318" text-anchor="middle" font-size="9" fill="#64748b">10</text>
+      <text x="700" y="338" text-anchor="end" font-size="10" fill="#475569">码率（Mbps）</text>
+      <text x="18" y="62" font-size="10" fill="#475569">质量（VMAF）</text>
+
+      <line x1="80" y1="20" x2="108" y2="20" stroke="#7c3aed" stroke-width="2.2"/>
+      <text x="114" y="24" font-size="10" fill="#5b21b6">H.264 / x264</text>
+      <line x1="210" y1="20" x2="238" y2="20" stroke="#0891b2" stroke-width="2.2"/>
+      <text x="244" y="24" font-size="10" fill="#155e75">HEVC / x265</text>
+
+      <polyline points="129.6,267.5 154.4,235 228.8,170 340.4,131 464.4,105 545,85.5 638,72.5" fill="none" stroke="#7c3aed" stroke-width="2"/>
+      <polyline points="104.8,267.5 123.4,235 166.8,170 228.8,131 309.4,105 359,85.5 427.2,72.5" fill="none" stroke="#0891b2" stroke-width="2"/>
+
+      <circle cx="464.4" cy="105" r="3.2" fill="#7c3aed"/>
+      <circle cx="309.4" cy="105" r="3.2" fill="#0891b2"/>
+
+      <line x1="309.4" y1="105" x2="464.4" y2="105" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <polygon points="309.4,105 320,100 320,110" fill="#e11d48"/>
+      <text x="386" y="96" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9f1239">同画质，码率省 40.3%</text>
+
+      <line x1="309.4" y1="105" x2="309.4" y2="300" stroke="#0891b2" stroke-width="1" stroke-dasharray="3 3" opacity=".6"/>
+      <line x1="464.4" y1="105" x2="464.4" y2="300" stroke="#7c3aed" stroke-width="1" stroke-dasharray="3 3" opacity=".6"/>
+      <text x="304" y="334" text-anchor="middle" font-size="9" fill="#155e75">3.7 Mbps</text>
+      <text x="459" y="334" text-anchor="middle" font-size="9" fill="#5b21b6">6.2 Mbps</text>
+    </svg>
+    <figcaption>在 VMAF 90 画一条水平线：H.264 需要约 6.2 Mbps，HEVC 约 3.7 Mbps；<code>(6.2 − 3.7) / 6.2 ≈ 40%</code>。这就是“同画质省约 40% 码率”的正确读法。</figcaption>
+  </div>
+
+  <p><b>怎么读，不误读：</b>① 先固定质量点（例如 VMAF 90），再看两条曲线与该水平线的交点；② 交点之间的水平距离就是码率差，除以 H.264 的码率得到节省比例；③ 如果想比较整条曲线而不是单点，用 <b>BD-rate</b>：在质量区间上对码率的对数差做积分再平均，负值表示“省”，−40% 就是平均省 40%。</p>
+  <p class="small"><b>三个前提：</b>同一片源、同一分辨率与帧率、同一质量指标与模型。拿 H.264 的 VMAF 90 去比 HEVC 的 PSNR 40，或拿 1080p 模型量 4K，都是无效比较。还有，“省 40% 码率”不等于“同 CRF 文件小 40%”：CRF 只是编码器内部的质量旋钮，不同编码器的 CRF 数值不可互换。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>指标是地图，不是领土：</b>VMAF 高也可能出现局部糊字、暗场色带、运动拖影，因为这些内容在训练集里权重不高。上线前至少抽 10–20 个代表镜头（人脸、文字、暗场、快速运动、渐变天空）做并排对比；指标负责“筛掉明显差的”，人眼负责“最后拍板”。</span></div>
+</section>
+
+<section id="toolbox">
+  <h2>🧰 编码工具箱：ffprobe 与八条真命令</h2>
+  <p class="lead">ffprobe 是听诊器，ffmpeg 是手术刀：先听清 codec、profile、level、帧类型、关键帧间隔，再决定“转什么、怎么转”。很多“转码后花屏/不能播”的问题，不是编码参数错，而是根本没诊断出源流的真实结构。</p>
+
+  <h3>先诊断：三条 ffprobe</h3>
+  <pre class="code"><span class="cm"># 1) 流概览：codec / profile / level / 分辨率 / 帧率 / 码率 / tag</span>
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,profile,level,width,height,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,codec_tag_string,pix_fmt \
+  -of default=nw=1 in.mp4
+
+<span class="cm"># 2) 逐帧：帧类型、是否关键帧、PTS/DTS、包大小（看到 B 帧与重排）</span>
+ffprobe -v error -select_streams v:0 -show_frames \
+  -show_entries frame=pts_time,dts_time,pict_type,key_frame,pkt_size -of csv=p=0 in.mp4 | head -20
+
+<span class="cm"># 3) 只看关键帧时间：直接算出 GOP 间隔与 seek 粒度</span>
+ffprobe -v error -select_streams v:0 -skip_frame nokey -show_frames \
+  -show_entries frame=pts_time,pict_type -of csv=p=0 in.mp4 | head -20</pre>
+  <p class="small"><b>读法：</b><code>r_frame_rate</code> 是容器标称帧率，<code>avg_frame_rate</code> 是实际平均；两者差很多说明是 VFR（可变帧率），转码前最好先 <code>-vf fps=30</code> 或 <code>setpts</code> 统一。关键帧时间相减就是 GOP 秒数；<code>pict_type</code> 的 I/P/B 与 <code>key_frame</code> 的 1/0 一起看，别把普通 I 帧当成 IDR。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>症状</th><th>先看什么</th><th>常见根因</th></tr></thead>
+      <tbody>
+        <tr><td>花屏、绿屏、只有半边</td><td><code>profile</code>/<code>level</code>、<code>codec_tag_string</code>、extradata</td><td>SPS/PPS 丢失、level 超出设备上限、hvc1/hev1 标签不匹配</td></tr>
+        <tr><td>拖动很慢、首帧久</td><td>关键帧列表与 GOP 间隔</td><td>GOP 太长、open GOP 的 leading picture、关键帧没有 IDR</td></tr>
+        <tr><td>文件比预期大</td><td><code>bit_rate</code>、<code>codec_name</code>、<code>pix_fmt</code></td><td>CRF 太低、用了 10 bit、preset 太快、码率没封顶</td></tr>
+        <tr><td>音画不同步</td><td><code>start_time</code>、PTS/DTS、时间基</td><td>VFR、编辑列表、音频采样率与时间基不一致</td></tr>
+        <tr><td>颜色发灰、发暗</td><td><code>color_space</code>/<code>color_transfer</code>/<code>color_primaries</code>/<code>color_range</code></td><td>色彩标签缺失、有限范围与全范围混淆、HDR 未 tone-map</td></tr>
+        <tr><td>只有声音没有画面</td><td><code>codec_type</code>、流索引</td><td>选错流、视频轨损坏、封装器不兼容</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>再开药：五条转码配方</h3>
+  <pre class="code"><span class="cm"># 4) H.264 → H.265：音频能 copy 就 copy，视频重编码</span>
+ffmpeg -i in.mp4 -c:v libx265 -preset slow -crf 24 -profile:v main10 \
+  -tag:v hvc1 -c:a copy out_hevc.mp4
+
+<span class="cm"># 5) 固定 2 秒 GOP + closed GOP：让关键帧真正可 seek</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset medium -crf 21 \
+  -g 50 -keyint_min 50 -sc_threshold 0 -flags +cgop -c:a copy out_gop.mp4
+
+<span class="cm"># 6) capped CRF：质量优先，但复杂场景不许超过 8 Mbps</span>
+ffmpeg -i in.mp4 -c:v libx264 -preset slow -crf 20 -maxrate 8M -bufsize 16M \
+  -c:a copy out_capped.mp4
+
+<span class="cm"># 7) 两遍 ABR：目标平均码率 6 Mbps；两遍参数必须一致</span>
+ffmpeg -y -i in.mp4 -c:v libx264 -preset slow -b:v 6M -pass 1 -an -f null -
+ffmpeg -y -i in.mp4 -c:v libx264 -preset slow -b:v 6M -pass 2 \
+  -c:a aac -b:a 128k out_2pass.mp4
+
+<span class="cm"># 8) 抽 Annex B，再用 trace_headers 把 SPS/PPS 的语法元素打印出来</span>
+ffmpeg -i in.mp4 -c:v copy -bsf:v h264_mp4toannexb -f h264 in.h264
+ffmpeg -loglevel trace -i in.h264 -c:v copy -bsf:v trace_headers -f null - 2> trace.log</pre>
+  <p class="small"><b>trace_headers 的两个前提：</b>① 日志级别必须是 <code>trace</code>，否则过滤器不会打印；② MP4 的 SPS/PPS 常在 <code>avcC</code> 的 extradata 里，先转成 Annex B 才能稳定地在包内看到。打开 <code>trace.log</code> 搜 <code>Sequence Parameter Set</code> / <code>Picture Parameter Set</code>，就能逐项看到 <code>profile_idc</code>、<code>level_idc</code>、<code>pic_width_in_mbs_minus1</code>、<code>frame_mbs_only_flag</code> 等字段。</p>
+
+  <p class="small"><b>几条容易踩的坑：</b>① <code>ffprobe</code> 的 <code>level</code> 可能显示 <code>-99</code>，表示码流没写或解析不出，不代表文件坏；② <code>bit_rate</code> 是容器估算，短文件/流式文件偏差大，精确值要把 packet 的 <code>size</code> 求和再除以时长；③ <code>-c:a copy</code> 只适合源音频与目标容器兼容的情况（AAC→MP4 一般可以，PCM→MP4 就不行）；④ 两遍编码不要在第一遍加 <code>-c:a</code>，音轨不会参与视频统计。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>诊断顺序建议：</b><code>ffprobe 流概览</code> → <code>逐帧类型</code> → <code>关键帧间隔</code> → 再选编码器与参数。先确认“源流是什么”，再谈“目标流要多小”；反过来做，往往会在错误的 profile/level 上反复试错。</span></div>
+</section>
+
+<section id="theory">
+  <h2>🔬 理论一角：DCT、量化表与 zigzag</h2>
+  <p class="lead">DCT 像把一块 8×8 的布料拆成 64 根粗细不同的琴弦：低频是厚重的低音，代表整块的平均明暗；高频是细碎的高音，代表边缘与纹理。自然画面的大部分能量都集中在低音上，所以只要把高音削掉，画面看起来仍然完整。</p>
+
+  <h3>8×8 DCT：从“像素”变成“频率”</h3>
+  <p>DCT（离散余弦变换）把 8×8 的像素值投影到 64 个固定的“花纹”上：左上角是全白/全黑（DC，平均值），越往右下，花纹越细碎（高频）。每个系数就是“这块画面里含多少这种花纹”。<b>变换本身是可逆的</b>，真正丢信息的是下一步的量化。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 300" style="width:100%;height:auto" role="img" aria-label="8×8 像素块经 DCT 得到能量集中的系数块">
+      <text x="60" y="38" font-size="11" font-weight="700" fill="#475569">像素块（8×8，横向 +2、纵向 +6 的渐变）</text>
+      <rect x="60" y="50" width="176" height="176" fill="#f8fafc" stroke="#cbd5e1"/>
+
+      <text x="71" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">96</text><text x="93" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">98</text><text x="115" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">100</text><text x="137" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">102</text><text x="159" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">104</text><text x="181" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">106</text><text x="203" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">108</text><text x="225" y="64" text-anchor="middle" font-size="8.5" fill="#0f172a">110</text>
+
+      <text x="71" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">102</text><text x="93" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">104</text><text x="115" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">106</text><text x="137" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">108</text><text x="159" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">110</text><text x="181" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">112</text><text x="203" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">114</text><text x="225" y="86" text-anchor="middle" font-size="8.5" fill="#0f172a">116</text>
+
+      <text x="71" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">108</text><text x="93" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">110</text><text x="115" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">112</text><text x="137" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">114</text><text x="159" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">116</text><text x="181" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">118</text><text x="203" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">120</text><text x="225" y="108" text-anchor="middle" font-size="8.5" fill="#0f172a">122</text>
+
+      <text x="71" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">114</text><text x="93" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">116</text><text x="115" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">118</text><text x="137" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">120</text><text x="159" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">122</text><text x="181" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">124</text><text x="203" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">126</text><text x="225" y="130" text-anchor="middle" font-size="8.5" fill="#0f172a">128</text>
+
+      <text x="71" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">120</text><text x="93" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">122</text><text x="115" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">124</text><text x="137" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">126</text><text x="159" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">128</text><text x="181" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">130</text><text x="203" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">132</text><text x="225" y="152" text-anchor="middle" font-size="8.5" fill="#0f172a">134</text>
+
+      <text x="71" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">126</text><text x="93" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">128</text><text x="115" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">130</text><text x="137" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">132</text><text x="159" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">134</text><text x="181" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">136</text><text x="203" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">138</text><text x="225" y="174" text-anchor="middle" font-size="8.5" fill="#0f172a">140</text>
+
+      <text x="71" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">132</text><text x="93" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">134</text><text x="115" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">136</text><text x="137" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">138</text><text x="159" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">140</text><text x="181" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">142</text><text x="203" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">144</text><text x="225" y="196" text-anchor="middle" font-size="8.5" fill="#0f172a">146</text>
+
+      <text x="71" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">138</text><text x="93" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">140</text><text x="115" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">142</text><text x="137" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">144</text><text x="159" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">146</text><text x="181" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">148</text><text x="203" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">150</text><text x="225" y="218" text-anchor="middle" font-size="8.5" fill="#0f172a">152</text>
+
+      <line x1="252" y1="138" x2="420" y2="138" stroke="#7c3aed" stroke-width="1.6"/>
+      <polygon points="430,138 418,132 418,144" fill="#7c3aed"/>
+      <text x="340" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">DCT →</text>
+
+      <text x="450" y="38" font-size="11" font-weight="700" fill="#475569">系数块（8×8，已四舍五入）</text>
+      <rect x="450" y="50" width="176" height="176" fill="#f8fafc" stroke="#cbd5e1"/>
+
+      <text x="461" y="64" text-anchor="middle" font-size="8.5" fill="#5b21b6">992</text><text x="483" y="64" text-anchor="middle" font-size="8.5" fill="#5b21b6">-36</text><text x="505" y="64" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="64" text-anchor="middle" font-size="8.5" fill="#5b21b6">-4</text><text x="549" y="64" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="64" text-anchor="middle" font-size="8.5" fill="#5b21b6">-1</text><text x="593" y="64" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="64" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="86" text-anchor="middle" font-size="8.5" fill="#5b21b6">-109</text><text x="483" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="86" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="483" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="108" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="130" text-anchor="middle" font-size="8.5" fill="#5b21b6">-11</text><text x="483" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="130" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="483" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="152" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="174" text-anchor="middle" font-size="8.5" fill="#5b21b6">-3</text><text x="483" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="174" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="483" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="196" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="461" y="218" text-anchor="middle" font-size="8.5" fill="#5b21b6">-1</text><text x="483" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="505" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="527" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="549" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="571" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="593" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text><text x="615" y="218" text-anchor="middle" font-size="8.5" fill="#cbd5e1">0</text>
+
+      <text x="60" y="252" font-size="9.5" fill="#64748b">块均值 124：DC = 8 × 124 = 992；右下角的高频几乎全是 0。</text>
+      <text x="450" y="252" font-size="9.5" fill="#64748b">能量集中在左上角（低频），这就是“能量压缩”。</text>
+    </svg>
+    <figcaption>左边是像素块，右边是 DCT 系数块：DC 巨大，少数低频系数有值，绝大多数高频系数接近 0。</figcaption>
+  </div>
+
+  <p>为什么是 8×8？太小（4×4）时，一块里装不下复杂的纹理，能量压缩不够；太大（16×16、32×32）时，一块里混进不同物体，预测与变换都更费。H.264 用 4×4/8×8，HEVC 用 4×4–32×32，都是在“局部平稳”与“计算量”之间找平衡。</p>
+
+  <h3>量化：把“小数”变成“0”，也是唯一不可逆的一步</h3>
+  <p>量化就是把每个系数除以一个步长，再四舍五入：<code>量化值 = round(系数 / 步长)</code>。步长越大，越多的系数变成 0，文件越小，细节也越少。下面用 JPEG 的标准亮度量化表做直观演示（H.264/HEVC 默认矩阵是平坦的，但“高频更容易归零”的现象仍然存在）：</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>系数位置</th><th>DCT 值</th><th>量化步长</th><th>量化后</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>DC (0,0)</td><td class="num">992</td><td class="num">16</td><td class="num">62</td><td>低频，步长最小，保留最多</td></tr>
+        <tr><td>(1,0)</td><td class="num">−109</td><td class="num">12</td><td class="num">−9</td><td>横向低频，仍有明显能量</td></tr>
+        <tr><td>(0,1)</td><td class="num">−36</td><td class="num">11</td><td class="num">−3</td><td>纵向低频，开始被削</td></tr>
+        <tr><td>(0,3)</td><td class="num">−4</td><td class="num">16</td><td class="num">0</td><td>小系数直接归零</td></tr>
+        <tr><td>(7,7)</td><td class="num">0</td><td class="num">99</td><td class="num">0</td><td>最高频，步长最大，几乎必为 0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">JPEG 表里高频步长可达 99，低频只有 11–16；H.264/HEVC 默认不做这种“重罚高频”，但自然图像的高频系数本来就只有个位数，加上编码器的 dead-zone，量化后仍会大量归零。归零不是“坏”：它让后面的熵编码能用一个短码表示一大片零，换来的体积下降通常远大于那点看不见的细节。</p>
+
+  <h3>zigzag：让零聚在队尾</h3>
+  <p>量化后，非零系数大多集中在左上角，右下角一大片 0。如果按行扫描，零会被“打断”；<b>zigzag</b> 按 0→1→2…63 的斜线顺序走，先把低频扫完，再把高频的零排到后面，于是可以用“连续零的个数 + 下一个非零值”成对记录，最后用 <b>EOB</b>（End of Block）收尾。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 360" style="width:100%;height:auto" role="img" aria-label="8×8 DCT 系数的 zigzag 扫描顺序">
+      <text x="60" y="36" font-size="11" font-weight="700" fill="#475569">按 zigzag 编号的 8×8 系数块</text>
+      <rect x="60" y="50" width="272" height="272" fill="#ffffff" stroke="#94a3b8"/>
+
+      <line x1="94" y1="50" x2="94" y2="322" stroke="#e2e8f0"/>
+      <line x1="128" y1="50" x2="128" y2="322" stroke="#e2e8f0"/>
+      <line x1="162" y1="50" x2="162" y2="322" stroke="#e2e8f0"/>
+      <line x1="196" y1="50" x2="196" y2="322" stroke="#e2e8f0"/>
+      <line x1="230" y1="50" x2="230" y2="322" stroke="#e2e8f0"/>
+      <line x1="264" y1="50" x2="264" y2="322" stroke="#e2e8f0"/>
+      <line x1="298" y1="50" x2="298" y2="322" stroke="#e2e8f0"/>
+      <line x1="60" y1="84" x2="332" y2="84" stroke="#e2e8f0"/>
+      <line x1="60" y1="118" x2="332" y2="118" stroke="#e2e8f0"/>
+      <line x1="60" y1="152" x2="332" y2="152" stroke="#e2e8f0"/>
+      <line x1="60" y1="186" x2="332" y2="186" stroke="#e2e8f0"/>
+      <line x1="60" y1="220" x2="332" y2="220" stroke="#e2e8f0"/>
+      <line x1="60" y1="254" x2="332" y2="254" stroke="#e2e8f0"/>
+      <line x1="60" y1="288" x2="332" y2="288" stroke="#e2e8f0"/>
+
+      <polyline points="77,67 111,67 77,101 77,135 111,101 145,67 179,67 145,101 111,135 77,169 77,203 111,169 145,135 179,101 213,67 247,67 213,101 179,135 145,169 111,203 77,237 77,271 111,237 145,203 179,169 213,135 247,101 281,67 315,67 281,101 247,135 213,169 179,203 145,237 111,271 77,305 111,305 145,271 179,237 213,203 247,169 281,135 315,101 315,135 281,169 247,203 213,237 179,271 145,305 179,305 213,271 247,237 281,203 315,169 315,203 281,237 247,271 213,305 247,305 281,271 315,237 315,271 281,305 315,305" fill="none" stroke="#7c3aed" stroke-width="1.2" opacity=".5"/>
+
+      <text x="77" y="70" text-anchor="middle" font-size="8.5" fill="#5b21b6">0</text><text x="111" y="70" text-anchor="middle" font-size="8.5" fill="#5b21b6">1</text><text x="145" y="70" text-anchor="middle" font-size="8.5" fill="#5b21b6">5</text><text x="179" y="70" text-anchor="middle" font-size="8.5" fill="#5b21b6">6</text><text x="213" y="70" text-anchor="middle" font-size="8.5" fill="#0891b2">14</text><text x="247" y="70" text-anchor="middle" font-size="8.5" fill="#0891b2">15</text><text x="281" y="70" text-anchor="middle" font-size="8.5" fill="#10b981">27</text><text x="315" y="70" text-anchor="middle" font-size="8.5" fill="#10b981">28</text>
+
+      <text x="77" y="104" text-anchor="middle" font-size="8.5" fill="#5b21b6">2</text><text x="111" y="104" text-anchor="middle" font-size="8.5" fill="#5b21b6">4</text><text x="145" y="104" text-anchor="middle" font-size="8.5" fill="#5b21b6">7</text><text x="179" y="104" text-anchor="middle" font-size="8.5" fill="#0891b2">13</text><text x="213" y="104" text-anchor="middle" font-size="8.5" fill="#0891b2">16</text><text x="247" y="104" text-anchor="middle" font-size="8.5" fill="#10b981">26</text><text x="281" y="104" text-anchor="middle" font-size="8.5" fill="#10b981">29</text><text x="315" y="104" text-anchor="middle" font-size="8.5" fill="#f59e0b">42</text>
+
+      <text x="77" y="138" text-anchor="middle" font-size="8.5" fill="#5b21b6">3</text><text x="111" y="138" text-anchor="middle" font-size="8.5" fill="#5b21b6">8</text><text x="145" y="138" text-anchor="middle" font-size="8.5" fill="#0891b2">12</text><text x="179" y="138" text-anchor="middle" font-size="8.5" fill="#0891b2">17</text><text x="213" y="138" text-anchor="middle" font-size="8.5" fill="#10b981">25</text><text x="247" y="138" text-anchor="middle" font-size="8.5" fill="#10b981">30</text><text x="281" y="138" text-anchor="middle" font-size="8.5" fill="#f59e0b">41</text><text x="315" y="138" text-anchor="middle" font-size="8.5" fill="#f59e0b">43</text>
+
+      <text x="77" y="172" text-anchor="middle" font-size="8.5" fill="#5b21b6">9</text><text x="111" y="172" text-anchor="middle" font-size="8.5" fill="#0891b2">11</text><text x="145" y="172" text-anchor="middle" font-size="8.5" fill="#0891b2">18</text><text x="179" y="172" text-anchor="middle" font-size="8.5" fill="#10b981">24</text><text x="213" y="172" text-anchor="middle" font-size="8.5" fill="#10b981">31</text><text x="247" y="172" text-anchor="middle" font-size="8.5" fill="#f59e0b">40</text><text x="281" y="172" text-anchor="middle" font-size="8.5" fill="#f59e0b">44</text><text x="315" y="172" text-anchor="middle" font-size="8.5" fill="#f59e0b">53</text>
+
+      <text x="77" y="206" text-anchor="middle" font-size="8.5" fill="#0891b2">10</text><text x="111" y="206" text-anchor="middle" font-size="8.5" fill="#0891b2">19</text><text x="145" y="206" text-anchor="middle" font-size="8.5" fill="#10b981">23</text><text x="179" y="206" text-anchor="middle" font-size="8.5" fill="#10b981">32</text><text x="213" y="206" text-anchor="middle" font-size="8.5" fill="#f59e0b">39</text><text x="247" y="206" text-anchor="middle" font-size="8.5" fill="#f59e0b">45</text><text x="281" y="206" text-anchor="middle" font-size="8.5" fill="#f59e0b">52</text><text x="315" y="206" text-anchor="middle" font-size="8.5" fill="#f59e0b">54</text>
+
+      <text x="77" y="240" text-anchor="middle" font-size="8.5" fill="#0891b2">20</text><text x="111" y="240" text-anchor="middle" font-size="8.5" fill="#0891b2">22</text><text x="145" y="240" text-anchor="middle" font-size="8.5" fill="#10b981">33</text><text x="179" y="240" text-anchor="middle" font-size="8.5" fill="#f59e0b">38</text><text x="213" y="240" text-anchor="middle" font-size="8.5" fill="#f59e0b">46</text><text x="247" y="240" text-anchor="middle" font-size="8.5" fill="#f59e0b">51</text><text x="281" y="240" text-anchor="middle" font-size="8.5" fill="#f59e0b">55</text><text x="315" y="240" text-anchor="middle" font-size="8.5" fill="#f59e0b">60</text>
+
+      <text x="77" y="274" text-anchor="middle" font-size="8.5" fill="#0891b2">21</text><text x="111" y="274" text-anchor="middle" font-size="8.5" fill="#10b981">34</text><text x="145" y="274" text-anchor="middle" font-size="8.5" fill="#10b981">37</text><text x="179" y="274" text-anchor="middle" font-size="8.5" fill="#f59e0b">47</text><text x="213" y="274" text-anchor="middle" font-size="8.5" fill="#f59e0b">50</text><text x="247" y="274" text-anchor="middle" font-size="8.5" fill="#f59e0b">56</text><text x="281" y="274" text-anchor="middle" font-size="8.5" fill="#f59e0b">59</text><text x="315" y="274" text-anchor="middle" font-size="8.5" fill="#f59e0b">61</text>
+
+      <text x="77" y="308" text-anchor="middle" font-size="8.5" fill="#10b981">35</text><text x="111" y="308" text-anchor="middle" font-size="8.5" fill="#10b981">36</text><text x="145" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">48</text><text x="179" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">49</text><text x="213" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">57</text><text x="247" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">58</text><text x="281" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">62</text><text x="315" y="308" text-anchor="middle" font-size="8.5" fill="#f59e0b">63</text>
+
+      <text x="380" y="72" font-size="11" font-weight="700" fill="#475569">读到什么</text>
+      <text x="380" y="100" font-size="9.5" fill="#5b21b6">0–15：低频，通常最大，先写</text>
+      <text x="380" y="126" font-size="9.5" fill="#0891b2">16–31：中频，常出现小值</text>
+      <text x="380" y="152" font-size="9.5" fill="#10b981">32–47：高频，开始大量归零</text>
+      <text x="380" y="178" font-size="9.5" fill="#d97706">48–63：最高频，基本全 0</text>
+      <text x="380" y="212" font-size="9.5" fill="#475569">连续 0 → 用 run-length 记“跳过几个”</text>
+      <text x="380" y="236" font-size="9.5" fill="#475569">后面全是 0 → 直接写 EOB 结束</text>
+      <text x="380" y="260" font-size="9.5" fill="#475569">先扫低频，是为了让零聚在队尾</text>
+      <text x="380" y="284" font-size="9.5" fill="#475569">零聚得越整齐，熵编码越省比特</text>
+    </svg>
+    <figcaption>格子里的数字是扫描序号，不是系数值。紫→青→绿→黄表示频率从低到高；折线就是 zigzag 的走法。</figcaption>
+  </div>
+
+  <h3>最后一步：熵编码把“零”变成短码</h3>
+  <p><b>CAVLC</b> 像查表：把“连续零的个数、非零值、符号”映射到固定码表；<b>CABAC</b> 像自适应算术编码：根据上下文不断更新概率区间，常用符号越编越短。同样一组量化系数，CABAC 通常比 CAVLC 省 <strong>9–14%</strong> 码率，代价是解码更复杂、更难并行。H.264 两者都支持，HEVC 只用 CABAC。</p>
+  <p class="small">所以一条完整链路是：像素 → 预测（减掉可预测部分）→ DCT（变频率）→ 量化（丢高频）→ zigzag（排零）→ 熵编码（写短码）。解码端反向走，但量化那一步的信息已经丢了，只能靠去块滤波、SAO 等后处理“补妆”。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>直觉总结：</b>DCT 不丢信息，只负责“重新排列”；量化才是压缩的来源；zigzag 让零变得好写；熵编码让常见符号变短。所有视频编码标准，本质上都在“怎样更便宜地预测、怎样更狠地量化、怎样更省地写零”这三件事上做文章。</span></div>
 </section>
 
 <section id="glossary">

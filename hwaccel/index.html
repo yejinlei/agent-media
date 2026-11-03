@@ -71,6 +71,14 @@
     <a href="#compare">显存、并发与画质</a>
     <a href="#pitfalls">常见参数陷阱</a>
     <a href="#debug">验证与监控</a>
+    <a href="#matrix">能力矩阵：每个后端能干什么</a>
+    <a href="#pipeline">零拷贝逐跳拆解</a>
+    <a href="#params">参数对照：NVENC / QSV / x264</a>
+    <a href="#density">单机密度与瓶颈</a>
+    <a href="#color">色彩、位深与 HDR</a>
+    <a href="#containers">容器、WSL2 与虚拟机</a>
+    <a href="#observe">观测：仪表盘怎么读</a>
+    <a href="#faq">常见坑 FAQ</a>
     <a href="#glossary">术语表</a>
   </nav>
 </aside>
@@ -637,6 +645,1094 @@ GST_DEBUG=3 gst-launch-1.0 ... 2&gt;&amp;1 | grep -iE 'not-negotiated|missing'
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>压测方法：</b>固定输入、逐路增加，记录“第 N 路开始掉帧/报错”的拐点，并同时采集 CPU、GPU enc/dec、显存、PCIe 与网络。拐点通常比平均值更能说明瓶颈在哪里。</span></div>
+</section>
+
+<section id="matrix">
+  <h2>🧮 能力矩阵：每个后端到底能干什么</h2>
+  <p class="lead">买卡车不能只看车标：载重、车厢尺寸、能不能进城，缺一不可。选硬件后端也一样——<strong>同一个 API 名字，不同代际能做的事差一大截</strong>。这一节把“解码/编码、位深、色度、分辨率、并发”拆成可核对的格子，而不是记一句“支持硬件加速”。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>先学会读“支持”两个字：</b>厂商说“支持 AV1”，可能只指解码；说“支持 10-bit”，可能只指解码；说“支持 8K”，可能只在特定 profile 与码率下成立。采购前把<strong>方向（解还是编）、profile、位深、色度、分辨率、帧率</strong>六件事分别问清楚，再去看报价单。</span></div>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>后端 / 平台</th><th>H.264</th><th>HEVC</th><th>AV1</th><th>10-bit</th><th>4:2:2 / 4:4:4</th><th>最大分辨率（量级）</th><th>B 帧 / lookahead</th><th>1080p 并发（量级）</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>NVENC / NVDEC</b><br><span class="small">NVIDIA<br>Linux / Windows</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编<br><span class="small">Maxwell 2 代起</span></td>
+          <td>解：Ampere 起<br>编：Ada 及之后</td>
+          <td>HEVC / AV1 支持<br>H.264 一般 8-bit</td>
+          <td>解码视专业型号<br>编码以 4:2:0 为主</td>
+          <td>H.264 约 4K 级<br>HEVC / AV1 可达 8K 级</td>
+          <td>HEVC 支持 B 帧<br>lookahead 随 preset / tune</td>
+          <td>消费级个位数到十几路<br>专业 / 数据中心十几到几十路</td>
+        </tr>
+        <tr>
+          <td><b>VAAPI</b><br><span class="small">Intel / AMD<br>Linux</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编</td>
+          <td>解 + 编<br><span class="small">Intel Gen12+ / AMD RDNA2+ 量级</span></td>
+          <td>HEVC / AV1<br><span class="small">视驱动与硬件</span></td>
+          <td>解码视硬件<br>编码少见</td>
+          <td>4K–8K<br><span class="small">视 GPU 代际</span></td>
+          <td>B 帧视编码器<br>lookahead 少见</td>
+          <td>个位数到十几路<br><span class="small">共享内存带宽</span></td>
+        </tr>
+        <tr>
+          <td><b>QSV</b><br><span class="small">Intel 核显 / Arc<br>Windows / Linux</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编</td>
+          <td>解：Gen12+ 量级<br>编：Arc / Flex 等</td>
+          <td>HEVC / AV1 支持</td>
+          <td>4:2:2 解码部分平台<br>编码以 4:2:0 为主</td>
+          <td>4K–8K<br><span class="small">视平台与驱动</span></td>
+          <td>lookahead 支持<br><span class="small">low_power 下常关闭</span></td>
+          <td>个位数到十几路<br><span class="small">受媒体引擎数量限制</span></td>
+        </tr>
+        <tr>
+          <td><b>VideoToolbox</b><br><span class="small">Apple<br>macOS / iOS</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编</td>
+          <td>解：M3 / A17 起量级<br>无 AV1 编码</td>
+          <td>HEVC Main10</td>
+          <td>不在消费级 VT 路径<br><span class="small">ProRes 走另一套</span></td>
+          <td>4K–8K<br><span class="small">视芯片</span></td>
+          <td>B 帧由系统决定<br>参数空间小</td>
+          <td>个位数<br><span class="small">媒体引擎数量有限</span></td>
+        </tr>
+        <tr>
+          <td><b>AMF</b><br><span class="small">AMD<br>Windows</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编</td>
+          <td>解：RDNA2 起<br>编：RDNA3 起</td>
+          <td>HEVC / AV1 支持</td>
+          <td>4:2:0 为主</td>
+          <td>4K–8K<br><span class="small">视代际</span></td>
+          <td>B 帧视编码器<br>lookahead 有限</td>
+          <td>个位数到十几路<br><span class="small">受 VCN 数量限制</span></td>
+        </tr>
+        <tr>
+          <td><b>Rockchip MPP</b><br><span class="small">RK3588 / RK3568 等<br>Linux</span></td>
+          <td>解 + 编</td>
+          <td>解 + 编</td>
+          <td>解：RK3588 量级<br>编码视 SoC</td>
+          <td>HEVC 视 SoC</td>
+          <td>4:2:0</td>
+          <td>4K–8K<br><span class="small">以 SoC 规格为准</span></td>
+          <td>B 帧有限<br>lookahead 少见</td>
+          <td>个位数<br><span class="small">VPU 固定，4K 更少</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">表中“支持”是能力方向，不是性能承诺；同一后端在不同代际、不同驱动、不同 FFmpeg/GStreamer 构建下都可能缩水。并发路数全部是<strong>量级</strong>，强依赖码率、GOP、滤镜与显存，必须以本机压测为准。</p>
+
+  <details class="b">
+    <summary><span class="ar">▶</span>代际分水岭：一句话记住每一代新增了什么</summary>
+    <div class="bd">
+      <div class="scroll-x">
+        <table class="cmp">
+          <thead><tr><th>厂商</th><th>分水岭</th><th>新增能力（量级）</th></tr></thead>
+          <tbody>
+            <tr><td>NVIDIA</td><td>Maxwell 2 代</td><td>HEVC 硬件编码进入消费级；此前主要是 H.264</td></tr>
+            <tr><td>NVIDIA</td><td>Pascal</td><td>HEVC 10-bit 编码更完整，4K 支持更稳</td></tr>
+            <tr><td>NVIDIA</td><td>Turing</td><td>NVENC 画质与编码工具明显改进；HEVC B 帧能力增强</td></tr>
+            <tr><td>NVIDIA</td><td>Ampere</td><td>AV1 硬件解码；编码仍以 H.264/HEVC 为主</td></tr>
+            <tr><td>NVIDIA</td><td>Ada 及之后</td><td>AV1 硬件编码；数据中心型号（如 L4/L40 量级）也提供</td></tr>
+            <tr><td>Intel</td><td>Skylake / Kaby Lake</td><td>HEVC 8-bit 硬编；随后补上 10-bit</td></tr>
+            <tr><td>Intel</td><td>Gen12 / Tiger Lake 量级</td><td>AV1 硬件解码；Arc / Flex 等再提供 AV1 编码</td></tr>
+            <tr><td>AMD</td><td>RDNA2</td><td>AV1 硬件解码；RDNA3 起提供 AV1 编码</td></tr>
+            <tr><td>Apple</td><td>M3 / A17 量级</td><td>AV1 硬件解码；编码仍以 H.264/HEVC 为主</td></tr>
+            <tr><td>Rockchip</td><td>RK3588</td><td>8K 级解码与 4K–8K 编码（具体以 SoC 规格为准）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small">这张表只记“代际方向”，不记具体型号。真正下单前，仍要查该型号的官方视频编解码支持矩阵——同一个家族里也可能有阉割版。</p>
+    </div>
+  </details>
+
+  <h3>Profile 与 Level：同一个编码器也有“档位”</h3>
+  <p>就像同一辆车有经济模式、运动模式，编码器也用 profile 决定“允许用哪些工具”，用 level 决定“允许多大的画面与码率”。硬件支持某个 codec，不等于支持所有 profile；很多“编码失败”其实是 profile 或 level 选错了。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>编码</th><th>常见 profile</th><th>位深 / 色度</th><th>硬件常见程度</th><th>容易踩的点</th></tr></thead>
+      <tbody>
+        <tr><td>H.264</td><td>Baseline / Main / High</td><td>8-bit 4:2:0</td><td>最普遍；High 是默认</td><td>Baseline 禁用 CABAC 与 B 帧；High 4:2:2/4:4:4 硬件编码很少见</td></tr>
+        <tr><td>HEVC</td><td>Main / Main10</td><td>8-bit / 10-bit 4:2:0</td><td>Main10 在新代际普遍</td><td>10-bit 必须 <code>p010le</code> + Main10；写成 Main 会回退或失败</td></tr>
+        <tr><td>HEVC 专业档</td><td>Main 4:2:2 10 等</td><td>10-bit 4:2:2 / 4:4:4</td><td>消费级少见</td><td>广播/演播室需求要单独确认，别默认“HEVC 就支持 4:2:2”</td></tr>
+        <tr><td>AV1</td><td>Main / Professional</td><td>8/10-bit 4:2:0；专业档更高</td><td>Main 为主</td><td>AV1 编码的代际门槛最高；解码支持通常早于编码</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">Level 常被忽略：H.264 Level 4.1 大致覆盖 1080p30，Level 5.1/5.2 才覆盖 4K 量级；HEVC 与 AV1 也各有 level/tier。硬件编码器还会额外限制最大宽高与码率，因此“分辨率没超 8K”不代表 level 一定够。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>解码强 ≠ 编码强</h4>
+      <p class="small">一张卡能解 8K AV1，不代表能编 AV1；能解 4:2:2，不代表能编 4:2:2。矩阵里“解”和“编”必须分列看，做转码容量规划时也要分别算。</p>
+    </div>
+    <div class="card">
+      <h4>8K 解码 ≠ 8K 编码</h4>
+      <p class="small">解码只还原画面，编码还要做运动搜索、码控、熵编码，显存与时间预算高得多。很多型号“8K 解码”只是播放能力，“8K 编码”要降帧率或根本不存在。</p>
+    </div>
+    <div class="card">
+      <h4>同一 API ≠ 同一能力</h4>
+      <p class="small">VAAPI 在 Intel 与 AMD 上是两套实现；QSV 在旧核显与新 Arc 上也不是一个能力表。别拿“VAAPI 支持”当跨平台保证，要按具体设备查。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>采购三问：</b>① 我要的是解码、编码，还是两者都要？② 我的分辨率、帧率、位深、色度分别是什么？③ 我要几路并发，瓶颈会落在媒体引擎、显存还是总线？三问答完，再看“支持列表”，就不会被一行“支持 8K”带偏。</span></div>
+</section>
+
+<section id="pipeline">
+  <h2>🧵 零拷贝逐跳拆解：帧在哪一步被搬下传送带</h2>
+  <p class="lead">把转码链路想成快递中转：每换一种交通工具，就要卸货、扫码、再装车。所谓零拷贝，就是让同一个包裹始终待在同一个托盘上，中转站只换司机、不换托盘。下面把“解码器 → 滤镜 → 编码器”拆成逐跳，指出哪些动作会偷偷把帧搬回系统内存。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 920 375" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="硬件转码帧路径：设备表面与系统内存之间的拷贝">
+      <defs>
+        <marker id="pg" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#10b981"/></marker>
+        <marker id="pr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#e11d48"/></marker>
+        <marker id="pc" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#0891b2"/></marker>
+        <marker id="pp" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7c3aed"/></marker>
+      </defs>
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">一帧的两种命运：留在显存，还是被搬回内存</text>
+
+      <rect x="20" y="45" width="880" height="140" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="34" y="66" font-size="11" fill="#64748b">设备显存 / GPU 表面</text>
+
+      <rect x="20" y="205" width="880" height="140" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="34" y="226" font-size="11" fill="#64748b">系统内存 / CPU</text>
+
+      <rect x="50" y="245" width="130" height="52" rx="7" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="115" y="267" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">解复用</text>
+      <text x="115" y="284" text-anchor="middle" font-size="10" fill="#64748b">demux · 压缩码流</text>
+
+      <rect x="200" y="85" width="140" height="70" rx="7" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="270" y="111" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">解码器</text>
+      <text x="270" y="128" text-anchor="middle" font-size="10" fill="#64748b">NVDEC / VAAPI / QSV</text>
+      <text x="270" y="144" text-anchor="middle" font-size="10" fill="#64748b">输出设备表面</text>
+
+      <rect x="400" y="85" width="150" height="70" rx="7" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="475" y="111" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">GPU 滤镜</text>
+      <text x="475" y="128" text-anchor="middle" font-size="10" fill="#64748b">scale_cuda / scale_vaapi</text>
+      <text x="475" y="144" text-anchor="middle" font-size="10" fill="#64748b">缩放 / 转格式</text>
+
+      <rect x="610" y="85" width="140" height="70" rx="7" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="680" y="111" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">编码器</text>
+      <text x="680" y="128" text-anchor="middle" font-size="10" fill="#64748b">NVENC / VAAPI / QSV</text>
+      <text x="680" y="144" text-anchor="middle" font-size="10" fill="#64748b">吃 NV12 / P010</text>
+
+      <rect x="390" y="245" width="160" height="52" rx="7" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="470" y="267" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">CPU 滤镜</text>
+      <text x="470" y="284" text-anchor="middle" font-size="10" fill="#64748b">drawtext / overlay / framesync</text>
+
+      <rect x="790" y="245" width="100" height="52" rx="7" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="840" y="267" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">复用 / 分发</text>
+      <text x="840" y="284" text-anchor="middle" font-size="10" fill="#64748b">mux · 只碰码流</text>
+
+      <line x1="180" y1="245" x2="222" y2="158" stroke="#0891b2" stroke-width="1.8" marker-end="url(#pc)"/>
+      <text x="160" y="198" font-size="10.5" fill="#0891b2">压缩码流</text>
+
+      <line x1="340" y1="120" x2="394" y2="120" stroke="#10b981" stroke-width="2" marker-end="url(#pg)"/>
+      <line x1="550" y1="120" x2="604" y2="120" stroke="#10b981" stroke-width="2" marker-end="url(#pg)"/>
+
+      <line x1="750" y1="120" x2="796" y2="245" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#pp)"/>
+      <text x="782" y="196" font-size="10.5" fill="#7c3aed">码流回读</text>
+
+      <line x1="300" y1="155" x2="420" y2="242" stroke="#e11d48" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#pr)"/>
+      <text x="304" y="216" font-size="10.5" fill="#e11d48">hwdownload（每帧搬回）</text>
+
+      <line x1="540" y1="242" x2="650" y2="158" stroke="#e11d48" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#pr)"/>
+      <text x="552" y="216" font-size="10.5" fill="#e11d48">hwupload（再搬回去）</text>
+
+      <text x="20" y="368" font-size="10.5" fill="#64748b">绿色 = 设备表面内完成；红色虚线 = 隐式下载 / 上传；青色 = 压缩码流；紫色 = 编码后的码流回读。</text>
+    </svg>
+    <figcaption>理想的零拷贝只在显存里换手；一旦滤镜或格式协商要求 CPU 可读像素，帧就会沿红色虚线上下传送带各走一次。</figcaption>
+  </div>
+
+  <h3>第一跳：解复用只送“压缩包”，不送像素</h3>
+  <p>解复用像把整箱快递拆成一个个小包裹：包裹里仍是压缩码流，体积只有 KB 级。这一步本来就在 CPU 上完成，硬件帮不上忙，也不该帮——真正开始搬像素，是解码器把码流还原成帧的那一刻。</p>
+  <p>因此“零拷贝”讨论的从来不是码流，而是<strong>像素帧</strong>。1080p 一帧 NV12 约 3.1 MB，码流一帧可能只有几十 KB；两者的搬运成本差了两个数量级。</p>
+
+  <h3>第二跳：解码输出留在哪，决定后面全部</h3>
+  <p>解码器像把压缩包拆成实物，然后决定把实物放在哪个货架。货架有两种：GPU 的<strong>设备表面</strong>（显存）和 CPU 的<strong>系统内存</strong>。只要它把帧放到系统内存，后面再编码就必须重新上传——这是最隐蔽、也最常见的一次额外搬运。</p>
+  <p>关键开关是 <code>-hwaccel_output_format</code>。只写 <code>-hwaccel cuda</code> 而不写输出格式时，FFmpeg 可能把解码结果下载成软件帧，后面所有滤镜都回到 CPU；日志里编码器名字仍然是 <code>h264_nvenc</code>，所以很容易误判。</p>
+
+  <pre class="code"><span class="cm"># 反例：只开了硬解，没有把帧留在显存；scale 在 CPU 上做</span>
+ffmpeg -hwaccel cuda -i in.mp4 -vf <span class="st">"scale=1280:720"</span> \
+  -c:v h264_nvenc -preset p5 out.mp4
+
+<span class="cm"># 正例：解码输出 CUDA 表面，缩放也在显存里完成</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 \
+  -vf <span class="st">"scale_cuda=w=1280:h=720:format=yuv420p"</span> \
+  -c:v h264_nvenc -preset p5 out.mp4
+
+<span class="cm"># VAAPI：设备表面 + 设备滤镜</span>
+ffmpeg -hwaccel vaapi -hwaccel_device /dev/dri/renderD128 \
+  -hwaccel_output_format vaapi -i in.mp4 \
+  -vf <span class="st">"scale_vaapi=w=1280:h=720:format=nv12"</span> \
+  -c:v h264_vaapi -rc_mode CQP -global_quality 22 out.mp4
+
+<span class="cm"># QSV：注意 low_power 模式可能少了 lookahead / B 帧</span>
+ffmpeg -hwaccel qsv -hwaccel_output_format qsv -i in.mp4 \
+  -vf <span class="st">"scale_qsv=w=1280:h=720:format=nv12"</span> \
+  -c:v h264_qsv -global_quality 23 -look_ahead 1 out.mp4</pre>
+
+  <h3>第三跳：滤镜是零拷贝的分界线</h3>
+  <p>滤镜像中转站里的安检机：如果安检机只认“拆开的散货”，托盘就必须先卸下来。FFmpeg 的多数传统滤镜（<code>drawtext</code>、<code>subtitles</code>、<code>overlay</code>、<code>fps</code>）只认系统内存里的帧；硬件帧进来时，框架会插入 <code>hwdownload</code>，处理完再 <code>hwupload</code>。</p>
+  <p>尤其要注意 <code>overlay</code>：它内部用 <code>framesync</code> 对齐两路时间戳，默认按 CPU 帧处理。即使主画面是硬件帧，只要叠加层来自 CPU，整条链路就会被拉回内存。画中画、水印、字幕滚动都是这个套路。</p>
+
+  <p><b>四种常见的“断点触发器”：</b></p>
+  <div class="grid-2">
+    <div class="card">
+      <h4>普通 <code>format</code></h4>
+      <p class="small"><code>-vf "format=nv12"</code> 看起来只是转格式，但对设备表面来说，它意味着“给我 CPU 可读的 NV12”。应改成 <code>scale_cuda=format=yuv420p</code> 或 <code>scale_vaapi=format=nv12</code>。</p>
+    </div>
+    <div class="card">
+      <h4>CPU 滤镜与 framesync</h4>
+      <p class="small"><code>drawtext</code>、<code>subtitles</code>、<code>overlay</code>、部分 <code>fps</code>/<code>setpts</code> 组合会要求软件帧；能换 <code>overlay_cuda</code>/<code>overlay_vaapi</code> 就换，不能换就把它们挪到链路末端。</p>
+    </div>
+    <div class="card">
+      <h4>位深 / 色度不匹配</h4>
+      <p class="small">软解常见输出 <code>yuv420p10le</code>，硬件编码器要 <code>p010le</code>；RGB、4:2:2 输入也可能触发隐式转换。不是报错，而是静默插入 <code>scale</code>/<code>format</code>。</p>
+    </div>
+    <div class="card">
+      <h4>跨后端映射</h4>
+      <p class="small">D3D11 解码后交给 NVENC、VAAPI 解码后交给 QSV，都需要显式映射或下载再上传。别假设“都是硬件”就能直接握手，先看 <code>hwmap</code> 是否支持该派生方向。</p>
+    </div>
+  </div>
+
+  <h3>第四跳：编码器只认少数几种“托盘”</h3>
+  <p>编码器像只有固定卡槽的装车机：NVENC 主要吃 NV12/P010 的 CUDA 表面，VAAPI 吃 VA surface，QSV 吃 QSV surface。卡槽不一致时，FFmpeg 不会拒绝工作，而是自动插一段转换——这段转换往往就是下载、软件转换、再上传。</p>
+  <p>所以验证时不要只看“有没有报错”，要看<strong>编码器初始化时声明的输入 pix_fmt</strong>，以及滤镜图里是否出现自动插入的 <code>auto_scale</code>。一个简单判断：日志里的 <code>pixfmt</code> 从 <code>cuda</code>/<code>vaapi</code>/<code>qsv</code> 变成 <code>yuv420p</code>，链路就已经断了。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>跳</th><th>帧在哪</th><th>谁在干活</th><th>什么时候偷偷拷贝</th><th>日志 / 证据</th></tr></thead>
+      <tbody>
+        <tr><td>解复用 → 解码器</td><td>系统内存（压缩码流，KB 级）</td><td>libavformat</td><td>不涉及像素，无需拷贝</td><td>无</td></tr>
+        <tr><td>解码器输出</td><td>设备表面（<code>hw_frames_ctx</code>）或系统内存</td><td>NVDEC / VAAPI / QSV / VT</td><td>未写 <code>-hwaccel_output_format</code>，默认下载成软件帧</td><td><code>pixfmt:cuda → yuv420p</code></td></tr>
+        <tr><td>滤镜</td><td>理想：设备表面；现实：系统内存</td><td><code>scale_cuda</code> / <code>scale_vaapi</code> / CPU 滤镜</td><td>普通 <code>format</code>、CPU 滤镜、<code>framesync</code> 对齐</td><td><code>auto_scale_0</code> / <code>hwdownload</code></td></tr>
+        <tr><td>编码器输入</td><td>设备表面</td><td>NVENC / VAAPI / QSV</td><td>位深、色度、分辨率不支持时隐式转换</td><td><code>Incompatible pixel format</code> / 自动 <code>scale</code></td></tr>
+        <tr><td>编码输出</td><td>系统内存（压缩码流）</td><td>编码器写出 bitstream</td><td>码流回读，KB–MB/s，不可避免</td><td>输出码率、mux 日志</td></tr>
+        <tr><td>复用 / 分发</td><td>系统内存</td><td>muxer / 网络</td><td>只碰码流，不碰像素</td><td>网络与磁盘 IO</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div data-lazy-viz data-viz="seq" data-opts='{"title":"零拷贝链路：一次理想交接 vs 一次隐式下载","actors":["解复用","解码器","滤镜","编码器"],"speed":1000,"hint":"点击播放或单步，比较绿色理想路径与红色隐式下载路径。","steps":[{"from":0,"to":1,"label":"压缩码流进入解码器","detail":"码流仍是压缩包，只有 KB 级，解复用本来就在 CPU 上。","color":"#0891b2"},{"from":1,"to":2,"label":"输出 CUDA 表面（零拷贝）","detail":"写了 -hwaccel_output_format cuda，帧以设备表面传递，不发生像素下载。","color":"#10b981"},{"from":2,"to":2,"label":"scale_cuda 在显存里缩放","detail":"分辨率、像素格式都在 GPU 上处理，CPU 只传表面句柄。","color":"#10b981"},{"from":2,"to":3,"label":"NV12 表面进编码器","detail":"编码器接受同一个 hw_frames_ctx，理想链路在这里闭环。","color":"#10b981"},{"from":1,"to":2,"label":"反例：写了普通 format=nv12","detail":"FFmpeg 为了满足 CPU 格式，插入 hwdownload，把每帧搬回系统内存。","color":"#e11d48"},{"from":2,"to":2,"label":"swscale 在 CPU 转格式","detail":"下载后的帧走软件缩放或色彩转换，PCIe 与内存带宽开始吃紧。","color":"#e11d48"},{"from":2,"to":3,"label":"hwupload 再搬回显存","detail":"编码器只吃设备表面，只好再上传一次；一帧来回两趟。","color":"#f59e0b"},{"from":3,"to":0,"label":"码流回 CPU 复用","detail":"编码输出是压缩码流，体积小；这次回读不可避免，也不属于像素拷贝。","color":"#7c3aed"}]}'></div>
+
+  <p class="small">单步走到第 5–7 步，就能看到“看起来开了硬件、实际每帧上下传送带”的完整路径。红色不是故障，而是参数协商的结果；修复方式不是换卡，而是把 CPU 滤镜换成 GPU 版本，或明确接受一次下载。</p>
+
+  <h3>第五跳：从 V4L2 / D3D11 进来，第一跳就可能要上传</h3>
+  <p>摄像头采集像直接从传送带旁边进货：V4L2 把帧写进系统内存（或 DMABuf），它本身不是 GPU 表面。要送进编码器，第一步就得 <code>hwupload</code>；能走 DMABuf 的平台（如 Rockchip）则可以免掉这次上传。</p>
+  <p>Windows 的 D3D11VA 解码输出是 D3D11 纹理数组，若编码器是 NVENC，还需要一次跨 API 映射或下载。两者都是“硬件”，但不是同一个货架，别默认能直接对接。</p>
+
+  <pre class="code"><span class="cm"># V4L2 摄像头 → CUDA 上传 → NVENC（先初始化设备，再指定滤镜设备）</span>
+ffmpeg -init_hw_device cuda=cu:0 -filter_hw_device cu \
+  -f v4l2 -video_size 1920x1080 -framerate 30 -i /dev/video0 \
+  -vf <span class="st">"hwupload_cuda,scale_cuda=format=yuv420p"</span> \
+  -c:v h264_nvenc -preset p5 out.mp4
+
+<span class="cm"># D3D11 解码 → 下载成 NV12 → 上传 CUDA → NVENC（跨后端最稳的保守写法）</span>
+ffmpeg -init_hw_device cuda=cu:0 -filter_hw_device cu \
+  -hwaccel d3d11va -hwaccel_output_format d3d11 -i in.mp4 \
+  -vf <span class="st">"hwdownload,format=nv12,hwupload_cuda"</span> \
+  -c:v h264_nvenc -preset p5 out.mp4
+
+<span class="cm"># 能映射时优先映射，避免像素落地；是否支持 derive_device=cuda 以本机构建为准</span>
+ffmpeg -hwaccel d3d11va -hwaccel_output_format d3d11 -i in.mp4 \
+  -vf <span class="st">"hwmap=derive_device=cuda,scale_cuda=format=yuv420p"</span> \
+  -c:v h264_nvenc out.mp4</pre>
+
+  <p class="small">V4L2 还有一种“零拷贝”路线：使用 SoC 的 V4L2 M2M 设备（如 <code>h264_v4l2m2m</code>）或 Rockchip 的 MPP，让采集缓冲直接交给硬件编码器。它依赖平台与内核驱动，通用 x86 桌面不一定有。</p>
+
+  <h3>怎么用日志证明链路断了</h3>
+  <p>日志像快递的扫码记录：不用猜，扫一次就知道包裹在哪个站被卸下来了。把 FFmpeg 开到 <code>verbose</code>，只筛关键行，重点看 <code>pixfmt</code> 的变化和自动插入的滤镜。</p>
+
+  <pre class="code"><span class="cm"># 只看关键行：设备、解码器、像素格式、自动缩放、下载/上传</span>
+ffmpeg -v verbose -i in.mp4 -c:v h264_nvenc out.mp4 2&gt;&amp;1 | \
+  grep -E <span class="st">"Using device|Using hardware|pixfmt|auto_scale|hwdownload|hwupload"</span>
+
+<span class="cm"># 典型输出（地址与路径会变，格式可能随版本略有差异）</span>
+[AVHWDeviceContext @ 0x...] Using device 0: NVIDIA GeForce ...
+[h264 @ 0x...] Using hardware decoding (cuda).
+[graph 0 input from stream 0:0 @ 0x...] w:1920 h:1080 pixfmt:cuda tb:1/30 fr:30/1 sar:1/1
+[auto_scale_0 @ 0x...] w:1920 h:1080 fmt:cuda -&gt; w:1920 h:1080 fmt:yuv420p</pre>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>十秒判读法：</b>① 搜 <code>Using hardware decoding</code> 确认硬解；② 搜 <code>pixfmt</code>，看是否从设备格式变成 <code>yuv420p</code>；③ 搜 <code>auto_scale</code>/<code>hwdownload</code>，有就是断点；④ 看编码器初始化是否接受同一个 <code>hw_frames_ctx</code>。四步都过，才叫全链路零拷贝。</span></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>“零拷贝”不是“零延迟”：</b>设备表面池、fence 同步、编码器队列都会引入等待。1080p 单路时，一次下载可能只花几毫秒；多路 4K 时才会变成 PCIe 与内存带宽灾难。要不要死守零拷贝，取决于分辨率、路数与延迟目标，而不是口号。</span></div>
+</section>
+
+<section id="params">
+  <h2>🎚️ 参数对照：把 x264 的手感翻译成硬件旋钮</h2>
+  <p class="lead">同一台相机，光圈、快门、ISO 在另一台机身上位置不同，但原理相同。硬件编码器的参数名和 x264 不一样，旋钮位置也不同；理解“每个旋钮在调什么”，比背一串命令更可靠。这一节做三件事：把目标翻译成硬件参数、拆开 NVENC 的 preset/码控、对比 HEVC 与 QSV 的差异。</p>
+
+  <h3>总表：同一个目标，两套写法</h3>
+  <p>调编码参数像调音响：有人调“音量”（码率），有人调“音质”（质量），还有人调“延迟”（低延迟模式）。先明确你要固定的是哪一个，再选旋钮，否则会出现“参数写了，但没生效”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>目标</th><th>libx264 的写法</th><th>h264_nvenc 的写法</th><th>语义差异 / 注意</th></tr></thead>
+      <tbody>
+        <tr><td>速度与画质档位</td><td><code>-preset ultrafast … veryslow</code></td><td><code>-preset p1 … p7</code></td><td>两套名字不能一一对应；p1 最快，p7 最慢且画质倾向最高</td></tr>
+        <tr><td>目标质量（不锁码率）</td><td><code>-crf 18 … 28</code></td><td><code>-rc vbr -cq 19 … 28 -b:v 0</code></td><td><code>-cq</code> 只有配合 VBR 且不设目标码率时才像“恒定质量”</td></tr>
+        <tr><td>固定码率</td><td><code>-b:v 4M -maxrate 4M -bufsize 8M</code></td><td><code>-rc cbr -b:v 4M -bufsize 8M</code></td><td>CBR 优先保证带宽稳定，画质随内容波动</td></tr>
+        <tr><td>固定 QP</td><td><code>-qp 23</code>（配合 rc 模式）</td><td><code>-rc constqp -qp 23</code></td><td>QP 固定后码率会随画面复杂度大幅波动</td></tr>
+        <tr><td>低延迟</td><td><code>-tune zerolatency</code></td><td><code>-tune ll</code> / <code>-tune ull</code> + <code>-bf 0</code></td><td>都靠减少前瞻/B 帧换延迟，压缩效率下降</td></tr>
+        <tr><td>场景调优</td><td><code>-tune film / grain / animation</code></td><td><code>-tune hq</code></td><td>NVENC 的 tune 更粗；没有 x264 那么多细分场景</td></tr>
+        <tr><td>心理视觉 / 自适应量化</td><td><code>-x264-params psy-rd=…:psy-rdoq=…</code></td><td><code>-spatial_aq 1 -temporal_aq 1 -aq-strength 8</code></td><td>机制不同，不能直接照搬数值</td></tr>
+        <tr><td>B 帧参考</td><td><code>-x264-params b-pyramid=normal</code></td><td><code>-bf 3 -b_ref_mode middle</code></td><td><code>-b_ref_mode</code> 需要 <code>-bf &gt; 0</code>；H.264 的支持随代际</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>NVENC 的 p1–p7：不是七档“画质”，而是七档“愿不愿意等”</h3>
+  <p>把 preset 想成餐厅出菜速度：p1 是快餐窗口，p7 是慢火细炖。它们调的是编码器愿意开多少工具、做多少搜索，而不是简单地把码率调高。p7 也不会变成 x264 <code>veryslow</code>，只是“在硬件允许的范围内更认真”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>preset</th><th>相对速度</th><th>相对画质倾向</th><th>典型用途</th><th>提醒</th></tr></thead>
+      <tbody>
+        <tr><td><code>p1</code></td><td>最快</td><td>最低</td><td>极低延迟、先跑通链路、应急转码</td><td>省时间，但同码率画质明显吃亏</td></tr>
+        <tr><td><code>p2</code></td><td>很快</td><td>较低</td><td>多路直播、算力紧张</td><td>适合“路数优先”</td></tr>
+        <tr><td><code>p3</code></td><td>快</td><td>中低</td><td>实时直播、低延迟</td><td>常与 <code>-tune ll</code> 搭配</td></tr>
+        <tr><td><code>p4</code></td><td>中等</td><td>中等</td><td>直播 + 录制的折中</td><td>很多场景的起点</td></tr>
+        <tr><td><code>p5</code></td><td>偏慢</td><td>较高</td><td>点播转码、常规归档</td><td>命令示例里最常用的档位</td></tr>
+        <tr><td><code>p6</code></td><td>慢</td><td>高</td><td>高质量点播、母版转码</td><td>吞吐下降，需实测</td></tr>
+        <tr><td><code>p7</code></td><td>最慢</td><td>最高</td><td>画质优先的离线转码</td><td>仍不等于 x264 慢速 preset 的画质</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small">“相对速度/画质”是量级直觉，不是线性倍率；不同 GPU 代际、不同分辨率、不同码控下差异很大。上线前固定素材、固定码率做 A/B。</p>
+
+  <h3>码控三兄弟：CQ、CBR、constqp</h3>
+  <p>码控像开车时的三种目标：CQ 是“保持舒适度，油费随路况变”；CBR 是“每小时只能烧这么多油”；constqp 是“固定油门”。选错目标，参数再漂亮也没用。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>模式</th><th>你固定了什么</th><th>什么会波动</th><th>适合</th><th>必配参数</th></tr></thead>
+      <tbody>
+        <tr><td><code>-rc vbr</code> + <code>-cq</code></td><td>质量目标</td><td>码率随画面复杂度波动</td><td>点播、归档、画质优先</td><td><code>-b:v 0</code>，否则仍可能被目标码率牵制</td></tr>
+        <tr><td><code>-rc cbr</code></td><td>码率</td><td>画质随内容波动</td><td>直播、固定带宽传输</td><td><code>-b:v</code>，必要时配 <code>-bufsize</code></td></tr>
+        <tr><td><code>-rc constqp</code></td><td>量化步长</td><td>码率波动最大</td><td>实验、固定质量对比、特殊素材</td><td><code>-qp</code>；不适合带宽受限场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><code>-cq</code> 与 x264 的 <code>-crf</code> 都常被翻译成“恒定质量”，但它们不是同一个算法：<code>-cq</code> 更接近“目标量化级别”，<code>-crf</code> 带有人眼感知与自适应量化的取舍。数值相近不代表观感相同，拿 VMAF 或主观对比说话。</p>
+
+  <h3>hevc_nvenc 与 h264_nvenc：不只是换个编码器名字</h3>
+  <p>H.264 像家用小货车，兼容性最好；HEVC 像厢式货车，同货量更省空间，但装卸要求更高。硬件上它们共享 NVENC 单元，参数却有关键差异，尤其是 10-bit 与 B 帧参考。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th>h264_nvenc</th><th>hevc_nvenc</th><th>实践建议</th></tr></thead>
+      <tbody>
+        <tr><td>位深</td><td>一般只支持 8-bit</td><td>支持 Main10 / 10-bit</td><td>要 10-bit 必须 <code>-pix_fmt p010le</code> + <code>-profile:v main10</code></td></tr>
+        <tr><td>像素格式</td><td><code>yuv420p</code>（映射为 NV12）</td><td><code>p010le</code> 或 <code>yuv420p</code></td><td>10-bit 源不要直接喂 H.264，会触发转换或失败</td></tr>
+        <tr><td>B 帧</td><td>视代际，低延迟场景常关闭</td><td>支持更完整，可配 <code>-b_ref_mode</code></td><td>直播优先 <code>-bf 0</code>；点播再开 B 帧</td></tr>
+        <tr><td>容器兼容</td><td>MP4/TS 都很稳</td><td>Apple 生态建议 <code>-tag:v hvc1</code></td><td>否则 QuickTime/部分播放器可能不识别</td></tr>
+        <tr><td>同码率</td><td>兼容优先，效率较低</td><td>通常更省码率</td><td>但解码成本与专利/兼容性要一起考虑</td></tr>
+        <tr><td>4:2:2 / 4:4:4</td><td>编码普遍不支持</td><td>专业档位视型号</td><td>广播流程要单独查支持矩阵，不要默认</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 画质优先：CQ + 自适应量化 + B 帧参考（注意 -b:v 0）</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 \
+  -vf <span class="st">"scale_cuda=format=yuv420p"</span> \
+  -c:v h264_nvenc -preset p7 -tune hq -rc vbr -cq 20 -b:v 0 \
+  -spatial_aq 1 -temporal_aq 1 -aq-strength 8 \
+  -bf 3 -b_ref_mode middle -g 60 out.mp4
+
+<span class="cm"># 固定带宽直播：CBR + 低延迟，关闭 B 帧</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 \
+  -c:v h264_nvenc -preset p3 -tune ull -rc cbr -b:v 6M -bufsize 12M \
+  -bf 0 -g 30 out.mp4
+
+<span class="cm"># 10-bit HEVC：Main10 + P010，MP4 里加 hvc1 标签</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mkv \
+  -vf <span class="st">"scale_cuda=format=p010le"</span> \
+  -c:v hevc_nvenc -profile:v main10 -pix_fmt p010le \
+  -rc vbr -cq 22 -b:v 0 -tag:v hvc1 out.mp4</pre>
+
+  <h3>QSV：<code>-global_quality</code> 与 <code>-look_ahead</code> 怎么用</h3>
+  <p>QSV 像核显里的省电模式：它不追求极限压缩，但能在很低的功耗下把活干完。它的质量旋钮常写作 <code>-global_quality</code>，前瞻写作 <code>-look_ahead</code>；两者都受 <code>low_power</code> 模式影响。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>参数</th><th>调的是什么</th><th>代价</th><th>注意</th></tr></thead>
+      <tbody>
+        <tr><td><code>-preset veryfast … veryslow</code></td><td>速度 / 工具使用量</td><td>越慢越吃时间，画质略好</td><td>映射到目标使用率，不等同 x264 档位</td></tr>
+        <tr><td><code>-global_quality N</code></td><td>质量目标（ICQ 类行为）</td><td>码率随内容波动</td><td>与 <code>-b:v</code> 同时乱写会让意图变模糊</td></tr>
+        <tr><td><code>-look_ahead 1</code></td><td>前瞻，改善码率分配</td><td>增加延迟与缓冲</td><td><code>low_power</code> 下可能不可用；部分构建还有 <code>-look_ahead_depth</code></td></tr>
+        <tr><td><code>-async_depth N</code></td><td>并行深度 / 吞吐</td><td>增加内存与延迟</td><td>低延迟场景调小，离线转码可调大</td></tr>
+        <tr><td><code>-low_power 1</code></td><td>省电模式</td><td>可能关闭前瞻/B 帧/部分码控</td><td>要画质时关掉；边缘低功耗再打开</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># QSV：质量优先 + 前瞻；若 low_power 开启，look_ahead 可能被忽略</span>
+ffmpeg -hwaccel qsv -hwaccel_output_format qsv -i in.mp4 \
+  -vf <span class="st">"scale_qsv=format=nv12"</span> \
+  -c:v h264_qsv -preset medium -global_quality 23 -look_ahead 1 \
+  -async_depth 4 out.mp4</pre>
+
+  <h3>VAAPI / AMF / VideoToolbox 的旋钮地图</h3>
+  <p>三个后端的参数哲学不同：VAAPI 像 Linux 的通用遥控器，功能有但命名抽象；AMF 像 AMD 自带遥控器，预设直观；VideoToolbox 像苹果的极简遥控器，按钮少但够用。先查本机 <code>ffmpeg -h encoder=…</code>，再写参数。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>后端</th><th>质量 / 码控</th><th>速度 / 场景</th><th>低延迟</th><th>最容易踩的点</th></tr></thead>
+      <tbody>
+        <tr><td>VAAPI</td><td><code>-rc_mode CQP/CBR/VBR</code> + <code>-global_quality</code>（部分构建用 <code>-qp</code>）</td><td>编码器与驱动决定，参数空间中等</td><td>受驱动与硬件影响</td><td>把 <code>format=nv12</code> 写成普通滤镜，触发下载</td></tr>
+        <tr><td>AMF</td><td><code>-rc cbr/vbr</code>，<code>-qp_i</code>/<code>-qp_p</code></td><td><code>-quality speed/balanced/quality</code>，<code>-usage transcoding/ultralowlatency/lowlatency/webcam</code></td><td><code>-usage ultralowlatency</code></td><td>质量预设与代际强相关；Linux 通常不用 AMF</td></tr>
+        <tr><td>VideoToolbox</td><td>以 <code>-b:v</code> 目标码率为主，质量旋钮少</td><td>系统决定，参数少</td><td><code>-realtime 1</code></td><td><code>-allow_sw 1</code> 会掩盖“其实跑在 CPU”</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># VAAPI：CQP 质量模式</span>
+ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -i in.mp4 \
+  -vf <span class="st">"scale_vaapi=format=nv12"</span> \
+  -c:v h264_vaapi -rc_mode CQP -global_quality 23 out.mp4
+
+<span class="cm"># AMF：质量优先 + 转码场景</span>
+ffmpeg -i in.mp4 -c:v h264_amf -quality quality -rc cbr -b:v 4M \
+  -usage transcoding -qp_i 22 -qp_p 24 out.mp4
+
+<span class="cm"># VideoToolbox：关闭软回退，先确认真的走了硬件</span>
+ffmpeg -hwaccel videotoolbox -i in.mp4 -c:v hevc_videotoolbox \
+  -b:v 4M -g 50 -realtime 1 -allow_sw 0 out.mp4</pre>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>同名参数不同义：</b>NVENC 的 <code>-preset p5</code> 不是 x264 的 <code>medium</code>；<code>-cq</code> 不是 <code>-crf</code>；VAAPI 与 QSV 的 <code>-global_quality</code> 也不是同一套实现。跨后端复制命令时，先删掉“看起来眼熟”的参数，再按本机 <code>ffmpeg -h encoder=…</code> 重新填。</span></div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>参数排查顺序：</b>① 先确认参数真的出现在 <code>ffmpeg -h encoder=…</code> 输出里；② 用 <code>-v verbose</code> 看编码器初始化；③ 看实际输出码率是否随 <code>-cq</code>/<code>-b:v</code> 变化；④ 最后才比较画质。参数没生效时，调数值只会浪费时间。</span></div>
+</section>
+
+<section id="density">
+  <h2>📦 单机密度：先找最短板，再谈能跑几路</h2>
+  <p class="lead">一条生产线能产多少，不取决于最快的那台机器，而取决于最慢的工位。转码密度也一样：解码、缩放、编码、显存、PCIe、网络，任何一项先到顶，整机就卡在那里。下面用一张“木桶图”和一个估算公式，把“能跑几路”拆成可验证的问题。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="转码密度木桶：最短板决定实际吞吐">
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">整机吞吐 = 最短板的高度（示意图，非跑分）</text>
+      <line x1="40" y1="275" x2="860" y2="275" stroke="#cbd5e1" stroke-width="1.5"/>
+
+      <rect x="60" y="105" width="100" height="170" rx="6" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="110" y="98" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">解码</text>
+      <text x="110" y="230" text-anchor="middle" font-size="10" fill="#64748b">NVDEC / VPU</text>
+
+      <rect x="210" y="90" width="100" height="185" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="260" y="83" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">缩放 / 转格式</text>
+      <text x="260" y="230" text-anchor="middle" font-size="10" fill="#64748b">显存带宽</text>
+
+      <rect x="360" y="145" width="100" height="130" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="410" y="138" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">编码</text>
+      <text x="410" y="230" text-anchor="middle" font-size="10" fill="#64748b">NVENC / 媒体引擎</text>
+
+      <rect x="510" y="185" width="100" height="90" rx="6" fill="#fff1f2" stroke="#e11d48"/>
+      <text x="560" y="178" text-anchor="middle" font-size="11" font-weight="700" fill="#e11d48">PCIe / 拷贝</text>
+      <text x="560" y="230" text-anchor="middle" font-size="10" fill="#64748b">hwdownload</text>
+
+      <rect x="660" y="165" width="100" height="110" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+      <text x="710" y="158" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">显存容量</text>
+      <text x="710" y="230" text-anchor="middle" font-size="10" fill="#64748b">表面池 / 队列</text>
+
+      <line x1="40" y1="185" x2="860" y2="185" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="6 5"/>
+      <text x="52" y="177" font-size="10.5" fill="#e11d48">实际路数被这条线卡住：最短板 = PCIe / 隐式拷贝</text>
+
+      <text x="60" y="305" font-size="10.5" fill="#64748b">柱子高度只表示相对产能，不代表真实倍率；换素材、换分辨率、换参数，短板会移动。</text>
+    </svg>
+    <figcaption>不要只盯着编码器利用率：解码、拷贝、显存或网络任何一项先满，都会让“还能再加一路”变成掉帧。</figcaption>
+  </div>
+
+  <div class="math-b">实际路数 ≈ min（解码产能, 缩放产能, 编码产能, 显存容量, PCIe 带宽, 内存带宽, 网络带宽）/ 单路需求</div>
+
+  <h3>先算像素流量：拷贝为什么这么贵</h3>
+  <p>像素搬运像给每一帧称重再装车：单帧不重，但每秒 30 次、每路都来一遍，很快就压垮传送带。先算清“一帧多重、一秒多少趟”，就知道瓶颈会在哪。</p>
+  <div class="grid-3">
+    <div class="card">
+      <h4>1080p NV12</h4>
+      <p class="small"><code>1920 × 1080 × 1.5 ≈ 3.1 MB</code> / 帧；30 fps 约 <code>93 MB/s</code>。一次下载 + 一次上传约 <code>186 MB/s</code>。</p>
+    </div>
+    <div class="card">
+      <h4>4K NV12</h4>
+      <p class="small"><code>3840 × 2160 × 1.5 ≈ 12.4 MB</code> / 帧；30 fps 约 <code>373 MB/s</code>。来回一趟约 <code>746 MB/s</code>。</p>
+    </div>
+    <div class="card">
+      <h4>10 路 4K 来回</h4>
+      <p class="small">理论下限约 <code>7.5 GB/s</code> 的像素流量，还没算 stride、对齐与队列开销。PCIe 与内存带宽会先于编码器喊停。</p>
+    </div>
+  </div>
+  <p class="small">以上是<strong>理论量级</strong>，不是实测承诺；实际帧率、stride、色彩格式、是否 10-bit 都会改变数字。10-bit P010 每像素 3 字节，流量约为 8-bit 的两倍。</p>
+
+  <h3>再算显存：表面池比你想的能吃</h3>
+  <p>显存像后厨的案板：每路都要有解码表面、参考帧、滤镜中间帧、编码输入表面和队列。单块案板不大，但十路同时开火，很快就没地方放盘子。</p>
+  <p>粗略估算：1080p 单路若保留 10–20 个表面，约 <code>30–60 MB</code>；4K 单路约 <code>120–250 MB</code>。10 路 4K 就可能吃掉 <code>1.2–2.5 GB</code>，再叠加模型、纹理、桌面占用，消费卡的显存很快见底。</p>
+  <p class="small">表面数量由解码器参考帧、<code>-extra_hw_frames</code>、滤镜队列、编码器 <code>async_depth</code> 共同决定；数字随实现变化，必须用 <code>nvidia-smi</code> 或 <code>intel_gpu_top</code> 实测。</p>
+
+  <h3>密度估算表：只给量级，不给假精确值</h3>
+  <p>下表像餐厅的“预估接待能力”：能坐多少人，要看客人吃多久、后厨几口灶、门口多宽。任何精确到个位的承诺，离开素材与参数都不成立。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>平台 / 型号量级</th><th>1080p30 H.264 编码</th><th>主要瓶颈</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>消费级 GeForce（RTX 30/40 量级）</td><td>个位数到十几路</td><td>session 限制、显存、编码单元</td><td>驱动版本会影响上限；先压测再承诺</td></tr>
+        <tr><td>专业 / 数据中心（T4、L4、A10 量级）</td><td>十几到几十路</td><td>编码单元数量、显存带宽、PCIe</td><td>不同型号的 enc/dec 数量不同，别按系列猜</td></tr>
+        <tr><td>Intel 核显（UHD / Iris Xe 量级）</td><td>个位数到十几路</td><td>共享内存带宽、媒体引擎数量</td><td>低功耗优势明显，4K 与 10-bit 会明显缩水</td></tr>
+        <tr><td>AMD RDNA2/3（VCN 量级）</td><td>个位数到十几路</td><td>VCN 数量、驱动、显存带宽</td><td>Windows 走 AMF，Linux 走 VAAPI，能力不完全等价</td></tr>
+        <tr><td>Apple M 系列</td><td>个位数</td><td>媒体引擎数量、统一内存带宽</td><td>统一内存省拷贝，但引擎数量有限</td></tr>
+        <tr><td>RK3588 量级</td><td>个位数</td><td>VPU 固定产能、DDR 带宽</td><td>1080p 多路尚可，4K 路数明显减少</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>为什么瓶颈常常不在编码器</h3>
+  <p>编码器像收银台：它可能确实在忙，但队伍不动的原因，往往是前面的安检（解码/滤镜）或中间的搬运（PCIe）堵住了。判断瓶颈要看“谁先到 100%”，而不是看谁听起来最重要。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>解码器先满</h4>
+      <p class="small">现象：<code>nvidia-smi dmon</code> 的 <code>dec</code> 列接近高位，<code>enc</code> 还有余量。对策：降低输入分辨率/码率，换解码单元更多的型号，或把部分流交给 CPU 软解。</p>
+    </div>
+    <div class="card">
+      <h4>PCIe / 拷贝先满</h4>
+      <p class="small">现象：CPU <code>sy</code> 高、Windows 任务管理器 Copy 引擎高、<code>hwdownload</code> 频繁。对策：去掉 CPU 滤镜、改用设备滤镜、检查是否漏写 <code>-hwaccel_output_format</code>。</p>
+    </div>
+    <div class="card">
+      <h4>显存先满</h4>
+      <p class="small">现象：编码器初始化失败、帧率骤降、驱动日志报内存不足。对策：降低 <code>-extra_hw_frames</code> 与队列深度、减少分辨率/路数，或换更大显存。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-r"><span class="ic">🚫</span><span><b>不要把“消费卡 session 限制”当唯一瓶颈：</b>很多部署在 session 还没到顶时，就已经被解码、显存或 PCIe 卡死。先采集四项指标（CPU、enc、dec、Copy/显存），再决定是加卡、换型号，还是改链路。</span></div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>压测方法：</b>固定输入与参数，逐路增加；每加一路记录帧率、CPU、GPU enc/dec、显存、Copy/PCIe、网络。找到“第 N 路开始掉帧”的拐点，比看一个平均值有用得多。用 <code>-stream_loop -1</code> 模拟长时间负载，别用 10 秒短片下结论。</span></div>
+</section>
+
+<section id="color">
+  <h2>🎨 色彩、位深与 HDR：硬件链路最容易“看起来对”的地方</h2>
+  <p class="lead">同一罐可乐，标签写“零度”还是“经典”，喝起来是两回事；同一帧画面，色彩标签写错，看起来就会偏黄、发灰或死黑。硬件加速把像素搬得很快，但<strong>格式、位深、色彩矩阵、范围</strong>任何一项没对齐，快到飞起也救不回观感。这一节从 NV12/P010 的内存布局讲到 HDR 元数据透传。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="4:2:0、4:2:2、4:4:4 的亮度与色度采样对比">
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">色度子采样：亮度全保留，色度按比例减少</text>
+
+      <rect x="20" y="40" width="260" height="180" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="40" y="58" font-size="10" fill="#64748b">亮度 4×4</text>
+      <rect x="40" y="64" width="120" height="120" fill="#ecfeff" stroke="#67e8f9"/>
+      <line x1="70" y1="64" x2="70" y2="184" stroke="#cbd5e1"/>
+      <line x1="100" y1="64" x2="100" y2="184" stroke="#cbd5e1"/>
+      <line x1="130" y1="64" x2="130" y2="184" stroke="#cbd5e1"/>
+      <line x1="40" y1="94" x2="160" y2="94" stroke="#cbd5e1"/>
+      <line x1="40" y1="124" x2="160" y2="124" stroke="#cbd5e1"/>
+      <line x1="40" y1="154" x2="160" y2="154" stroke="#cbd5e1"/>
+      <text x="180" y="88" font-size="10" fill="#64748b">色度 2×2</text>
+      <rect x="180" y="94" width="60" height="60" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <line x1="210" y1="94" x2="210" y2="154" stroke="#cbd5e1"/>
+      <line x1="180" y1="124" x2="240" y2="124" stroke="#cbd5e1"/>
+      <text x="150" y="222" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">4:2:0 · 色度 1/4</text>
+
+      <rect x="300" y="40" width="260" height="180" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="320" y="58" font-size="10" fill="#64748b">亮度 4×4</text>
+      <rect x="320" y="64" width="120" height="120" fill="#ecfeff" stroke="#67e8f9"/>
+      <line x1="350" y1="64" x2="350" y2="184" stroke="#cbd5e1"/>
+      <line x1="380" y1="64" x2="380" y2="184" stroke="#cbd5e1"/>
+      <line x1="410" y1="64" x2="410" y2="184" stroke="#cbd5e1"/>
+      <line x1="320" y1="94" x2="440" y2="94" stroke="#cbd5e1"/>
+      <line x1="320" y1="124" x2="440" y2="124" stroke="#cbd5e1"/>
+      <line x1="320" y1="154" x2="440" y2="154" stroke="#cbd5e1"/>
+      <text x="460" y="88" font-size="10" fill="#64748b">色度 4×2</text>
+      <rect x="460" y="94" width="120" height="60" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <line x1="490" y1="94" x2="490" y2="154" stroke="#cbd5e1"/>
+      <line x1="520" y1="94" x2="520" y2="154" stroke="#cbd5e1"/>
+      <line x1="550" y1="94" x2="550" y2="154" stroke="#cbd5e1"/>
+      <line x1="460" y1="124" x2="580" y2="124" stroke="#cbd5e1"/>
+      <text x="430" y="222" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">4:2:2 · 色度 1/2</text>
+
+      <rect x="580" y="40" width="260" height="180" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="600" y="58" font-size="10" fill="#64748b">亮度 4×4</text>
+      <rect x="600" y="64" width="120" height="120" fill="#ecfeff" stroke="#67e8f9"/>
+      <line x1="630" y1="64" x2="630" y2="184" stroke="#cbd5e1"/>
+      <line x1="660" y1="64" x2="660" y2="184" stroke="#cbd5e1"/>
+      <line x1="690" y1="64" x2="690" y2="184" stroke="#cbd5e1"/>
+      <line x1="600" y1="94" x2="720" y2="94" stroke="#cbd5e1"/>
+      <line x1="600" y1="124" x2="720" y2="124" stroke="#cbd5e1"/>
+      <line x1="600" y1="154" x2="720" y2="154" stroke="#cbd5e1"/>
+      <text x="740" y="58" font-size="10" fill="#64748b">色度 4×4</text>
+      <rect x="740" y="64" width="120" height="120" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <line x1="770" y1="64" x2="770" y2="184" stroke="#cbd5e1"/>
+      <line x1="800" y1="64" x2="800" y2="184" stroke="#cbd5e1"/>
+      <line x1="830" y1="64" x2="830" y2="184" stroke="#cbd5e1"/>
+      <line x1="740" y1="94" x2="860" y2="94" stroke="#cbd5e1"/>
+      <line x1="740" y1="124" x2="860" y2="124" stroke="#cbd5e1"/>
+      <line x1="740" y1="154" x2="860" y2="154" stroke="#cbd5e1"/>
+      <text x="710" y="222" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">4:4:4 · 色度 1/1</text>
+    </svg>
+    <figcaption>4:2:0 每 2×2 像素共享一组色度；4:2:2 只在水平方向减半；4:4:4 不做子采样。消费级编码器绝大多数只吃 4:2:0。</figcaption>
+  </div>
+
+  <h3>NV12 与 P010：同一块“半平面”，不同的字长</h3>
+  <p>NV12 像把亮度装一箱、色度装一箱，色度箱里 U 和 V 交替摆放；P010 是同一套装箱法，只是每个样本换成 16-bit 的“加厚箱”，里面实际只装 10-bit 的值。理解这个布局，才能看懂 stride、对齐和“为什么多了一次转换”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>格式</th><th>位深</th><th>平面布局</th><th>每像素字节</th><th>1080p 单帧</th><th>FFmpeg pix_fmt</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td><b>NV12</b></td><td>8-bit</td><td>Y 平面 + UV 交织半平面</td><td>1.5</td><td>约 3.1 MB</td><td><code>nv12</code> / <code>yuv420p</code></td><td>H.264/HEVC 8-bit 硬件编码的默认输入</td></tr>
+        <tr><td><b>P010</b></td><td>10-bit</td><td>Y 平面 + UV 交织，每样本 16-bit</td><td>3</td><td>约 6.2 MB</td><td><code>p010le</code></td><td>HEVC Main10、AV1 10-bit 硬件编码</td></tr>
+        <tr><td><b>YUV420P10LE</b></td><td>10-bit</td><td>Y/U/V 三个平面分开</td><td>3</td><td>约 6.2 MB</td><td><code>yuv420p10le</code></td><td>软件解码常见输出；上传硬件前常要转 <code>p010le</code></td></tr>
+        <tr><td><b>P016</b></td><td>16-bit 容器</td><td>Y + UV 交织，每样本 16-bit</td><td>3</td><td>约 6.2 MB</td><td><code>p016le</code></td><td>高位深中间处理；不是所有编码器都接受</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="bits">P010 单个 16-bit 采样字（值左对齐，低 6 位补 0）</div>
+  <div class="bitfield">
+    <span class="bf bf-1"><b>[15:10]</b><i>10-bit 值的高 6 位</i></span>
+    <span class="bf bf-2"><b>[9:6]</b><i>10-bit 值的低 4 位</i></span>
+    <span class="bf bf-8"><b>[5:0]</b><i>填充 0</i></span>
+  </div>
+
+  <div data-lazy-viz data-viz="hex" data-opts='{"title":"P010：两个 10-bit 样本在内存里的样子","bytes":"80 c4 c0 ff","fields":[{"name":"样本 A：10-bit 值 0x312","start":0,"end":1,"bits":"16-bit 小端","note":"0xC480 右移 6 位 = 0x312；低 6 位为 0"},{"name":"样本 B：10-bit 满值 0x3FF","start":2,"end":3,"bits":"16-bit 小端","note":"0xFFC0 右移 6 位 = 0x3FF；10-bit 能表示的最大值"}],"hint":"P010 把 10-bit 值放在 16-bit 字的高 10 位，低 6 位补 0；所以字节序和位对齐都要对。"}'></div>
+
+  <p class="small">P010 的“左对齐”是理解字节的关键：看到 <code>80 c4</code> 不要按 0xC480 直接当亮度值，要右移 6 位才是 0x312。不同厂商的 stride/对齐可能不同，但“高位有效、低位补零”的常见规则可以帮助你判断转换是否出错。</p>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>10-bit 最常见的“假成功”：</b>输入是 <code>yuv420p10le</code>，编码器是 <code>h264_nvenc</code>，FFmpeg 会自动转成 8-bit <code>yuv420p</code> 并继续跑，不报错。想要 10-bit，必须用 <code>hevc_nvenc -profile:v main10 -pix_fmt p010le</code>（或 AV1 对应配置），并检查输出 <code>ffprobe</code> 的 <code>pix_fmt</code>。</span></div>
+
+  <h3>BT.601 / BT.709 / BT.2020：颜色也要“对暗号”</h3>
+  <p>色彩矩阵像两国插头标准：电压都对，但插头形状不对就插不上。BT.601 是标清时代的老标准，BT.709 是高清 SDR 的通用标准，BT.2020 是 HDR/广色域的基础；写错矩阵，红绿会偏，肤色最先“露馅”。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>场景</th><th>matrix（<code>-colorspace</code>）</th><th>primaries</th><th>transfer</th><th>range</th><th>典型症状</th></tr></thead>
+      <tbody>
+        <tr><td>SD 标清（480/576）</td><td><code>bt470bg</code> / <code>smpte170m</code> 量级</td><td>同族标准</td><td>以素材元数据为准</td><td><code>tv</code></td><td>标清素材按 709 解释，颜色偏绿/偏黄</td></tr>
+        <tr><td>HD SDR（720/1080）</td><td><code>bt709</code></td><td><code>bt709</code></td><td><code>bt709</code></td><td><code>tv</code>（16–235）</td><td>范围标错会发灰或死黑</td></tr>
+        <tr><td>HDR10 / PQ</td><td><code>bt2020nc</code></td><td><code>bt2020</code></td><td><code>smpte2084</code></td><td><code>tv</code></td><td>当 SDR 解码会灰暗、颜色寡淡</td></tr>
+        <tr><td>HLG</td><td><code>bt2020nc</code></td><td><code>bt2020</code></td><td><code>arib-std-b67</code></td><td><code>tv</code></td><td>当 PQ 处理会亮度失真</td></tr>
+        <tr><td>Full-range RGB / JPEG</td><td><code>bt709</code> 量级</td><td><code>bt709</code></td><td><code>bt709</code></td><td><code>pc</code>（0–255）</td><td>limited 素材按 full 解释，黑位抬高</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>limited range（电视范围）用 16–235 表示 8-bit 亮度，full range（PC 范围）用 0–255。硬件解码器通常输出 limited；转成 JPEG、RGB 或某些屏幕显示时，需要显式转到 full，否则画面会“发灰”。反过来，把 full 当 limited 会把黑压死、白切顶。</p>
+
+  <pre class="code"><span class="cm"># 看素材到底标了什么（不要靠猜）</span>
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,pix_fmt,color_space,color_transfer,color_primaries,color_range,chroma_location \
+  -of default=nw=1 in.mp4
+
+<span class="cm"># 转成 BT.709 SDR 输出，并显式写清标签</span>
+ffmpeg -i in.mp4 -c:v libx264 -crf 20 -pix_fmt yuv420p \
+  -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv out.mp4
+
+<span class="cm"># 只在必须转范围时做，避免多余往返</span>
+ffmpeg -i in.mp4 -vf <span class="st">"scale=in_range=tv:out_range=pc"</span> -pix_fmt yuv420p out.mp4</pre>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>色彩标签是“三件套 + 范围”：</b><code>primaries</code> 决定红绿蓝的坐标，<code>transfer</code> 决定亮度曲线，<code>colorspace</code>（matrix）决定 YUV 怎么变成 RGB，<code>range</code> 决定 16–235 还是 0–255。四个都要对；只改其中一个，画面仍然会偏。</span></div>
+
+  <h3>HDR 元数据：转码不是“把 10-bit 搬过去”就完事</h3>
+  <p>HDR 像一封带附件的邮件：画面是正文，元数据是附件。只搬正文、丢了附件，播放器就不知道该按多亮、多广的色域显示。HDR10 的静态元数据（Mastering Display、MaxCLL/MaxFALL）通常放在 SEI；HDR10+ 是动态元数据；Dolby Vision 还有 RPU。</p>
+
+  <p>普通 FFmpeg 转码不一定保留所有 HDR 元数据，尤其是 HDR10+ 与 Dolby Vision。要做 HDR 转 HDR，至少显式写对颜色标签；要做 HDR 转 SDR，则需要 tone mapping，通常在 CPU 上用 <code>zscale</code> + <code>tonemap</code> 完成，硬件全链路会被打断。</p>
+
+  <pre class="code"><span class="cm"># HDR10 转 HDR10：10-bit HEVC，显式保留颜色标签</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mkv \
+  -vf <span class="st">"scale_cuda=format=p010le"</span> \
+  -c:v hevc_nvenc -profile:v main10 -pix_fmt p010le \
+  -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv \
+  -rc vbr -cq 22 -b:v 0 out.mkv
+
+<span class="cm"># HDR → SDR 的常见 tone mapping 链（CPU，硬件滤镜一般不替代）</span>
+ffmpeg -i in.mkv -vf <span class="st">"zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"</span> \
+  -c:v libx264 -crf 20 out.mp4</pre>
+
+  <p class="small">HDR10+ 的动态元数据、Dolby Vision 的 RPU 需要专门的工具链（如 HDR10+ 元数据工具、dovi_tool 量级），不能指望一条 FFmpeg 命令自动处理。转码后用 MediaInfo / ffprobe 核对 Mastering Display、MaxCLL 等字段是否还在。</p>
+
+  <h3><code>scale_cuda</code> 与 <code>scale_npp</code>：两把不同的剪刀</h3>
+  <p>两者都像“在显存里剪裁画面”，但一把是 FFmpeg 自带的通用剪刀，另一把是 NVIDIA NPP 库的专业剪刀。日常缩放用前者更省事；需要 NPP 的算法或历史工作流才用后者，而且要先确认本机构建是否启用。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>维度</th><th><code>scale_cuda</code></th><th><code>scale_npp</code></th></tr></thead>
+      <tbody>
+        <tr><td>实现</td><td>FFmpeg 自带 CUDA kernel</td><td>调用 NVIDIA NPP 库</td></tr>
+        <tr><td>构建依赖</td><td>随 FFmpeg CUDA 支持提供</td><td>需要 NPP 头/库；部分构建未启用</td></tr>
+        <tr><td>格式支持</td><td>NV12/P010/YUV 等常用格式，能力有限</td><td>通常更宽，但随版本变化</td></tr>
+        <tr><td>缩放算法</td><td>常用插值，参数空间较小</td><td>NPP 提供更多算法与色彩处理选项</td></tr>
+        <tr><td>色彩 / HDR</td><td>不负责 HDR 元数据，标签要在输出端写</td><td>同样不保证元数据透传</td></tr>
+        <tr><td>适用</td><td>常规分辨率缩放、零拷贝链路</td><td>需要 NPP 特性或既有 NPP 管线</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre class="code"><span class="cm"># 确认本机是否有 scale_npp，以及它支持哪些选项</span>
+ffmpeg -hide_banner -h filter=scale_npp
+
+<span class="cm"># scale_npp 的常见写法（格式/参数随构建变化，先 -h 确认）</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 \
+  -vf <span class="st">"scale_npp=w=1280:h=720:format=yuv420p"</span> \
+  -c:v h264_nvenc -preset p5 out.mp4</pre>
+
+  <div class="callout callout-r"><span class="ic">🚫</span><span><b>偏色排查先停“RGB 往返”：</b>每做一次 YUV→RGB→YUV，就可能丢色彩矩阵与范围信息。硬件链路里尽量保持 NV12/P010；确实需要 RGB 处理时，把范围与矩阵显式写死，并在输出前核对 <code>ffprobe</code> 的 <code>color_range</code>、<code>color_space</code>。</span></div>
+</section>
+
+<section id="containers">
+  <h2>🐳 容器、WSL2 与虚拟机：硬件在宿主机，不在镜像里</h2>
+  <p class="lead">设备像宿舍的门禁卡：容器只是租客，房东没把卡给你，你就进不去。镜像里写满 <code>ffmpeg</code> 命令也没用——<strong>设备节点、驱动库、权限</strong>必须从宿主机透传进来。这一节按 Docker、Kubernetes、WSL2、虚拟化的顺序排一遍最常见的“设备不见了”。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="宿主机设备如何透传进容器">
+      <text x="20" y="26" font-size="13" font-weight="700" fill="#0f172a">设备透传：驱动在宿主机，节点进容器</text>
+
+      <rect x="30" y="50" width="330" height="190" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="46" y="72" font-size="11" font-weight="700" fill="#0f172a">宿主机内核 + 驱动</text>
+      <rect x="50" y="88" width="130" height="30" rx="5" fill="#fff" stroke="#c4b5fd"/>
+      <text x="115" y="107" text-anchor="middle" font-size="10.5" fill="#0f172a">/dev/dri/renderD128</text>
+      <rect x="50" y="128" width="130" height="30" rx="5" fill="#fff" stroke="#c4b5fd"/>
+      <text x="115" y="147" text-anchor="middle" font-size="10.5" fill="#0f172a">/dev/nvidia0</text>
+      <rect x="50" y="168" width="130" height="30" rx="5" fill="#fff" stroke="#c4b5fd"/>
+      <text x="115" y="187" text-anchor="middle" font-size="10.5" fill="#0f172a">/dev/dxg（WSL2）</text>
+      <text x="200" y="108" font-size="10" fill="#64748b">Intel / AMD 渲染节点</text>
+      <text x="200" y="148" font-size="10" fill="#64748b">NVIDIA 设备节点</text>
+      <text x="200" y="188" font-size="10" fill="#64748b">D3D12 虚拟设备</text>
+      <text x="46" y="220" font-size="10" fill="#64748b">驱动版本、内核模块、固件都在这一层。</text>
+
+      <rect x="520" y="50" width="340" height="190" rx="10" fill="#ecfeff" stroke="#67e8f9"/>
+      <text x="536" y="72" font-size="11" font-weight="700" fill="#0f172a">容器 / 应用</text>
+      <rect x="540" y="90" width="300" height="42" rx="6" fill="#fff" stroke="#67e8f9"/>
+      <text x="690" y="116" text-anchor="middle" font-size="11" fill="#0f172a">ffmpeg + h264_nvenc / h264_vaapi</text>
+      <rect x="540" y="146" width="300" height="42" rx="6" fill="#fff" stroke="#67e8f9"/>
+      <text x="690" y="172" text-anchor="middle" font-size="11" fill="#0f172a">vainfo / nvidia-smi / intel_gpu_top</text>
+      <text x="536" y="212" font-size="10" fill="#64748b">容器只拿到被映射的节点和库。</text>
+
+      <line x1="370" y1="120" x2="510" y2="120" stroke="#10b981" stroke-width="2.5"/>
+      <text x="380" y="110" font-size="10.5" fill="#10b981">--device /dev/dri</text>
+      <line x1="370" y1="160" x2="510" y2="160" stroke="#10b981" stroke-width="2.5"/>
+      <text x="380" y="150" font-size="10.5" fill="#10b981">--gpus all + toolkit</text>
+
+      <text x="380" y="238" font-size="10.5" fill="#e11d48">没映射 → 设备不存在 → FFmpeg 静默回退软件</text>
+    </svg>
+    <figcaption>容器不是“自带硬件”的虚拟机：它共享宿主机内核，只看见被显式映射的设备和驱动库。</figcaption>
+  </div>
+
+  <h3>Docker：Intel / AMD 用 <code>/dev/dri</code>，NVIDIA 用 Toolkit</h3>
+  <p>Docker 容器像合租房：房东（宿主机）有全套设备，但不会自动把每个房间的门卡给你。VAAPI/QSV 需要把 <code>/dev/dri</code> 整目录映射进去，并让容器用户有 <code>render</code> 组权限；NVIDIA 则通过 Container Toolkit 注入设备节点与驱动库。</p>
+
+  <pre class="code"><span class="cm"># Intel / AMD：映射整个 /dev/dri，补上渲染组 GID</span>
+docker run --rm -it \
+  --device /dev/dri:/dev/dri \
+  --group-add "$(stat -c '%g' /dev/dri/renderD128)" \
+  -v "$PWD:/work" my-ffmpeg \
+  vainfo --display drm --device /dev/dri/renderD128
+
+<span class="cm"># 进容器后先看设备在不在</span>
+ls -l /dev/dri
+ffmpeg -hwaccels
+ffmpeg -h encoder=h264_vaapi</pre>
+
+  <p><code>--device /dev/dri</code> 会把 <code>card0</code>、<code>renderD128</code> 等节点一起带进去；只映射单个 <code>renderD128</code> 也能工作，但某些库会尝试打开 <code>card0</code>。非 root 用户还需要容器内存在对应 GID 的组，否则会报权限错误。</p>
+
+  <pre class="code"><span class="cm"># NVIDIA：先确认宿主机驱动与 nvidia-smi</span>
+nvidia-smi
+
+<span class="cm"># 容器里验证驱动可达（视频能力需要 video capability）</span>
+docker run --rm --gpus all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+
+<span class="cm"># 你自己的 ffmpeg 镜像里再验证编码器</span>
+docker run --rm --gpus all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  my-ffmpeg ffmpeg -hwaccels</pre>
+
+  <p class="small">注意：<code>nvidia/cuda</code> 基础镜像只用来验证驱动透传，不一定自带 FFmpeg。真正的转码镜像要把 FFmpeg 装进去，并确认它编译了 nvenc。默认 capability 往往不含 <code>video</code>；漏了它，<code>nvidia-smi</code> 正常但编码器会加载失败。</p>
+
+  <h3>Docker Compose 与 Kubernetes：把设备写成资源</h3>
+  <p>Compose 像点菜时把“忌口”写进订单：设备不是运行时临时加，而是声明在服务配置里。Kubernetes 则把 GPU 变成调度资源，Pod 申请到卡后，视频能力仍要靠环境变量与设备插件配合。</p>
+
+  <pre class="code"><span class="cm"># docker-compose.yml（NVIDIA）</span>
+services:
+  ffmpeg:
+    image: my-ffmpeg
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video]
+
+<span class="cm"># Kubernetes：NVIDIA device plugin 暴露 nvidia.com/gpu</span>
+resources:
+  limits:
+    nvidia.com/gpu: 1</pre>
+
+  <p class="small">Kubernetes 里还要设置 <code>NVIDIA_DRIVER_CAPABILITIES</code>（或通过 RuntimeClass 配置）才能启用 video；Intel 核显通常用 Intel device plugin 或 hostPath 映射 <code>/dev/dri</code>。不同集群的插件实现不同，别假设“Pod 里有 GPU 就一定有编码器”。</p>
+
+  <h3>WSL2：有 CUDA，不等于有 <code>/dev/dri</code></h3>
+  <p>WSL2 像“合租房的独立隔间”：它共享 Windows 内核的一部分能力，但不是完整 Linux。NVIDIA 通过 GPU-PV 提供 CUDA 与部分编解码能力，设备节点是 <code>/dev/dxg</code>；Intel/AMD 的 Linux 原生 VAAPI 路径通常没有 <code>/dev/dri</code>。</p>
+
+  <pre class="code"><span class="cm"># WSL2 内先看有什么</span>
+ls -l /dev/dri /dev/dxg
+nvidia-smi
+ffmpeg -hwaccels
+
+<span class="cm"># 不要假设 VAAPI/QSV 的 /dev/dri 路径存在</span>
+vainfo --display drm --device /dev/dri/renderD128</pre>
+
+  <p>WSL2 里 NVENC/NVDEC 能否工作，取决于 Windows 驱动、WSL 内核与 FFmpeg 构建；即使能跑，零拷贝与性能也可能与裸机不同。VAAPI/QSV 的 Linux 原生路径在 WSL2 里基本不可用；需要 Intel 核显加速时，优先考虑原生 Linux、Windows 的 D3D11/MF，或虚拟机直通。</p>
+
+  <h3>虚拟机与 vGPU：直通最稳，虚拟化最复杂</h3>
+  <p>PCIe 直通像把整间厨房租给你，设备几乎和裸机一样；vGPU/SR-IOV 像共享厨房，按时间片分配，方便但媒体引擎可能被限制。云上 GPU 还可能是 MIG 或 vGPU 切片，<strong>“有卡”不等于“有编码器”</strong>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方式</th><th>设备可见性</th><th>媒体引擎</th><th>典型限制</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td>PCIe 直通（VFIO）</td><td>整卡进入虚拟机</td><td>接近裸机</td><td>需要 IOMMU、设备绑定、驱动隔离</td><td>对性能/零拷贝要求高时首选</td></tr>
+        <tr><td>NVIDIA vGPU</td><td>按 profile 切分</td><td>取决于 profile 与许可</td><td>编码 session、显存、许可都可能受限</td><td>先查该 profile 的媒体能力矩阵</td></tr>
+        <tr><td>AMD MxGPU / SR-IOV</td><td>按分区共享</td><td>视代际与驱动</td><td>Linux/Windows 支持不一致</td><td>以厂商文档与实测为准</td></tr>
+        <tr><td>Intel SR-IOV</td><td>按 VF 切分</td><td>视平台</td><td>消费级平台支持有限</td><td>边缘/服务器平台单独确认</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">虚拟化层可能把一次 DMA 变成两次拷贝，也可能屏蔽某些 ioctl。先用 <code>vainfo</code>、<code>nvidia-smi</code>、<code>ffmpeg -hwaccels</code> 在虚拟机内验证，再跑端到端压测；不要拿裸机数据直接承诺虚拟机容量。</p>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>容器排错顺序：</b>宿主机 <code>nvidia-smi</code>/<code>vainfo</code> → 设备节点是否存在 → 容器是否映射 → 容器内权限/组 → FFmpeg 是否编译了该编码器 → 参数是否真的走硬件。<strong>任何一步跳过，都可能得到“命令成功、CPU 满载”的假象。</strong></span></div>
+</section>
+
+<section id="observe">
+  <h2>📈 验证与观测：把“感觉快”变成几行数字</h2>
+  <p class="lead">开车不能只凭发动机声音判断车速，要看仪表盘。转码也一样：<strong>“看起来在跑”不等于“硬件在干活”</strong>，更不等于“链路是零拷贝”。这一节把 NVIDIA、Intel、FFmpeg 日志、Windows 任务管理器四个仪表盘对齐，告诉你每个数字到底在说什么。</p>
+
+  <h3>NVIDIA：先分清 sm、enc、dec、mem</h3>
+  <p>四个指标像汽车上的四个表：<code>sm</code> 是发动机转速（3D/计算），<code>enc</code> 是编码器工时，<code>dec</code> 是解码器工时，<code>mem</code> 是油管流量（显存带宽），不是油箱剩余量。把它们混在一起看，就会得出“GPU 100% 所以编码器满了”的错误结论。</p>
+
+  <pre class="code"><span class="cm"># 每秒采样：利用率 + 显存带宽 + 编解码器 + 频率</span>
+nvidia-smi dmon -s um -d 1
+
+<span class="cm"># 需要 CSV 喂监控时，直接用 query（字段随驱动版本可能略有差异）</span>
+nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.encoder,utilization.decoder,memory.used,memory.total,pcie.link.gen.current,pcie.link.width.current \
+  --format=csv,noheader -l 1
+
+<span class="cm"># 按进程看谁在占用 GPU</span>
+nvidia-smi pmon -d 1</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>字段 / 指标</th><th>它到底表示什么</th><th>正常时</th><th>异常信号与下一步</th></tr></thead>
+      <tbody>
+        <tr><td><code>sm</code></td><td>3D / 计算单元利用率</td><td>转码时通常不高</td><td>很高但 enc 很低：可能是滤镜/CUDA 核在忙，或别的任务占卡</td></tr>
+        <tr><td><code>enc</code></td><td>硬件编码器利用率</td><td>随路数上升</td><td>接近高位且开始掉帧：编码产能到顶；若很低却慢，查链路是否断</td></tr>
+        <tr><td><code>dec</code></td><td>硬件解码器利用率</td><td>转码时先于 enc 上升</td><td>先满：解码是瓶颈，降低输入规格或换解码单元更多的卡</td></tr>
+        <tr><td><code>mem</code></td><td>显存控制器带宽利用率</td><td>随分辨率/拷贝上升</td><td>很高但 enc 不高：可能在缩放/下载/上传，或显存带宽被别的任务占用</td></tr>
+        <tr><td><code>mclk / pclk</code></td><td>显存频率 / 核心频率</td><td>负载时升频</td><td>被限频/过热降频时，性能会突然塌陷</td></tr>
+        <tr><td><code>memory.used</code></td><td>显存占用容量</td><td>随路数缓慢上升</td><td>接近上限：表面池/队列太多，减少路数或换大显存</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small"><code>dmon</code> 的 <code>mem</code> 列是<strong>带宽利用率</strong>，不是已用显存；要看容量用 <code>nvidia-smi --query-gpu=memory.used,memory.total</code> 或 <code>nvidia-smi</code> 顶部表格。部分 GPU/驱动对 <code>enc</code>/<code>dec</code> 的利用率上报不完整，显示 N/A 时以帧率与日志为准。</p>
+
+  <h3>Intel / AMD：媒体引擎藏在哪一栏</h3>
+  <p><code>intel_gpu_top</code> 像核显的分时电表，把 Render、Blitter、Video、VideoEnhance 各引擎分开计费。转码主要看 <code>Video</code> 与 <code>VideoEnhance</code>；如果 <code>Render</code> 很高而 Video 很低，多半是滤镜或色彩转换在跑，不是编码器。</p>
+
+  <pre class="code"><span class="cm"># Intel：需要 perf 权限，通常用 sudo</span>
+sudo intel_gpu_top
+
+<span class="cm"># AMD：两个常用工具，选一个即可</span>
+radeontop
+amdgpu_top</pre>
+
+  <p class="small">Intel 的 <code>Video</code> 引擎负责编解码，<code>VideoEnhance</code> 负责缩放/去噪等 VPP；两者合起来才是完整媒体管线。AMD 的 VCN 利用率在不同工具里命名不同，关注 “VCN / Video” 一栏，而不是 3D 占用。</p>
+
+  <h3>FFmpeg 日志：三行就能判断链路</h3>
+  <p>日志像快递的扫码记录：<code>Using hardware decoding</code> 只证明“解码上了硬件”，<code>pixfmt</code> 才证明“帧还在显存”，<code>auto_scale</code> 则暴露“链路已经被拉回 CPU”。开 <code>verbose</code> 或 <code>debug</code>，再用 <code>grep</code> 缩小范围。</p>
+
+  <pre class="code"><span class="cm"># 关键行过滤</span>
+ffmpeg -v verbose -i in.mp4 -c:v h264_nvenc out.mp4 2&gt;&amp;1 | \
+  grep -E <span class="st">"Using hardware|pixfmt|auto_scale|hwdownload|hwupload|Incompatible"</span>
+
+<span class="cm"># 需要完整滤镜图时用 debug；日志会明显变长</span>
+ffmpeg -v debug -i in.mp4 -c:v h264_nvenc out.mp4 2&gt;&amp;1 | head -n 200
+
+<span class="cm"># 让 FFmpeg 自动落盘日志，方便事后对比</span>
+ffmpeg -report -i in.mp4 -c:v h264_nvenc out.mp4
+
+<span class="cm"># 端到端耗时与各阶段基准</span>
+ffmpeg -benchmark -i in.mp4 -c:v h264_nvenc out.mp4</pre>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>日志片段</th><th>含义</th><th>下一步</th></tr></thead>
+      <tbody>
+        <tr><td><code>Using hardware decoding (cuda)</code></td><td>解码走 NVDEC</td><td>只说明硬解，不代表全链路零拷贝</td></tr>
+        <tr><td><code>pixfmt:cuda</code></td><td>帧是 CUDA 设备表面</td><td>继续看后续滤镜是否保持该格式</td></tr>
+        <tr><td><code>auto_scale_0 … fmt:cuda -&gt; fmt:yuv420p</code></td><td>自动插入了软件缩放/格式转换</td><td>改用 <code>scale_cuda</code>，删掉普通 <code>format</code></td></tr>
+        <tr><td><code>hwdownload</code> / <code>hwupload</code></td><td>像素在显存与内存之间搬运</td><td>定位是哪个滤镜/格式协商造成的</td></tr>
+        <tr><td><code>Incompatible pixel format</code></td><td>编码器不接受当前像素格式</td><td>检查 8/10-bit、4:2:0/4:2:2、pix_fmt 名称</td></tr>
+        <tr><td><code>Cannot load libnvidia-encode.so.1</code></td><td>运行时找不到编码库</td><td>查驱动 capability、容器映射、FFmpeg 构建</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Windows 任务管理器：Copy 引擎是零拷贝的照妖镜</h3>
+  <p>任务管理器的 GPU 页像机场的行李分拣屏：<code>Video Decode</code>、<code>Video Encode</code>、<code>3D</code>、<code>Copy</code> 各走各的传送带。<code>Copy</code> 引擎升高，通常意味着有 DMA 在搬像素；如果你的链路号称零拷贝，它却很忙，就要查 <code>hwdownload</code>/<code>hwupload</code>。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>引擎 / 指标</th><th>含义</th><th>转码时的读法</th></tr></thead>
+      <tbody>
+        <tr><td>Video Decode</td><td>硬件解码引擎</td><td>应随输入路数上升；先满说明解码瓶颈</td></tr>
+        <tr><td>Video Encode</td><td>硬件编码引擎</td><td>应随输出路数上升；接近高位且掉帧说明编码到顶</td></tr>
+        <tr><td>3D</td><td>渲染/计算引擎</td><td>滤镜、色彩转换、部分 CUDA 核会占用；高但 enc 低要查滤镜</td></tr>
+        <tr><td>Copy</td><td>DMA 拷贝引擎</td><td>零拷贝链路应基本安静；持续升高 = 有显存↔内存搬运</td></tr>
+        <tr><td>Dedicated GPU memory</td><td>独显显存占用</td><td>持续接近上限：表面池/队列/分辨率过大</td></tr>
+        <tr><td>Shared GPU memory</td><td>共享系统内存</td><td>大量使用说明显存不够或走了软件路径</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="small">Windows 性能监视器里可看 <code>GPU Engine(*)\Utilization Percentage</code> 与 <code>GPU Adapter Memory(*)\Dedicated Usage</code>；不同驱动/系统的计数器命名略有差异。任务管理器适合快速判断“哪条引擎在忙”，精确压测仍要回到日志与帧率。</p>
+
+  <h3>端到端：别只看 GPU</h3>
+  <p>仪表盘不只看发动机，还要看油耗、胎压和车速。转码的 SLO 通常是“不丢帧、延迟可控、码率稳定”，这些指标在 GPU 之外：网络、磁盘、复用器、CPU 中断都可能先出问题。</p>
+
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>指标</th><th>怎么看</th><th>正常</th><th>异常时先查</th></tr></thead>
+      <tbody>
+        <tr><td>输出帧率 / speed</td><td><code>ffmpeg</code> 统计行里的 <code>fps=</code>、<code>speed=</code></td><td><code>speed &gt; 1</code> 才比实时快</td><td>滤镜、解码、编码、磁盘</td></tr>
+        <tr><td>丢帧 / 重复帧</td><td>输入与输出帧数对比、<code>framecrc</code> 校验</td><td>帧数与时间戳连续</td><td>时间基、<code>fps</code> 滤镜、可变帧率</td></tr>
+        <tr><td>CPU</td><td><code>top</code>/<code>htop</code>，关注 <code>sy</code> 与单核占用</td><td>低且平稳</td><td>CPU 滤镜、拷贝、mux、加密</td></tr>
+        <tr><td>网络</td><td><code>iftop</code>/<code>nload</code>/<code>ss</code></td><td>码率稳定、无重传</td><td>带宽、TCP 窗口、推流协议</td></tr>
+        <tr><td>磁盘 / 容器 IO</td><td><code>iostat</code>/<code>df</code></td><td>写盘不阻塞</td><td>日志、临时文件、网络存储</td></tr>
+        <tr><td>温度 / 功耗</td><td><code>nvidia-smi</code>、<code>sensors</code></td><td>不降频、不撞功耗墙</td><td>散热、机箱风道、电源</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>先定 SLO，再看仪表：</b>“单机 20 路 1080p30、延迟小于 2 秒、连续 24 小时不丢帧”比“GPU 利用率 80%”更像验收标准。没有 SLO，任何数字都可以被解释成“正常”。</span></div>
+</section>
+
+<section id="faq">
+  <h2>🧯 常见坑 FAQ：八个踩坑现场</h2>
+  <p class="lead">下面八条像急诊室的分诊牌：先看症状，再按顺序排查，别一上来就换卡。每条都给出可执行的验证命令；涉及绕过厂商限制的内容只说明风险，不提供操作步骤。</p>
+
+  <details class="b">
+    <summary><span class="ar">▶</span><span class="tag tag-r">高频</span> 驱动和 FFmpeg 都说支持，为什么 CPU 还是满的？</summary>
+    <div class="bd">
+      <p class="small">最常见的原因不是“没装驱动”，而是链路中途被拉回 CPU：漏写 <code>-hwaccel_output_format</code>、用了 CPU 滤镜、像素格式不匹配，或者参数被自动忽略。先证明编码器真的在跑，再证明帧真的没落地。</p>
+      <pre class="code">ffmpeg -hwaccels
+ffmpeg -h encoder=h264_nvenc
+ffmpeg -v verbose -i in.mp4 -c:v h264_nvenc out.mp4 2&gt;&amp;1 | \
+  grep -E "Using hardware|pixfmt|auto_scale|hwdownload|hwupload"</pre>
+      <p class="small">如果日志里 <code>pixfmt</code> 从 <code>cuda</code> 变成 <code>yuv420p</code>，或者出现 <code>auto_scale</code>，说明链路已断；先改滤镜与输出格式，再谈性能。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span><span class="tag tag-r">高频</span> 前几路都正常，第 N 路突然失败，是卡坏了吗？</summary>
+    <div class="bd">
+      <p class="small">更可能是 session 上限、显存耗尽或表面池不够。消费级 GeForce 历史上受驱动 session 限制；专业/数据中心卡的额度更高。先看失败时的显存与编码器日志，再判断是“产品限制”还是“资源不够”。</p>
+      <pre class="code">nvidia-smi
+nvidia-smi --query-gpu=memory.used,memory.total,utilization.encoder,utilization.decoder \
+  --format=csv,noheader -l 1
+nvidia-smi pmon -d 1</pre>
+      <p class="small">若是 <code>OpenEncodeSessionEx failed</code> 一类错误，且显存充足，通常是 session 额度；若是显存接近上限，先减队列/分辨率/路数，或调低 <code>-extra_hw_frames</code>。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span><span class="tag tag-r">风险</span> 消费卡并发限制能“解锁”吗？</summary>
+    <div class="bd">
+      <p class="small">修改驱动或打补丁绕过 session 限制，通常违反厂商许可与保修条款，也可能带来稳定性与合规风险；生产环境不建议这么做。需要高并发时，优先选专业/数据中心型号，或增加机器、改用多卡与分布式转码。这里不提供绕过步骤。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span> 显存爆了：<code>-extra_hw_frames</code> 是越大越好吗？</summary>
+    <div class="bd">
+      <p class="small">不是。它像给传送带多放几个托盘：太少会卡住（解码器没有可用表面），太多会占满仓库（显存）。它解决的是“表面池不够”，不是“编码器产能不够”。</p>
+      <pre class="code"><span class="cm"># 适度增加解码表面，观察显存与是否还报错</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+  -extra_hw_frames 8 -i in.mp4 -c:v h264_nvenc out.mp4</pre>
+      <p class="small">同时检查 <code>-async_depth</code>、滤镜队列、并发路数与 4K/10-bit 输入。显存是总账，单看一个参数容易误判。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span> 加了一行 <code>drawtext</code>，画质没变，CPU 却翻倍？</summary>
+    <div class="bd">
+      <p class="small"><code>drawtext</code> 只认 CPU 帧：硬件帧进来会先被 <code>hwdownload</code>，画完再 <code>hwupload</code>。每帧上下传送带两次，CPU 与 PCIe 都被拖下水。能换 GPU 叠加就换，不能换就把文字烧录放到离线环节。</p>
+      <pre class="code"><span class="cm"># overlay_cuda 需要两路 CUDA 输入；叠加层也要先上传到设备表面</span>
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mp4 -i overlay.mp4 \
+  -filter_complex "[0:v]scale_cuda=format=yuv420p[base];[1:v]scale_cuda=format=yuv420p[ov];[base][ov]overlay_cuda=x=20:y=20" \
+  -c:v h264_nvenc out.mp4</pre>
+      <p class="small">用 PNG 水印时，把图片循环成视频流并 <code>hwupload_cuda</code> 后再叠加；具体写法以本机 <code>ffmpeg -h filter=overlay_cuda</code> 为准。如果必须用 CPU 字幕，至少把它放在编码前一次完成，别在多路并发里反复下载/上传。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span><span class="tag tag-r">高频</span> 10-bit 输入，输出却变成 8-bit / 出现断层？</summary>
+    <div class="bd">
+      <p class="small">先看编码器是否支持 10-bit：<code>h264_nvenc</code> 一般只做 8-bit；<code>hevc_nvenc</code> 需要 Main10 与 <code>p010le</code>。FFmpeg 可能静默转换而不报错，所以必须检查输出的 <code>pix_fmt</code>。</p>
+      <pre class="code">ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt,profile \
+  -of default=nw=1 out.mp4
+
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i in.mkv \
+  -vf "scale_cuda=format=p010le" \
+  -c:v hevc_nvenc -profile:v main10 -pix_fmt p010le out.mp4</pre>
+      <p class="small">还要确认输入不是 8-bit 上采样成 10-bit；真正的 10-bit 源才有额外色阶。P010 与 <code>yuv420p10le</code> 的转换也可能是一次隐藏成本。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span> 全链路零拷贝了，为什么反而更慢？</summary>
+    <div class="bd">
+      <p class="small">零拷贝省的是<strong>带宽</strong>，不是<strong>延迟</strong>。设备表面池、fence 同步、编码器队列、GPU 滤镜的调度都可能增加等待；低分辨率时，一次下载可能比同步开销还便宜。零拷贝不是无条件更优。</p>
+      <p class="small">对比方法：固定输入与输出参数，分别跑“全硬件”和“下载到 CPU 再编码”，记录 <code>speed=</code>、端到端延迟、CPU、显存与 Copy 引擎。用数据决定，而不是口号。</p>
+    </div>
+  </details>
+
+  <details class="b">
+    <summary><span class="ar">▶</span> 容器里 <code>nvidia-smi</code> 正常，FFmpeg 却报找不到 <code>libnvidia-encode.so.1</code>？</summary>
+    <div class="bd">
+      <p class="small">这像“门禁卡能刷开大门，却刷不开机房”：驱动容器能力不等于视频编码能力。常见原因是 <code>NVIDIA_DRIVER_CAPABILITIES</code> 没包含 <code>video</code>，或 FFmpeg 构建没启用 nvenc，或驱动版本与容器库不匹配。</p>
+      <pre class="code">docker run --rm --gpus all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+  my-ffmpeg sh -c "ldconfig -p | grep nvidia-encode; ffmpeg -h encoder=h264_nvenc"</pre>
+      <p class="small">先在宿主机确认 <code>nvidia-smi</code> 与编码器可用，再进容器复测；仍然失败就查镜像里的 FFmpeg 构建与驱动库路径。</p>
+    </div>
+  </details>
+
+  <div class="diagram">
+    <div class="flow vert">
+      <div class="node">① 驱动与内核：<code>nvidia-smi</code> / <code>vainfo</code></div>
+      <div class="ar">↓</div>
+      <div class="node">② 设备与权限：<code>/dev/dri</code>、<code>/dev/nvidia*</code>、render 组</div>
+      <div class="ar">↓</div>
+      <div class="node">③ FFmpeg 构建：<code>-hwaccels</code>、<code>-h encoder=…</code></div>
+      <div class="ar">↓</div>
+      <div class="node">④ 参数与日志：<code>pixfmt</code>、<code>auto_scale</code>、<code>hwdownload</code></div>
+      <div class="ar">↓</div>
+      <div class="node">⑤ 容器 / 虚拟化：映射、capability、vGPU 限制</div>
+      <div class="ar">↓</div>
+      <div class="node">⑥ 压测与拐点：逐路增加，记录帧率与资源</div>
+    </div>
+    <figcaption>任何一层跳过都会漏；按“驱动 → 设备 → 构建 → 参数 → 虚拟化 → 压测”逐层验证，才能区分“没启用”和“到上限”。</figcaption>
+  </div>
 </section>
 
 <section id="glossary">
