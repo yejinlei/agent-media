@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>浏览器内直播实验台 · 迷你媒体服务器（WebRTC 推拉 + HLS 源站）</title>
-<meta name="description" content="把浏览器变成一个迷你媒体服务器：多标签页角色实验（推流端/服务器端/观众端），WebRTC 真推流真拉流，Service Worker 当 HLS 源站用 hls.js 真实拉流；附 MediaMTX / ZLMediaKit / SRS 真服务器联调配方。">
+<title>浏览器内直播实验台 · 迷你媒体服务器（WebRTC 推拉 + HLS/DASH 源站）</title>
+<meta name="description" content="把浏览器变成一个迷你媒体服务器：多标签页角色实验（推流端/服务器端/观众端），WebRTC 真推流真拉流，Service Worker 当 HLS 与 DASH 双源站（hls.js + Shaka 真实拉流）；附 MediaMTX / ZLMediaKit / SRS 真服务器联调配方。">
 <link rel="stylesheet" href="../style.css">
 </head>
 <body>
@@ -33,7 +33,7 @@
 <header class="hero" style="padding:3.4rem 0 3rem">
   <div class="wrap">
     <h1>浏览器内直播实验台：<br><em>把一个标签页变成媒体服务器</em></h1>
-    <p>不需要安装任何东西。开三个标签页，分别扮演<strong>推流端</strong>、<strong>服务器</strong>、<strong>观众端</strong>，跑通一条完整的直播链路：WebRTC 真推流（WHIP 式信令）→ 服务器转发分发 → WebRTC 低延迟拉流（WHEP 式）+ Service Worker 当 HLS 真源站（hls.js 走真实 HTTP 拉流）。这就是媒体服务器的全部核心职责——只是把 TCP/UDP 换成了浏览器允许的三件武器。</p>
+    <p>不需要安装任何东西。开三个标签页，分别扮演<strong>推流端</strong>、<strong>服务器</strong>、<strong>观众端</strong>，跑通一条完整的直播链路：WebRTC 真推流（WHIP 式信令）→ 服务器转发分发 → WebRTC 低延迟拉流（WHEP 式）+ Service Worker 当 HLS 与 DASH 双真源站（hls.js / Shaka 走真实 HTTP 拉流）。这就是媒体服务器的全部核心职责——只是把 TCP/UDP 换成了浏览器允许的三件武器。</p>
     <div class="cta">
       <a class="btn btn-p" href="#lab">🧪 开始实验</a>
       <a class="btn btn-ghost" href="#truth">先看协议边界</a>
@@ -42,6 +42,7 @@
     <div class="pill-row">
       <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">WebRTC 推/拉</span>
       <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HLS 源站</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">DASH 源站</span>
       <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">Service Worker</span>
       <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">BroadcastChannel</span>
       <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MediaRecorder</span>
@@ -63,8 +64,9 @@
         <tr><td>推流（接入）</td><td><b>WebRTC</b>（WHIP 式 HTTP 信令）</td><td><span class="badge-ok">真实</span></td><td>浏览器唯一能"真推流"的协议；信令走 BroadcastChannel（同一台浏览器内），媒体走 RTCPeerConnection</td></tr>
         <tr><td>拉流（分发）</td><td><b>WebRTC</b>（WHEP 式）</td><td><span class="badge-ok">真实</span></td><td>服务器标签页把收到的 track 转发给 N 个观众——一个微型 SFU</td></tr>
         <tr><td>拉流（分发）</td><td><b>HLS</b></td><td><span class="badge-ok">真实</span></td><td>MediaRecorder 产出 fMP4 分段 → Service Worker 拦截同源 fetch 当 HTTP 源站 → hls.js 真实拉流播放</td></tr>
+        <tr><td>拉流（分发）</td><td><b>DASH</b>（MPEG-DASH）</td><td><span class="badge-ok">真实</span></td><td>与 HLS 共用同一批 fMP4 分段，只多推一份 <code>live.mpd</code>（SegmentTemplate 展开 <code>$Number$</code>）→ Shaka Player 真实拉流播放</td></tr>
         <tr><td>推 / 拉</td><td>RTMP · RTSP · SRT · GB28181</td><td><span class="badge-no">物理不可能</span></td><td>需要监听端口，浏览器沙箱禁止；wasm 无 socket。→ 用下面的<a href="#real">真服务器联调卡</a>对接</td></tr>
-        <tr><td>拉流（分发）</td><td>HTTP-FLV · DASH</td><td><span class="badge-ok">预留</span></td><td>Service Worker 同样能响应（sw 源站架构已就位），后续版本加入</td></tr>
+        <tr><td>拉流（分发）</td><td>HTTP-FLV</td><td><span class="badge-ok">预留</span></td><td>Service Worker 同样能响应（sw 源站架构已就位），后续版本加入</td></tr>
       </tbody>
     </table>
   </div>
@@ -117,7 +119,8 @@
       <div>
         <h4 style="font-size:.95rem">HLS 源站（Service Worker · 真实 HTTP）</h4>
         <p class="small" id="srvHls">等待媒体…</p>
-        <p class="small" style="word-break:break-all">地址：<code id="hlsUrl">lab-hls/live.m3u8</code> <button class="btn-mini" id="copyHls">复制完整地址</button></p>
+        <p class="small" style="word-break:break-all">HLS 地址：<code id="hlsUrl">lab-hls/live.m3u8</code> <button class="btn-mini" id="copyHls">复制完整地址</button></p>
+        <p class="small" style="word-break:break-all">DASH 地址：<code id="mpdUrl">lab-hls/live.mpd</code> <button class="btn-mini" id="copyMpd">复制完整地址</button> <span class="badge-ok">真拉流</span></p>
       </div>
     </div>
     <video id="srvVideo" autoplay playsinline muted style="width:100%;max-width:480px;border-radius:.6rem;background:#000;margin-top:.6rem;display:none"></video>
@@ -126,16 +129,25 @@
         <p class="small"><b>转发原理：</b>收到推流端的 <code>ontrack</code> 后保存 <code>MediaStream</code>；每个观众连接时 <code>addTrack</code> 同一批 track——这就是 SFU 转发的最小实现，不转码、只路由。</p>
       </div>
       <div>
-        <p class="small"><b>HLS 原理：</b><code>MediaRecorder</code> 以 2s 时间片录制 fMP4，页面拆出 init 段与媒体段推给 Service Worker；任何标签页/播放器请求 <code>lab-hls/live.m3u8</code> 都被 SW 用内存中的清单与分段响应。</p>
+        <p class="small"><b>HLS / DASH 源站原理：</b><code>MediaRecorder</code> 以 2s 时间片录制 fMP4，页面拆出 init 段与媒体段（<code>init.mp4</code> + <code>seg-N.m4s</code>）推给 Service Worker；任何标签页/播放器请求 <code>lab-hls/live.m3u8</code> 或 <code>lab-hls/live.mpd</code> 都被 SW 用内存中的清单与分段响应。两种格式共用同一批分段，只是清单语法不同——HLS 用 <code>#EXT-X-MAP</code>，DASH 用 <code>SegmentTemplate</code>。</p>
       </div>
     </div>
-    <p class="small" style="margin-top:.6rem"><b>在本页预览 HLS 源站</b>（等价于观众端拉 HLS）：</p>
-    <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.m3u8"}'></div>
+    <p class="small" style="margin-top:.6rem"><b>在本页预览源站</b>（等价于观众端拉流，HLS 与 DASH 各一个，点 ▶ 即可）：</p>
+    <div class="grid-2">
+      <div>
+        <p class="small" style="font-weight:600">HLS</p>
+        <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.m3u8"}'></div>
+      </div>
+      <div>
+        <p class="small" style="font-weight:600">DASH</p>
+        <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.mpd"}'></div>
+      </div>
+    </div>
   </div>
 
   <!-- ============ 观众端 ============ -->
   <div class="card role-panel" id="panel-view" style="display:none">
-    <h4>👀 观众端 · 两种拉流协议</h4>
+    <h4>👀 观众端 · 三种拉流协议</h4>
     <div class="grid-2">
       <div>
         <h4 style="font-size:.95rem">① WebRTC（WHEP 式 · 亚秒延迟）</h4>
@@ -147,6 +159,9 @@
         <h4 style="font-size:.95rem">② HLS（Service Worker 真源站 · 2–6 秒延迟）</h4>
         <p class="small">清单地址就是服务器面板显示的 <code>lab-hls/live.m3u8</code>。等「服务器」标签页开始分发后点 ▶：</p>
         <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.m3u8"}'></div>
+        <h4 style="font-size:.95rem;margin-top:1rem">③ DASH（MPEG-DASH 真源站 · Shaka Player）</h4>
+        <p class="small">地址 <code>lab-hls/live.mpd</code>，与 HLS 共用同一批 fMP4 分段，只是换一种清单语法。等服务器分发后点 ▶（stream 组件自动识别 <code>.mpd</code> 走内置 Shaka）：</p>
+        <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.mpd"}'></div>
       </div>
     </div>
   </div>
@@ -382,8 +397,10 @@ xiu ./config.toml   # 示例配置：
   /* ================= 服务器 ================= */
   function initSrvPanel() {
     try { $('#hlsUrl').textContent = new URL('lab-hls/live.m3u8', location.href).href; } catch (e) {}
+    try { $('#mpdUrl').textContent = new URL('lab-hls/live.mpd', location.href).href; } catch (e) {}
   }
   $('#copyHls').addEventListener('click', () => { navigator.clipboard.writeText($('#hlsUrl').textContent).then(() => { $('#copyHls').textContent = '✅ 已复制'; setTimeout(() => $('#copyHls').textContent = '复制完整地址', 1500); }); });
+  $('#copyMpd').addEventListener('click', () => { navigator.clipboard.writeText($('#mpdUrl').textContent).then(() => { $('#copyMpd').textContent = '✅ 已复制'; setTimeout(() => $('#copyMpd').textContent = '复制完整地址', 1500); }); });
 
   $('#srvSelf').addEventListener('click', () => {
     if (srv.selfMode) return;
@@ -521,7 +538,7 @@ xiu ./config.toml   # 示例配置：
   function emitInit() {
     if (srv.initSent) return; srv.initSent = true;
     const blob = new Blob(srv.initParts, { type: 'video/mp4' });
-    blob.arrayBuffer().then(buf => { swSend({ t: 'seg', name: 'init.mp4', buf }); pushManifest(); });
+    blob.arrayBuffer().then(buf => { swSend({ t: 'seg', name: 'init.mp4', buf }); pushManifest(); pushMpd(); });
   }
   function closeFrag() {
     const now = Date.now();
@@ -533,6 +550,7 @@ xiu ./config.toml   # 示例配置：
       swSend({ t: 'seg', name, buf });
       srv.segs.push({ name, dur });
       pushManifest();
+      pushMpd();
       $('#srvHls').textContent = '✅ 源站运行中 · 已切 ' + srv.segs.length + ' 段（最新 ' + name + ' · ' + dur.toFixed(1) + 's）· 滑动窗口 60 段';
     });
   }
@@ -543,6 +561,52 @@ xiu ./config.toml   # 示例配置：
     let mf = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:' + base + '\n#EXT-X-MAP:URI="init.mp4"\n';
     win.forEach(s => { mf += '#EXTINF:' + s.dur.toFixed(2) + ',\n' + s.name + '\n'; });
     swSend({ t: 'mf', text: mf });
+  }
+  // DASH 源站：与 HLS 共用同一批 fMP4 分段（init.mp4 + seg-N.m4s），只多推一份 MPD。
+  // 用 SegmentTimeline + $Number$：每段给出真实时长 d（毫秒），Shaka 精确对齐时间轴，
+  // 不因固定 duration 与实际切段时长（0.5–4s 波动）偏差而丢段；type="dynamic" 直播，
+  // 播放器按 minimumUpdatePeriod 周期重拉 live.mpd，窗口随 startNumber 滚动。
+  function mpdCodecs() {
+    const m = String((srv.rec && srv.rec.mimeType) || '').match(/codecs="?([^";]+)"?/i);
+    return m ? m[1] : '';
+  }
+  function pushMpd() {
+    const win = srv.segs.slice(-60);
+    if (!win.length) return;
+    // availabilityStartTime 固定为首次生成时刻，避免每次刷新导致播放器时间轴跳变
+    if (!srv.mpdStart) srv.mpdStart = new Date().toISOString();
+    const startNum = srv.segs.length - win.length + 1; // 窗口首段的 $Number$
+    const codecs = mpdCodecs();
+    const codecAttr = codecs ? ` codecs="${codecs}"` : '';
+    // SegmentTimeline：t 为段起始（毫秒，相对 Period 起点），d 为该段时长（毫秒）
+    let timeline = '';
+    let t = 0;
+    win.forEach(s => {
+      const d = Math.max(1, Math.round(s.dur * 1000));
+      timeline += `        <S t="${t}" d="${d}" r="0"/>\n`;
+      t += d;
+    });
+    const mpd =
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      `<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic" ` +
+      `profiles="urn:mpeg:dash:profile:isoff-live:2011" ` +
+      `minBufferTime="PT1.5S" minimumUpdatePeriod="PT2S" ` +
+      `timeShiftBufferDepth="PT120S" availabilityStartTime="${srv.mpdStart}">\n` +
+      `  <Period start="PT0S">\n` +
+      // 单 Representation：MediaRecorder 产出的是 muxed 音视频 fMP4（avc1+mp4a 同一段），
+      // Shaka 支持 muxed Representation，会从 init.mp4 的 moov 读出 video+audio 两条流
+      `    <AdaptationSet mimeType="video/mp4"${codecAttr} segmentAlignment="true" startWithSAP="1">\n` +
+      `      <Representation id="mux" bandwidth="900000">\n` +
+      `        <SegmentTemplate media="seg-$Number$.m4s" initialization="init.mp4" ` +
+      `startNumber="${startNum}" timescale="1000">\n` +
+      `          <SegmentTimeline>\n` + timeline +
+      `          </SegmentTimeline>\n` +
+      `        </SegmentTemplate>\n` +
+      `      </Representation>\n` +
+      `    </AdaptationSet>\n` +
+      `  </Period>\n` +
+      `</MPD>`;
+    swSend({ t: 'mpd', text: mpd });
   }
   // 下载整段录像（fMP4 各分片顺序拼接即完整文件）
   const dlBtn = document.createElement('button'); dlBtn.className = 'btn btn-ghost'; dlBtn.textContent = '💾 下载已服务时段的 MP4';
