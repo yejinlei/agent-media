@@ -1817,6 +1817,7 @@ rtcp.pt == 206</pre>
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>最小验证链：</b>同机回环 → 同网段 → 跨网段 → 公网。每跨一步只加一个变量（防火墙、NAT、CDN、转码）。能把问题钉在某一跳，比读十篇协议文档更快。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：用 ffprobe 验证文件容器与编码</a></div>
 </section>
 
 <section id="capture">
@@ -1928,6 +1929,7 @@ ffmpeg -rtsp_transport tcp -i rtsp://user:pass@host/Streaming/Channels/101 \
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>两条黄金习惯：</b>① 先抓“两端”再谈丢包，单侧抓包只能证明“我没收到”，不能证明“你没发”；② 抓包文件与 <code>ffprobe</code> 输出、服务端日志放在同一时间轴（先对时，再对日志），否则你会在“先后顺序”上得出完全相反的结论。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：ffprobe 读抓包导出的流</a></div>
 </section>
 
 <section id="faq">
@@ -2063,6 +2065,7 @@ ffprobe -v error -show_streams "https://example.com/live/index.m3u8"</pre>
       <p class="small"><b>经验：</b>Chrome 能播、Safari 不能播，优先查 CODECS 与 fMP4 的 <code>#EXT-X-MAP</code>；全部播放器都不能播，优先查 403/CORS/分片 404。</p>
     </div>
   </details>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：用 ffprobe 复核流参数</a></div>
 </section>
 
 <section id="glossary">

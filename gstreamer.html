@@ -692,6 +692,7 @@ dot -Tsvg /tmp/gst/0.00.00.123456-gst-launch.PLAYING.dot &gt; pipeline.svg</pre>
   </div>
 
   <div class="callout callout-tip"><span class="ic">🔎</span><span><b>排障口诀：</b>先看 bus 的 ERROR/WARNING，再看 GST_DEBUG 的最后一个 ERROR，最后看 dot 图。三者顺序不要反：bus 告诉“哪条链坏了”，日志告诉“坏在哪个函数”，dot 告诉“结构是否本来就错了”。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#probe-panel">🧪 动手试试：用 ffprobe 核对流的封装与编码</a></div>
 </section>
 
 <section id="vs">
@@ -726,6 +727,7 @@ dot -Tsvg /tmp/gst/0.00.00.123456-gst-launch.PLAYING.dot &gt; pipeline.svg</pre>
   </div>
 
   <div class="callout callout-i"><span class="ic">🤝</span><span><b>它们经常一起用：</b>GStreamer 的 <code>avdec_h264</code>、<code>avenc_h264</code>、<code>avmux_*</code> 插件内部就是 libav；很多服务器（MediaMTX、SRS、ZLMediaKit）既能收 GStreamer 推的流，也能收 FFmpeg 推的流。选型看“边界”：谁负责采集/调度，谁负责一次转码。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#playground?preset=mp4">🧪 动手试试：体验 FFmpeg 的“一条命令转码”</a></div>
 </section>
 
 <section id="ecosystem">

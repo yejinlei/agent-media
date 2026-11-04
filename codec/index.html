@@ -192,6 +192,7 @@
   </div>
 
   <p>真正决定码率的顺序是：<b>预测越准 → 残差越小 → 变换后非零系数越少 → 量化后更容易全零 → 熵编码越省</b>。所以编码器的核心竞争力往往在预测（运动估计、块划分），而不是熵编码。</p>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：走一遍编码流水线，对比原始与输出</a></div>
 </section>
 
 <section id="predict">
@@ -408,6 +409,7 @@ ffmpeg -i out.h264 -c:v copy out.mp4</pre>
   <div data-lazy-viz data-viz="hex" data-opts='{"title":"SPS：1280×720 Baseline@L3.1（Annex B，9 字节）","bytes":"67 42 00 1F F4 02 80 2D C8","fields":[{"name":"NAL header","start":0,"end":0,"bits":"8 bit","note":"0x67 = 0110 0111：forbidden_zero_bit=0，nal_ref_idc=3，nal_unit_type=7，即 SPS。"},{"name":"profile_idc","start":1,"end":1,"bits":"8 bit","note":"0x42 = 66，Baseline profile。常见值：Main=77（0x4D），High=100（0x64）。"},{"name":"constraint_set_flags","start":2,"end":2,"bits":"8 bit","note":"0x00，未置位任何约束标志。若置位 constraint_set3，可表示 Constrained Baseline。"},{"name":"level_idc","start":3,"end":3,"bits":"8 bit","note":"0x1F = 31，即 Level 3.1。1280×720 正好是 3600 个宏块，30 fps 正好 108000 宏块每秒，贴着 Level 3.1 的上限。"},{"name":"seq_parameter_set_id 等","start":4,"end":4,"bits":"8 bit","note":"0xF4 = 1111 0100：seq_parameter_set_id=0、log2_max_frame_num_minus4=0、pic_order_cnt_type=0、log2_max_pic_order_cnt_lsb_minus4=0、max_num_ref_frames=1、gaps_in_frame_num_value_allowed_flag=0。"},{"name":"宽高（位打包）","start":5,"end":6,"bits":"16 bit · ue(v)","note":"pic_width_in_mbs_minus1=79，即 (79+1)×16=1280；pic_height_in_map_units_minus1=44 的高位也从这里开始。ue(v) 是变长码，不按字节对齐。"},{"name":"高度剩余位","start":7,"end":7,"bits":"8 bit","note":"0x2D 补齐 pic_height 的剩余比特：45×16=720。"},{"name":"帧结构与 VUI 标志","start":8,"end":8,"bits":"8 bit","note":"0xC8 = 1100 1000：frame_mbs_only_flag=1、direct_8x8_inference_flag=1、frame_cropping_flag=0、vui_parameters_present_flag=0，最后是 rbsp_stop_bit=1 与填充。"}],"hint":"这是一条 1280×720、Baseline、Level 3.1 的 SPS。真实码流里还会出现 00 00 03 的防竞争字节；这里没有插入。"}'></div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么参数集要单独成包：</b>一帧的分辨率、量化、熵编码开关会在整段视频里反复使用。把 SPS/PPS 抽出来重复广播，比在每个 slice 里重复写几十字节便宜得多；代价是它们一旦丢失，后面的 slice 全成“无头数据”。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：用 ffprobe 探测真实流的 NAL / 帧结构</a></div>
 </section>
 
 <section id="gop">
@@ -437,6 +439,7 @@ ffmpeg -i in.mp4 -c:v libx264 -g 50 -keyint_min 50 -sc_threshold 0 out.mp4
 ffmpeg -i in.mp4 -c:v libx264 -tune zerolatency -g 50 -bf 0 out.mp4</pre>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>B 帧的延迟账：</b>连续 3 个 B 帧时，解码器要等后续参考帧到达才能输出，显示延迟约 <code>(bframes + 1)</code> 帧；25 fps 下约 160 ms。视频会议、云游戏通常把 B 帧设为 0，就是为了这 100 多毫秒。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：转码时调整 GOP 与 B 帧，观察输出</a></div>
 </section>
 
 <section id="timing">
@@ -715,6 +718,7 @@ ffmpeg -i in.mp4 -c:v libx264 -b:v 4M -pass 2 -c:a aac -b:a 128k out.mp4</pre>
   <p><b>CRF 的数字怎么选：</b>18 通常接近视觉无损，23 是 x264 默认的平衡点，28 开始明显省码率但细节下降。CRF 越低画质越好、文件越大；它不是“百分比”，也不能跨编码器直接比较（x265 的 CRF 28 与 x264 的 CRF 23 不能等同）。</p>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>VBV 缓冲是什么：</b>它模拟解码器的输入缓冲。<code>bufsize</code> 太小会让码率被强行压平、画质抖动；通常取 <code>maxrate × 1–2 秒</code>。CBR 直播里，<code>bufsize</code> 与 <code>nal-hrd=cbr</code> 要一起设，否则“标称 CBR”并不恒定。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：转码观察码控与输出体积</a></div>
 </section>
 
 <section id="rc">

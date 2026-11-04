@@ -408,6 +408,7 @@ ffmpeg -i in.mkv -c:v copy -c:a aac -b:a 128k out.mp4
 ffmpeg -i in.mkv -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart out.mp4</pre>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>-c copy 不等于“万能兼容”。</b>容器对编码有白名单：MP4 放 H.264/H.265/AV1 通常没问题，放某些老编码或非标准 tag 就可能失败；TS 对 B 帧和负时间戳更敏感；从 MKV 抽字幕到 MP4 需要额外的字幕处理。失败时先看 muxer 的报错，再决定“换容器”还是“重编码”。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：在浏览器里做一次转封装</a></div>
 </section>
 
 <section id="filter">
@@ -442,6 +443,7 @@ ffmpeg -i a.mp4 -i b.m4a \
   <p class="small"><b>顺序有性能含义：</b>先 <code>fps</code> 降帧、再 <code>scale</code> 降分辨率，比反过来少处理很多帧。硬件解码得到的帧通常是 GPU 格式，直接进 <code>scale</code> 可能失败，需要 <code>hwdownload,format=nv12</code> 下载回系统内存（细节见 <a href="../hwaccel/">硬件加速页</a>）。</p>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么滤镜有时比转码还慢？</b>因为滤镜运行在未压缩帧上。1080p 一帧 YUV420 约 3 MB，25 fps 就是每秒 75 MB 的搬运量；复杂滤镜还会反复读写。能用编码器参数解决的事（码率、preset），不要用重滤镜去“补救”。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=scale">🧪 动手试试：用滤镜缩放 / 加水印 / 混音</a></div>
 </section>
 
 <section id="graph-syntax">
@@ -877,6 +879,7 @@ ffmpeg -i rtmp://source/live/stream -c copy -f flv rtmp://dest/live/stream</pre>
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>一条命令只做一件事，出错才好定位。</b>想加水印又压缩又抽音轨，先分别跑通“缩放”“overlay”“抽音轨”，再把滤镜链接起来。把 5 个目标塞进一条 400 字符的命令，报错时你连是哪个工位坏的都不知道。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：选一条菜谱命令在浏览器里跑</a></div>
 </section>
 
 <section id="rate">
@@ -921,6 +924,7 @@ ffmpeg -re -i in.mp4 -c:v libx264 -preset veryfast -tune zerolatency \
 ffmpeg -i in.mp4 -c:v h264_nvenc -preset p5 -tune hq -b:v 4M -maxrate 6M out.mp4</pre>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>CRF 不是“越小越好”。</b>x264 的 CRF 18 附近常被当作“视觉无损”的经验值，再往下文件会迅速变大；x265 的 CRF 标尺与 x264 并不等价，不能直接照搬同一个数字。直播场景里，<code>-maxrate</code> 和 <code>-bufsize</code> 缺失，会让码率尖峰撞上网络瓶颈，表现为卡顿而非画质差。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：调 CRF / 码率观察输出体积与画质</a></div>
 </section>
 
 <section id="probe">
@@ -961,6 +965,7 @@ ffprobe -v error -select_streams v:0 -show_frames \
   </div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>“文件能解，网络有问题；文件都解不了，封装或编码有问题。”</b>这是排错的分水岭。先用 <code>ffmpeg -i in.mp4 -f null -</code> 完整解一遍（不写输出），观察报错与速度；再回到网络层抓包。不要在“到底是流坏了还是网坏了”这个问题上猜。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：在浏览器里跑 ffprobe</a></div>
 </section>
 
 <section id="probe-deep">
@@ -1036,6 +1041,7 @@ ffprobe -v error -show_chapters -of json input.mp4</pre>
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>ffprobe 报的 codec_tag_string 不一定可信。</b>有些封装器会写错 tag，或者同一编码用了非标准 fourcc。判断兼容性时，<code>codec_name</code>、<code>profile</code>、<code>level</code> 和实际解码测试（<code>ffmpeg -i input.mp4 -f null -</code>）要一起看，不能只信一个字符串。</span></div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>先读“结构”，再读“数值”。</b>排查顺序建议：format 看容器是否完整 → streams 看编码/分辨率/采样率 → packets 看时间戳与关键帧 → frames 看真实解码结果。跳过前两步直接数帧，往往会得到一堆噪声。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：跑一遍 ffprobe 全家桶查询</a></div>
 </section>
 
 <section id="loudness">
@@ -1349,6 +1355,7 @@ if ($LASTEXITCODE -eq 0) {
   <div class="callout callout-r"><span class="ic">🚫</span><span><b>不要用 stderr 的自然语言做流程控制。</b>“Conversion failed!”“Invalid data found”这些文案会随版本和语言环境变化，唯一稳定的失败信号是进程退出码非 0。日志用来给人看，退出码用来给脚本判断。</span></div>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b><code>-xerror</code> 不是万能开关。</b>它让 FFmpeg 在遇到 error 级日志时立刻退出，但有些错误只被记为 warning，仍然会产出“能播但有问题”的文件。交付前仍应做一次 <code>ffprobe</code> 或 <code>ffmpeg -f null -</code> 的完整解码校验。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：交付前用 ffprobe 做完整校验</a></div>
 </section>
 
 <section id="errors">

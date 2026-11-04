@@ -265,6 +265,7 @@ seg00122.ts
   <p>延迟由三段叠加：<strong>分片时长</strong>（必须等一片写完）+ <strong>playlist 刷新间隔</strong>（浏览器才知道有新片）+ <strong>播放器安全缓冲</strong>（通常囤 2–3 片）。6 秒分片 × 3 片缓冲，30 秒延迟就出来了。想快，只能把每一段都缩短——这就是 LL-HLS 在做的事。</p>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>选型口诀：</b>要“看得到”用 HLS，要“看得及时”用 WHEP。HLS 的优势是便宜、稳定、能上 CDN；劣势是它天然为“容忍延迟”的场景设计。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#play-panel">🧪 动手试试：用 wasm ffplay 播一段 HLS 流</a></div>
 </section>
 
 <section id="flv">
@@ -299,6 +300,7 @@ video.play();</pre>
   </div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>iOS 的坑：</b>iPhone 上 MSE 的支持受限制（尤其非 Safari 内核的浏览器）。如果目标用户大量使用 iOS，优先评估 WHEP 或原生 HLS，别把宝押在 FLV 上。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#play-panel">🧪 动手试试：用 wasm ffplay 播一段 HTTP-FLV 流</a></div>
 </section>
 
 <section id="gateway">
@@ -438,6 +440,7 @@ ms.onsourceopen = <span class="kw">async</span> () =&gt; {
   </ol>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>为什么说 WHEP 不是 MSE 方案：</b>WebRTC 的 SRTP 进的是浏览器的 <b>硬件解码器</b>（VideoEncodeAccelerator / VDA），完全绕过 MSE。这也是它延迟更低、CPU 占用更低的原因之一。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#play-panel">🧪 动手试试：wasm ffplay 直接播本地文件，绕过 MSE</a></div>
 </section>
 
 <section id="players">

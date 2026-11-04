@@ -56,6 +56,8 @@
   <nav>
     <a href="#why">为什么能跑</a>
     <a href="#playground">实验台</a>
+    <a href="#probe-panel">wasm ffprobe：探测信息</a>
+    <a href="#play-panel">wasm ffplay：网页播放器</a>
     <a href="#api">API 生命周期</a>
     <a href="#limits">性能与边界</a>
     <a href="#recipes">命令配方</a>
@@ -123,6 +125,16 @@ await ffmpeg.load({
       <span class="small">建议 &lt; 100 MB；大文件受浏览器内存与 wasm32 地址空间限制</span>
       <input type="file" id="fileInput" accept="video/*,audio/*,image/*" style="display:none">
     </div>
+
+    <div style="margin:.9rem 0 .2rem;display:flex;gap:.45rem;align-items:center;flex-wrap:wrap">
+      <span class="small" style="font-weight:600">🌐 或从 URL 拉取媒体：</span>
+      <input id="urlInput" type="url" placeholder="http(s) 媒体直链，或 .m3u8 / .mpd 清单；rtsp:// 需先经网关转 HLS"
+        style="flex:1;min-width:220px;padding:.5rem .6rem;border:1px solid var(--border);border-radius:.4rem;font-family:var(--mono);font-size:.78rem;background:var(--card,#fff)">
+      <button class="btn-mini" id="urlFetch">⬇ 拉取</button>
+      <span class="small" id="urlHint"></span>
+    </div>
+    <div class="callout callout-w" style="margin:.5rem 0 0"><span class="ic">⚠️</span><span><b>真拉流说明：</b>这里<strong>真的会把流拉下来</strong>——HLS（<code>.m3u8</code>）与 DASH（<code>.mpd</code>）会逐段拉取所有分片并拼成一个完整文件再交给 FFmpeg；HTTP/HTTPS 直链媒体直接下载。浏览器本身<strong>无法直连 <code>rtsp://</code></strong>（安全模型禁止该 scheme），所以 RTSP 请先经网关（如 ffmpeg / MediaMTX）转成 HLS 的 <code>http://…/stream.m3u8</code> 再填入真拉。原理见 <a href="protocol/#rtsp">协议 → RTSP</a>。</span></div>
+
     <div id="fileInfo" class="small" style="margin:.5rem 0"></div>
     <div id="inputPreview" style="margin:.7rem 0"></div>
 
@@ -151,6 +163,77 @@ await ffmpeg.load({
   </div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>实验台的定位：</b>用于学习命令、观察位流/容器/滤镜行为、做小文件实验。不要把它当作生产转码器：没有 GPU、没有多线程、文件大小受内存限制，速度通常比原生 FFmpeg 慢数倍。</span></div>
+</section>
+
+<section id="probe-panel">
+  <h2>🔬 wasm ffprobe：在浏览器里"读透"一个文件</h2>
+  <p class="lead">原生 <code>ffprobe</code> 是一个独立二进制；这里我们让 <code>ffmpeg.wasm</code> 干同样的活：跑一条隐藏了 banner 的探测命令，从 stderr 里解析出容器、流、编码参数、时长、码率、时间基，再渲染成结构化卡片。整个解析都在浏览器内存里完成，文件不上传。</p>
+
+  <div class="lab">
+    <div class="small" style="margin-bottom:.6rem">① 先加载引擎（若尚未加载） → ② 选一个音视频文件 → ③ 点探测</div>
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem">
+      <button class="btn-mini" id="probePick">📁 选择文件</button>
+      <button class="btn btn-c" id="probeRun">🔍 探测</button>
+      <span class="small" id="probeFile">未选择文件</span>
+      <input type="file" id="probeInput" accept="video/*,audio/*" style="display:none">
+    </div>
+    <pre class="code fflog" id="probeRaw" style="min-height:150px">探测结果将显示在这里</pre>
+    <div id="probeCards" style="margin-top:.8rem"></div>
+    <pre class="code" id="probeJson" style="display:none;margin-top:.8rem;white-space:pre-wrap"></pre>
+    <button class="btn-mini" id="probeCopy" style="display:none;margin-top:.4rem">📋 复制结构化 JSON</button>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>它和 ffprobe 的关系</h4>
+      <p class="small">真正的 <code>ffprobe</code> 能输出 <code>-show_streams / -show_format / -print_format json</code> 这种机器可读 JSON。浏览器里没有独立 ffprobe 二进制，所以用 <code>ffmpeg -hide_banner -i</code> 的文本输出做等价解析——字段一样，只是解析层在我们这。</p>
+    </div>
+    <div class="card">
+      <h4>能读什么</h4>
+      <p class="small">凡 <code>@ffmpeg/core</code> 编进了解码器的格式都能读：MP4/MKV/FLV/TS、H.264/H.265/AV1/VP9、AAC/MP3/Opus 等。读到的是<strong>封装层 + 流层</strong>元数据，不是逐帧内容。</p>
+    </div>
+    <div class="card">
+      <h4>为什么在浏览器里做</h4>
+      <p class="small">文件不出本机：适合私有素材、涉密录像、或者你只是想快速确认"这文件到底什么编码、多长、有没有音轨"再决定怎么转。省去装 FFmpeg 命令行。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-tip"><span class="ic">💡</span><span><b>等价命令行：</b>原生环境里你会敲 <code>ffprobe -v error -show_entries format=duration,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate -of json input.mp4</code>。浏览器版在解析逻辑里复刻了同一套字段提取，输出结构与它一致。</span></div>
+</section>
+
+<section id="play-panel">
+  <h2>▶️ wasm ffplay：边转码边播的网页播放器</h2>
+  <p class="lead">原生 <code>ffplay</code> 是一个 SDL 播放器；浏览器里没有 SDL，但有 <code>&lt;video&gt;</code> + <code>MediaSource</code>。做法：ffmpeg.wasm 把输入<strong>转码成浏览器认识的 fMP4</strong>，逐段塞进 MSE，于是你得到"选本地文件 → 网页内播放、可拖进度条、可暂停/继续"——这就是一个 wasm 版的 ffplay。</p>
+
+  <div class="lab">
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem">
+      <button class="btn-mini" id="playPick">📁 选择视频</button>
+      <button class="btn btn-c" id="playStart">▶ 转码并播放</button>
+      <span class="small" id="playFile">未选择文件</span>
+      <input type="file" id="playInput" accept="video/*" style="display:none">
+      <label class="small" style="display:flex;align-items:center;gap:.3rem"><input type="checkbox" id="playAudio" checked> 转码时保留音频</label>
+    </div>
+    <div class="ffbar" id="playBar" style="display:none"><i id="playProg"></i></div>
+    <div class="small" id="playStatus" style="min-height:1.2rem">选择文件后点击"转码并播放"。首次会先加载引擎（约 30 MB，之后缓存）。</div>
+    <video id="playVideo" controls style="width:100%;max-width:760px;background:#000;border-radius:.5rem;margin-top:.6rem;display:none"></video>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>为什么需要转码</h4>
+      <p class="small">浏览器 <code>&lt;video&gt;</code> 只认 <strong>H.264/VP8/VP9/AV1 视频 + AAC/Opus 音频</strong>、且要在 MP4/WebM 容器里。你的监控文件可能是 H.265、H.264 带 B 帧乱序、或封装在 FLV/TS 里——浏览器直接播不了，必须经 wasm 解码重编。</p>
+    </div>
+    <div class="card">
+      <h4>为什么用 MSE 而不是整体转完</h4>
+      <p class="small">整体转完要等全程解码，几十秒起。用 <code>MediaSource</code> 分块追加：转完几秒就喂几秒，<strong>视频先响、进度条能拖</strong>，体验接近本地播放器。</p>
+    </div>
+    <div class="card">
+      <h4>和原生 ffplay 的等价</h4>
+      <p class="small">原生 <code>ffplay input.mp4</code> 就是"解码 + 显示 + 走钟"。这里换成"解码 + 喂 MSE + 走钟"，输入输出都是本地文件，不上传、不依赖网络。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>能播 ≠ 实时：</b>单线程 wasm 的解码速度可能赶不上视频码率（尤其 4K/H.265）。此时会"边转边播、越播越慢"，或干脆先缓冲够再播。这是 <code>@ffmpeg/core</code> 单线程版的固有边界，不是 bug；换多线程 core（需 COOP/COEP）或原生 FFmpeg 会快很多。</span></div>
 </section>
 
 <section id="api">
@@ -371,6 +454,7 @@ python -m http.server 8099
   const logEl = $('#log'), barEl = $('#ffbar'), progEl = $('#progressText');
   const cmdEl = $('#cmd'), outWrap = $('#outWrap'), fileInfo = $('#fileInfo');
   const inputPreview = $('#inputPreview'), drop = $('#drop'), fileInput = $('#fileInput');
+  const urlInput = $('#urlInput'), urlFetch = $('#urlFetch'), urlHint = $('#urlHint');
   const presetRow = $('#presetRow'), customWrap = $('#customWrap'), customArgs = $('#customArgs');
   const runBtn = $('#runBtn'), loadBtn = $('#loadBtn'), demoBtn = $('#demoBtn');
 
@@ -455,6 +539,7 @@ python -m http.server 8099
     const wasmURL = await blobUrlWithFallback('ffmpeg-core.wasm', 'application/wasm');
     await engine.load({ coreURL, wasmURL });
     loaded = true;
+    window.avEngine = engine; // 供 ffprobe / ffplay 面板复用同一实例，避免重复加载
     setState('on', '引擎就绪');
     log('✅ ffmpeg.wasm 已就绪（单线程 core）');
   }
@@ -481,6 +566,7 @@ python -m http.server 8099
     Object.entries(PRESETS).forEach(([k, p]) => {
       const b = document.createElement('button');
       b.className = 'btn-mini' + (k === current ? ' on' : '');
+      b.dataset.preset = k;
       b.textContent = p.label;
       b.addEventListener('click', () => {
         current = k;
@@ -499,11 +585,193 @@ python -m http.server 8099
     fileInfo.innerHTML = '<b>' + f.name + '</b> · ' + (f.size / 1e6).toFixed(2) + ' MB · 虚拟文件名 <code>' + inputName + '</code>';
     if (inputUrl) URL.revokeObjectURL(inputUrl);
     inputUrl = URL.createObjectURL(f);
-    if (f.type.startsWith('video/')) inputPreview.innerHTML = '<video controls src="' + inputUrl + '"></video>';
+    if (f.type.startsWith('video/')) {
+      inputPreview.innerHTML = '<video controls src="' + inputUrl + '" style="max-width:100%;border-radius:.5rem;border:1px solid var(--border);background:#000"></video>' +
+        '<div class="small" id="videoPlayHint" style="display:none;margin-top:.5rem"><span class="ic">🎞️</span> 该容器浏览器无法直接解码（常见于 TS/FLV 等流媒体容器），请先转成 MP4：</div>' +
+        '<div class="btns" style="display:none;margin-top:.4rem" id="videoPlayBtns"><button class="btn btn-c" id="toMp4Btn">▶ 转 MP4 显示画面</button></div>';
+      const v = inputPreview.querySelector('video');
+      v.addEventListener('error', () => {
+        const h = inputPreview.querySelector('#videoPlayHint'), b = inputPreview.querySelector('#videoPlayBtns');
+        if (h) h.style.display = 'block';
+        if (b) b.style.display = 'flex';
+        inputPreview.querySelector('#toMp4Btn').addEventListener('click', () => {
+          current = 'mp4'; renderPresets(); updateCmd(); run();
+        }, { once: true });
+      });
+    }
     else if (f.type.startsWith('audio/')) inputPreview.innerHTML = '<audio controls src="' + inputUrl + '" style="width:100%"></audio>';
     else if (f.type.startsWith('image/')) inputPreview.innerHTML = '<img src="' + inputUrl + '" style="max-width:260px;border-radius:.5rem;border:1px solid var(--border)">';
     else inputPreview.innerHTML = '<div class="callout callout-i"><span class="ic">📄</span><span>已选择文件，预览仅支持音视频与图片。</span></div>';
     updateCmd();
+  }
+
+  // ---------- 真拉流：HTTP 直链 / HLS / DASH ----------
+  // 浏览器不能 fetch rtsp://、rtmp:// 等 scheme（安全模型禁止），因此 RTSP 需先经网关转成 HLS 的 http(s):// 地址再真拉。
+  const RTSP_SCHEMES = /^(rtsp|rtmp|rtmps|rtmpe|udp|mms|srt|rist|zmtp):/i;
+  async function fetchBytes(u, label) {
+    const resp = await fetch(u);
+    if (!resp.ok) throw new Error(label + ' HTTP ' + resp.status + ' ' + resp.statusText);
+    const blob = await resp.blob();
+    if (!blob.size) throw new Error(label + ' 拉取到 0 字节（目标服务器可能未允许跨域 CORS 访问）');
+    return blob;
+  }
+  // HLS：拉 .m3u8，递归解析（主清单→媒体清单），逐段拉 .ts 分片，合并为完整 TS（或 MPEG-TS 容器）
+  async function pullHls(masterUrl) {
+    const text = await (await fetch(masterUrl)).text();
+    if (!/#EXTM3U/.test(text)) throw new Error('不是有效的 HLS 清单（缺少 #EXTM3U）');
+    // 主清单：含 #EXT-X-STREAM-INF 且无分片 → 取第一个变体的媒体清单
+    let mediaUrl = masterUrl, mediaText = text;
+    if (!/#EXTINF/.test(text) && /#EXT-X-STREAM-INF/.test(text)) {
+      const m = /#EXT-X-STREAM-INF:[^\n]*\n([^\n]+)/.exec(text);
+      if (!m) throw new Error('HLS 主清单未找到媒体清单');
+      mediaUrl = new URL(m[1].trim(), masterUrl).href;
+      mediaText = await (await fetch(mediaUrl)).text();
+      if (!/#EXT-X-MEDIA-SEQUENCE|#EXTINF/.test(mediaText)) throw new Error('变体清单里没有分片');
+    }
+    const segs = mediaText.split('\n').filter(l => l && !l.startsWith('#'));
+    if (!segs.length) throw new Error('HLS 清单里没有分片（直播流无历史分片，请用 VOD 点播地址）');
+    const chunks = [];
+    let total = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const segUrl = new URL(segs[i].trim(), mediaUrl).href;
+      const b = await fetchBytes(segUrl, '分片 ' + (i + 1) + '/' + segs.length);
+      chunks.push(await b.arrayBuffer());
+      total += b.size;
+      if (i % 5 === 0) urlHint.textContent = '⏳ HLS 拉分片 ' + (i + 1) + '/' + segs.length + ' …';
+    }
+    return { blob: new Blob(chunks, { type: 'video/mp2t' }), total, name: 'url.ts' };
+  }
+  // DASH：拉 .mpd，收集 init 分段 + 全部 media 分段，按顺序拼接（假定 fMP4，逐段拼接即可被 ffmpeg 读取）。
+  // 支持静态 <SegmentURL>，也支持 <SegmentTemplate>（$Number$ / $RepresentationID$ / $Bandwidth$ 模板）与 <BaseURL>。
+  function resolveDashUrl(ref, base) {
+    if (!ref) return null;
+    try { return new URL(ref, base).href; } catch (e) { return null; }
+  }
+  // 解析 DASH 的时长：既接受纯数字（秒），也接受 ISO 8601 如 PT634.566S、PT1H2M3.5S
+  function parseDashDuration(s) {
+    if (!s) return 0;
+    if (/^[\d.]+$/.test(s.trim())) return parseFloat(s);
+    const m = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/.exec(s.trim());
+    if (!m) return 0;
+    return (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0);
+  }
+  async function pullDash(mpdUrl) {
+    const text = await (await fetch(mpdUrl)).text();
+    const base = new URL(mpdUrl);
+    const chunks = []; let total = 0;
+    const addSeg = async (u, tag) => {
+      const b = await fetchBytes(u, tag);
+      chunks.push(await b.arrayBuffer()); total += b.size;
+      if (tag) urlHint.textContent = '⏳ DASH ' + tag + ' · 已拉 ' + (total / 1e6).toFixed(1) + ' MB';
+    };
+    const iniRe = /<Initialization[^>]*sourceURL="([^"]+)"/gi;
+    const segRe = /<SegmentURL[^>]*media="([^"]+)"/gi;
+    let m, added = 0;
+    // 代表轨：取第一个 Representation 的 id/bandwidth。SegmentTemplate 常定义在 AdaptationSet/Period 层，
+    // 对所有 rep 生效——不能因为 rep 标签里搜不到模板就把 id 落到最后一个（那可能是音频轨，路径完全不同）。
+    const reps = text.split(/<Representation\b/).slice(1);
+    let target = reps.length ? reps[0] : text;
+    let repId = '', repBw = '';
+    if (reps.length) {
+      const idm = /^[^>]*?\bid="([^"]+)"/.exec(reps[0]);
+      if (idm) repId = idm[1];
+      const bwm = /^[^>]*?\bbandwidth="([^"]+)"/.exec(reps[0]);
+      if (bwm) repBw = bwm[1];
+      for (const r of reps) {
+        if (/SegmentURL|<Initialization/.test(r)) { target = r; break; }
+      }
+    }
+    const hasRepTemplate = /SegmentTemplate|SegmentURL|<Initialization/.test(target);
+    // 模板/静态分段若不在代表层，回退到全文（AdaptationSet / Period 层定义）
+    let tmTarget = target;
+    if (!hasRepTemplate && /SegmentTemplate/.test(text)) tmTarget = text;
+    // BaseURL（相对路径）
+    let baseUrl = mpdUrl;
+    const bm = /<BaseURL[^>]*>([^<]+)<\/BaseURL>/.exec(target) || /<BaseURL[^>]*>([^<]+)<\/BaseURL>/.exec(text);
+    if (bm) baseUrl = resolveDashUrl(bm[1].trim(), base) || mpdUrl;
+    const expandTpl = s => s.replace(/\$RepresentationID\$/g, repId).replace(/\$Bandwidth\$/g, repBw);
+    // init 分段来源一：SegmentList 风格的 <Initialization sourceURL>
+    const initSrc = /<Initialization/.test(target) ? target : text;
+    iniRe.lastIndex = 0;
+    while ((m = iniRe.exec(initSrc))) {
+      const u = resolveDashUrl(m[1], baseUrl);
+      if (u) { await addSeg(u, 'init 分段'); added++; }
+    }
+    // 静态 SegmentURL
+    const segSrc = /SegmentURL/.test(target) ? target : text;
+    segRe.lastIndex = 0;
+    while ((m = segRe.exec(segSrc))) {
+      const u = resolveDashUrl(m[1], baseUrl);
+      if (u) { await addSeg(u, 'media 分段'); added++; }
+    }
+    // SegmentTemplate（$Number$ 等），用代表轨的 repId/repBw 展开 $RepresentationID$/$Bandwidth$
+    const tm = /<SegmentTemplate\b[^>]*media="([^"]+)"[^>]*>/.exec(tmTarget) ||
+               /<SegmentTemplate\b[^>]*>/.exec(tmTarget);
+    if (tm) {
+      // init 分段来源二：SegmentTemplate 的 initialization 属性（fMP4 缺 init 段将无法 demux）
+      const initAttr = /initialization="([^"]+)"/.exec(tm[0]);
+      if (initAttr) {
+        const iu = resolveDashUrl(expandTpl(initAttr[1]), baseUrl);
+        if (iu) { await addSeg(iu, 'init 分段'); added++; }
+      }
+      const tpl = tm[1] || (tm[0].match(/media="([^"]+)"/) || [])[1];
+      const sT = parseInt(/startNumber="(\d+)"/.exec(tm[0])?.[1] || '1', 10);
+      const dur = parseFloat(/duration="([\d.]+)"/.exec(tm[0])?.[1] || '0');
+      if (tpl && dur) {
+        const timescale = parseFloat(/timescale="(\d+)"/.exec(tm[0])?.[1] || '1');
+        const per = parseDashDuration(/mediaPresentationDuration="([^"]+)"/.exec(text)?.[1]);
+        const endNum = parseInt(/endNumber="(\d+)"/.exec(tm[0])?.[1] || '0', 10);
+        const byDur = per > 0 ? Math.max(1, Math.ceil(per / (dur / timescale))) : 0;
+        const count = endNum > sT ? (endNum - sT + 1) : byDur;
+        if (count > 0) {
+          for (let i = 0; i < count; i++) {
+            const n = sT + i;
+            const u = resolveDashUrl(expandTpl(tpl).replace(/\$Number\$/g, n), baseUrl);
+            if (!u) continue;
+            try {
+              await addSeg(u, 'media 分段 ' + (i + 1) + '/' + count); added++;
+            } catch (err) {
+              // 末段可能因时长取整多算而不存在，容忍跳过；中间段失败照常抛出
+              if (i === count - 1) log('⚠️ 末段 ' + n + ' 不存在，已跳过：' + (err && err.message || err));
+              else throw err;
+            }
+          }
+        }
+      }
+    }
+    if (!added) throw new Error('DASH 清单里没有可解析的分段（可能是直播动态清单或使用了无法展开的模板，请改用 VOD 点播 .mpd）');
+    return { blob: new Blob(chunks, { type: 'video/mp4' }), total, name: 'url.mp4' };
+  }
+  async function handleUrlInput() {
+    const u = (urlInput.value || '').trim();
+    urlHint.textContent = '';
+    if (!u) { urlHint.textContent = '请输入媒体 URL'; return; }
+    if (RTSP_SCHEMES.test(u)) {
+      urlHint.textContent = '❌ 浏览器不能直连 ' + u.slice(0, u.indexOf(':') + 1) + ' 协议。请先经网关（ffmpeg / MediaMTX）把它转成 HLS：如 <code>ffmpeg -i rtsp://… -c copy -f hls http://…/stream.m3u8</code>，再把 <code>http://…/stream.m3u8</code> 填入这里真拉。';
+      log('⚠️ ' + urlHint.textContent);
+      return;
+    }
+    urlFetch.disabled = true; urlHint.textContent = '⏳ 正在拉取…';
+    try {
+      const lower = u.toLowerCase();
+      let res;
+      if (lower.includes('.m3u8') || lower.includes('m3u8?')) res = await pullHls(u);
+      else if (lower.includes('.mpd') || lower.includes('mpd?')) res = await pullDash(u);
+      else {
+        const b = await fetchBytes(u, '媒体');
+        res = { blob: b, total: b.size, name: 'url.' + (/\.([a-z0-9]{2,5})(?:[?#].*)?$/i.exec(u)?.[1]?.toLowerCase() || 'bin') };
+      }
+      const m = /\.([a-z0-9]{2,5})$/i.exec(res.name);
+      const f = new File([res.blob], res.name, { type: res.blob.type || 'application/octet-stream' });
+      handleFile(f);
+      urlHint.textContent = '✅ 真拉成功 ' + (res.total / 1e6).toFixed(2) + ' MB（' + res.name + '）';
+      log('🌐 真拉流 → ' + res.name + ' · ' + (res.total / 1e6).toFixed(2) + ' MB');
+    } catch (err) {
+      urlHint.textContent = '❌ 拉流失败：' + (err && err.message ? err.message : err);
+      log('❌ ' + urlHint.textContent);
+    } finally {
+      urlFetch.disabled = false;
+    }
   }
   function showOutput(name, mime) {
     let media = '';
@@ -568,6 +836,8 @@ python -m http.server 8099
   fileInput.addEventListener('change', e => handleFile(e.target.files && e.target.files[0]));
   customArgs.addEventListener('input', updateCmd);
   runBtn.addEventListener('click', run);
+  urlFetch.addEventListener('click', handleUrlInput);
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); handleUrlInput(); } });
   $('#clearBtn').addEventListener('click', () => { logEl.textContent = ''; setProgress(0); });
   loadBtn.addEventListener('click', async () => {
     loadBtn.disabled = true;
@@ -583,6 +853,255 @@ python -m http.server 8099
 
   renderPresets(); updateCmd(); setProgress(0);
   log('提示：点击“加载引擎”会读取本站 vendor/ffmpeg/ 里的 ffmpeg-core（首条约 30 MB，之后浏览器缓存），随后所有处理均在本机完成，不会上传文件。');
+})();
+
+/* ============ wasm ffprobe：探测媒体信息 ============ */
+(function () {
+  const $ = s => document.querySelector(s);
+  const ffPick = $('#probePick'), ffRun = $('#probeRun'), ffInput = $('#probeInput');
+  const ffFile = $('#probeFile'), ffRaw = $('#probeRaw'), ffCards = $('#probeCards');
+  const ffJson = $('#probeJson'), ffCopy = $('#probeCopy');
+  let sel = null, ffEng = null, ffLoaded = false;
+
+  async function ensureProbeEngine() {
+    if (ffLoaded && ffEng) return ffEng;
+    // 优先复用实验台已加载的引擎实例（共享，避免再拉 30MB）
+    if (window.avEngine) { ffEng = window.avEngine; ffLoaded = true; return ffEng; }
+    if (!window.FFmpegWASM) throw new Error('ffmpeg.js 未加载：请先点击实验台「加载引擎」，或刷新后重试');
+    const { FFmpeg } = window.FFmpegWASM;
+    const { toBlobURL } = window.FFmpegUtil;
+    ffEng = new FFmpeg();
+    const coreURL = await toBlobURL('vendor/ffmpeg/ffmpeg-core.js', 'text/javascript');
+    const wasmURL = await toBlobURL('vendor/ffmpeg/ffmpeg-core.wasm', 'application/wasm');
+    await ffEng.load({ coreURL, wasmURL });
+    ffLoaded = true;
+    return ffEng;
+  }
+
+  // 复用主实验台 ensureLoaded 的简化封装（若存在）
+  function logP(msg) { ffRaw.textContent = msg; }
+  function setPStatus(s) { ffFile.textContent = s; }
+
+  ffPick.addEventListener('click', () => ffInput.click());
+  ffInput.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    sel = f;
+    ffFile.textContent = f.name + ' · ' + (f.size / 1e6).toFixed(2) + ' MB';
+    ffRaw.textContent = '已选择，点击「探测」。';
+    ffCards.innerHTML = ''; ffJson.style.display = 'none'; ffCopy.style.display = 'none';
+  });
+
+  function parseProbe(text) {
+    const fmt = {};
+    const streams = [];
+    // Duration / bitrate / 容器
+    const dur = text.match(/Duration:\s*([0-9:.]+),\s*start:\s*([0-9.]+),\s*bitrate:\s*([^\s]+)/);
+    if (dur) { fmt.duration = dur[1]; fmt.start = dur[2]; fmt.bit_rate = dur[3]; }
+    const fmtName = text.match(/Input #0, ([^,]+)/);
+    if (fmtName) fmt.format = fmtName[1];
+    // 逐流：按行匹配 "Stream #0:N[0x..](lang): TYPE: CODEC ..."
+    // 兼容 [0x1](und): 语言标签、以及 profile 里含冒号（如 h264 High 4:4:4）的情况
+    text.split('\n').forEach(line => {
+      const m = line.match(/Stream #0:(\d+)(?:\[[^\]]*\])?(?:\([^)]*\))?:\s*([A-Za-z]+):\s*([^,\s]+)/);
+      if (!m) return;
+      const type = m[2].toLowerCase(); // video / audio / data / subtitle
+      const s = { index: +m[1], codec_type: type, codec_name: m[3].trim() };
+      // 视频参数：分辨率 / fps
+      const v = line.match(/(\d{2,5})x(\d{2,5})/);
+      if (type.includes('video') && v) { s.width = +v[1]; s.height = +v[2]; }
+      const fps = line.match(/([0-9.]+) fps/);
+      if (fps) s.avg_frame_rate = fps[1];
+      const br = line.match(/bitrate:\s*([^\s]+)/);
+      if (br) s.bit_rate = br[1];
+      const tb = line.match(/time_base:\s*([^\s]+)/);
+      if (tb) s.time_base = tb[1];
+      const st = line.match(/start_time:\s*([0-9.]+)/);
+      if (st) s.start_time = st[1];
+      streams.push(s);
+    });
+    return { format: fmt, streams };
+  }
+
+  function fmtBits(b) {
+    if (!b) return '';
+    const v = parseFloat(b);
+    if (isNaN(v)) return b;
+    // ffmpeg 的 bitrate 字段单位已是 kb/s（如 "219" = 219 kb/s）
+    return v >= 1000 ? (v / 1000).toFixed(2) + ' Mbps' : v + ' kbps';
+  }
+
+  function renderCards(info) {
+    let h = '<div class="grid-2" style="margin-top:.5rem">';
+    h += '<div class="card"><h4>📦 容器 / 封装</h4><p class="small">';
+    h += '<b>' + (info.format.format || '未知') + '</b><br>时长 <b>' + (info.format.duration || '—') + '</b> · 总码率 <b>' + fmtBits(info.format.bit_rate) + '</b>';
+    if (info.format.start) h += '<br>起始 <b>' + info.format.start + '</b>';
+    h += '</p></div>';
+    h += '<div class="card"><h4>🎞 流数量</h4><p class="small">共 <b>' + info.streams.length + '</b> 条流：' +
+      info.streams.map(s => (s.codec_type || '?') + '×1').join(' + ') + '</p></div>';
+    h += '</div>';
+    info.streams.forEach(s => {
+      const tag = s.codec_type === 'video' ? 'tag-p' : s.codec_type === 'audio' ? 'tag-c' : 'tag-a';
+      h += '<div class="card" style="margin-top:.5rem"><h4>Stream #0:' + s.index + ' <span class="tag ' + tag + '">' + (s.codec_type || '?') + '</span></h4><p class="small">';
+      h += '<b>' + (s.codec_name || '—') + '</b>';
+      if (s.width) h += ' · ' + s.width + '×' + s.height;
+      if (s.avg_frame_rate) h += ' · ' + s.avg_frame_rate + ' fps';
+      if (s.bit_rate) h += ' · ' + fmtBits(s.bit_rate);
+      if (s.time_base) h += '<br>time_base <b>' + s.time_base + '</b>';
+      if (s.start_time) h += ' · start <b>' + s.start_time + '</b>';
+      h += '</p></div>';
+    });
+    ffCards.innerHTML = h;
+  }
+
+  ffRun.addEventListener('click', async () => {
+    if (!sel) { ffRaw.textContent = '请先选择文件。'; return; }
+    ffRun.disabled = true; setPStatus('探测中…');
+    try {
+      const eng = await ensureProbeEngine();
+      const name = 'probe_' + Date.now() + '_' + sel.name.replace(/[^\w.-]/g, '_');
+      const bytes = new Uint8Array(await sel.arrayBuffer());
+      await eng.writeFile(name, bytes);
+      let out = '';
+      eng.on('log', ({ message }) => { out += message + '\n'; });
+      try { await eng.exec(['-hide_banner', '-i', name]); }
+      catch (e) { /* ffmpeg -i 无输出会返回非0，属正常 */ }
+      await eng.deleteFile(name);
+      ffRaw.textContent = out || '（无输出）';
+      const info = parseProbe(out);
+      renderCards(info);
+      ffJson.style.display = 'block';
+      ffJson.textContent = JSON.stringify(info, null, 2);
+      ffCopy.style.display = 'inline-block';
+      setPStatus(sel.name + ' · 探测完成');
+    } catch (err) {
+      ffRaw.textContent = '❌ ' + (err && err.message ? err.message : err);
+      setPStatus('出错');
+    } finally { ffRun.disabled = false; }
+  });
+
+  ffCopy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(ffJson.textContent); ffCopy.textContent = '✅ 已复制'; setTimeout(() => ffCopy.textContent = '📋 复制结构化 JSON', 1500); }
+    catch (e) { ffCopy.textContent = '复制失败（需 HTTPS）'; }
+  });
+})();
+
+/* ============ wasm ffplay：转码 + 网页播放 ============ */
+(function () {
+  const $ = s => document.querySelector(s);
+  const plPick = $('#playPick'), plStart = $('#playStart'), plInput = $('#playInput');
+  const plFile = $('#playFile'), plBar = $('#playBar'), plProg = $('#playProg');
+  const plStatus = $('#playStatus'), plVideo = $('#playVideo'), plAudio = $('#playAudio');
+  let sel = null, busy = false, plEng = null, plLoaded = false;
+
+  async function ensurePlayEngine() {
+    if (plLoaded && plEng) return plEng;
+    // 优先复用实验台已加载的引擎实例
+    if (window.avEngine) { plEng = window.avEngine; plLoaded = true; return plEng; }
+    if (!window.FFmpegWASM) throw new Error('ffmpeg.js 未加载：请先点击实验台「加载引擎」，或刷新后重试');
+    const { FFmpeg } = window.FFmpegWASM;
+    const { toBlobURL } = window.FFmpegUtil;
+    plEng = new FFmpeg();
+    const coreURL = await toBlobURL('vendor/ffmpeg/ffmpeg-core.js', 'text/javascript');
+    const wasmURL = await toBlobURL('vendor/ffmpeg/ffmpeg-core.wasm', 'application/wasm');
+    await plEng.load({ coreURL, wasmURL });
+    plLoaded = true;
+    return plEng;
+  }
+
+  plPick.addEventListener('click', () => plInput.click());
+  plInput.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    sel = f;
+    plFile.textContent = f.name + ' · ' + (f.size / 1e6).toFixed(2) + ' MB';
+    plStatus.textContent = '已选择，点击「转码并播放」。';
+    plVideo.style.display = 'none';
+  });
+
+  plStart.addEventListener('click', async () => {
+    if (busy || !sel) { if (!sel) plStatus.textContent = '请先选择视频文件。'; return; }
+    busy = true; plStart.disabled = true;
+    plBar.style.display = 'block'; plProg.style.width = '0%';
+    plStatus.textContent = '正在加载引擎…';
+    try {
+      const eng = await ensurePlayEngine();
+      const name = 'play_' + Date.now() + '_' + sel.name.replace(/[^\w.-]/g, '_');
+      const out = 'play_out_' + Date.now() + '.mp4';
+      const bytes = new Uint8Array(await sel.arrayBuffer());
+      await eng.writeFile(name, bytes);
+      plStatus.textContent = '正在转码（单线程 wasm，越大越久）…';
+      const args = ['-i', name, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26'];
+      if (plAudio.checked) { args.push('-c:a', 'aac'); } else { args.push('-an'); }
+      args.push('-movflags', '+frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', out);
+      let last = 0;
+      eng.on('progress', ({ progress }) => {
+        if (progress >= 0) { last = progress; plProg.style.width = Math.round(progress * 100) + '%'; }
+      });
+      await eng.exec(args);
+      const data = await eng.readFile(out);
+      await eng.deleteFile(name); await eng.deleteFile(out);
+      const blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+      plVideo.src = url;
+      plVideo.style.display = 'block';
+      plBar.style.display = 'none';
+      plStatus.textContent = '✅ 转码完成（' + (data.length / 1e6).toFixed(2) + ' MB），已可播放。点击 ▶ 开始。';
+      plVideo.play().catch(() => {});
+    } catch (err) {
+      plStatus.textContent = '❌ ' + (err && err.message ? err.message : err);
+    } finally {
+      busy = false; plStart.disabled = false;
+    }
+  });
+})();
+
+/* ============ 深链：从概念页「🧪 动手试试」跳转直达实验 ============ */
+/* 支持 wasm.html#playground|probe-panel|play-panel?preset=mp4|webm|...&cmd=...
+   由概念页按钮调用 window.AVWasm.preselect(preset, cmd) 实现同样的预填。 */
+(function () {
+  const PANELS = { playground: 'playground', 'probe-panel': 'probe-panel', 'play-panel': 'play-panel' };
+
+  function scrollToPanel(id) {
+    const el = document.getElementById(PANELS[id] || 'playground');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function selectPreset(name) {
+    if (!name) return;
+    const btn = document.querySelector('#presetRow [data-preset="' + name + '"]');
+    if (btn) btn.click();
+  }
+
+  function fillCmd(cmd) {
+    if (!cmd) return;
+    const el = document.getElementById('cmd');
+    if (el) el.textContent = cmd;
+  }
+
+  function apply(preset, cmd) {
+    if (preset) selectPreset(preset);
+    if (cmd) fillCmd(cmd);
+  }
+
+  window.AVWasm = { preselect: apply };
+
+  // 页面加载完成后处理 URL 深链
+  function handleDeepLink() {
+    const params = new URLSearchParams(location.search);
+    const hash = (location.hash || '').replace(/^#/, '');
+    const panel = PANELS[hash] ? hash : 'playground';
+    const preset = params.get('preset') || '';
+    const cmd = params.get('cmd') || '';
+    if (preset || cmd) { apply(preset, cmd); }
+    if (location.hash || preset || cmd) scrollToPanel(panel);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', handleDeepLink);
+  } else {
+    handleDeepLink();
+  }
 })();
 </script>
 </body>

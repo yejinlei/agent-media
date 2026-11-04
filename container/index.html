@@ -171,6 +171,7 @@
   <p><b>用命令验证这些数字：</b><code>ffprobe -show_entries format=duration,size,bit_rate -of default=nw=1 in.mp4</code>。如果 <code>duration</code> 与 <code>mvhd.duration / timescale</code> 对不上，优先怀疑 timescale 被写错，或 <code>moov</code> 里还有 <code>elst</code> 编辑列表改变了呈现时长。</p>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>不要把 <code>mvhd</code> 的 timescale 当成视频的 timescale。</b>视频轨道的 <code>mdhd.timescale</code> 常见是 90000（90 kHz，和 RTP 时钟一致），音频常见 48000。两套刻度不同，换算必须经过各自的 mdhd，而不是全局的 mvhd。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：用 ffprobe 探测一个真实文件</a></div>
 </section>
 
 <section id="index">
@@ -287,6 +288,7 @@ ffmpeg -i in.mp4 -c copy -f mp4 -movflags +frag_keyframe out_cmaf.mp4</pre>
   <div data-lazy-viz data-viz="mux" data-opts='{"target":"ts"}'></div>
 
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>TS 的两个经典坑：</b>① 同一个 PID 的 CC 不连续 → 丢包，先查网络与缓冲区；② PCR 抖动过大（> 100 ms 量级）→ 解码器时钟漂移，表现为周期性卡顿。PCR 在 <code>PCR_PID</code> 上，通常跟视频 PID 一致。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：把一段视频转成 H.264 MP4</a></div>
 </section>
 
 <section id="flv">
@@ -326,6 +328,7 @@ ffmpeg -i in.mp4 -c copy -f flv rtmp://127.0.0.1:1935/live/test
 ffmpeg -i in.mp4 -c copy -f flv http://127.0.0.1:8080/live/test.flv</pre>
 
   <div class="callout callout-i"><span class="ic">🔍</span><span><b>FLV 时间戳是 32 位毫秒：</b>理论上约 49.7 天回绕（2³² ms）。长时间不重启的直播服务要处理回绕，否则会出现“时间倒流”、播放器卡死或疯狂追帧。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=mp4">🧪 动手试试：转码后对比容器行为</a></div>
 </section>
 
 <section id="compare">
@@ -680,6 +683,7 @@ mkvinfo -v in.mkv | head -40
 mkvextract tracks in.mkv 0:video.h264 1:audio.aac</pre>
 
   <div class="callout callout-r"><span class="ic">🚫</span><span><b>“Cluster 里没有 Cues” 会怎样：</b>播放器只能从头顺序读，进度条变成“只能前进不能后退”。修复办法是 <code>mkvmerge -o fixed.mkv in.mkv</code> 重写索引，视频流本身不用重编码。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#playground?preset=webm">🧪 动手试试：转成 WebM (VP9) 对比 EBML 结构</a></div>
 </section>
 
 <section id="subs">
@@ -761,6 +765,7 @@ ffprobe -show_frames -select_streams v:0 \
   -show_entries frame=pict_type,key_frame,pkt_pts_time -of csv in.mp4 | head</pre>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>remux 与 re-encode 的区别，一条命令就能验证：</b>转封装前后比较 <code>ffprobe -show_packets</code> 的包数与每包 size——数量与大小完全一致，说明只是换了外壳；有变化就说明偷偷重编码了。</span></div>
+  <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="../wasm.html#probe-panel">🧪 动手试试：用 ffprobe 验证 remux 前后包数一致</a></div>
 </section>
 
 <section id="tscc">
