@@ -69,6 +69,7 @@
     <a href="#recordinfo">录像查询 RecordInfo</a>
     <a href="#faq">对接实战 FAQ</a>
     <a href="#gateway">网关与工程落地</a>
+    <a href="#client">客户端实验台</a>
     <a href="#debug">抓包与排错</a>
     <a href="#code">最小代码示例</a>
     <a href="#glossary">术语表</a>
@@ -665,6 +666,106 @@ docker run -d --name mediamtx \
   <div class="callout callout-w"><span class="ic">⚠️</span><span><b>部署前先算三笔账：</b>① SIP 5060 的 UDP/TCP 是否都放行；② 媒体端口段（UDP）是否整段放行；③ 平台收流地址在设备侧是否可达（尤其跨网段/跨 NAT）。绝大多数“注册成功但点播没画面”都死在这三笔账上。</span></div>
 </section>
 
+<section id="client">
+  <h2>🧪 客户端实验台：在本页把 SIP 报文“演”出来</h2>
+  <p class="lead">浏览器没有 SIP 的 socket，所以不能真的注册到一台国标平台。但协议本身可以<strong>完整地在页面里走一遍</strong>：生成 REGISTER、算 Digest 摘要、构造 MESSAGE 心跳与目录、拼 INVITE + SDP——每一段报文你都可以复制出去，粘贴到真实 SIP 工具（SIPp / pjsua / Wireshark）里验证互通。同时接一个网关地址就能真实拉流播放。</p>
+
+  <div class="callout callout-i"><span class="ic">🔍</span><span><b>实验台能做什么：</b>① 生成真实 REGISTER 并演示 401→带摘要重发；② 用 MD5 实时计算 Digest 摘要；③ 生成 Keepalive / Catalog 查询的 MANSCDP XML；④ 生成 INVITE + 国标 SDP（PS/90000、y=SSRC、f= 参数）；⑤ 把网关转出的 WHEP / HLS / FLV 地址放进播放器真实拉流；⑥ 用 ffmpeg.wasm 就地解析一段 PS / 直链。</span></div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>① 注册参数</h4>
+      <label class="lbl">SIP 服务器（平台地址）</label>
+      <input type="text" id="gb-sip" value="192.168.1.100:5060" spellcheck="false">
+      <label class="lbl">SIP 域（realm，通常是平台 ID 前 10 位）</label>
+      <input type="text" id="gb-realm" value="3402000000" spellcheck="false">
+      <label class="lbl">设备 20 位 ID（DeviceID）</label>
+      <input type="text" id="gb-devid" value="34020000001320000001" spellcheck="false">
+      <label class="lbl">平台/服务器 ID（用于注册到 / INVITE 源）</label>
+      <input type="text" id="gb-platform" value="34020000002000000001" spellcheck="false">
+      <label class="lbl">密码</label>
+      <input type="text" id="gb-pass" value="12345678" spellcheck="false">
+      <label class="lbl">本机地址（写在 Via / Contact / SDP 里）</label>
+      <input type="text" id="gb-ip" value="192.168.1.64" spellcheck="false">
+    </div>
+    <div class="card">
+      <h4>② 实时摘要（Digest）</h4>
+      <p class="small">HA1 = md5(user:realm:pass)，HA2 = md5(method:uri)，response = md5(HA1:nonce:nc:cnonce:qop:HA2)。改动左侧任一参数，右边即时重算。</p>
+      <div class="mono" id="gb-digest" style="background:var(--bg,#f8fafc);border:1px solid var(--border);border-radius:6px;padding:.6rem;font-size:.8rem;white-space:pre-wrap;word-break:break-all;line-height:1.5"></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>③ REGISTER 报文</h4>
+      <p class="small">先发不带鉴权的（会收到 401），再用 nonce 重发带 Authorization 的。两段都可一键复制。</p>
+      <div class="btn-row">
+        <button class="btn-mini" id="gb-reg1">生成第一次 REGISTER</button>
+        <button class="btn-mini" id="gb-reg2">生成带摘要的 REGISTER（收到 401 后）</button>
+      </div>
+      <pre class="code" id="gb-regout" style="min-height:6.5rem;max-height:12rem;overflow:auto;font-size:.75rem"></pre>
+    </div>
+    <div class="card">
+      <h4>④ MESSAGE 心跳 / 目录 XML</h4>
+      <p class="small">MANSCDP 就装在 SIP MESSAGE 里。<code>CmdType</code> 决定内容；SN 每次加一。</p>
+      <div class="btn-row">
+        <button class="btn-mini" id="gb-heartbeat">生成 Keepalive</button>
+        <button class="btn-mini" id="gb-catalog">生成 Catalog 查询</button>
+      </div>
+      <pre class="code" id="gb-msgout" style="min-height:6.5rem;max-height:12rem;overflow:auto;font-size:.75rem"></pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>⑤ INVITE + 国标 SDP（点播）</h4>
+    <p class="small">一次点播的完整 SDP：<code>m=video … RTP/AVP 96</code>、<code>a=rtpmap:96 PS/90000</code>、<code>y=SSRC</code>、<code>f=…</code>。SSRC 十位十进制；Subject 是通道号 + 时长。</p>
+    <div class="grid-2">
+      <div>
+        <label class="lbl">通道 ID（点播用通道，不是设备 ID）</label>
+        <input type="text" id="gb-channel" value="34020000001320000001" spellcheck="false">
+        <label class="lbl">收流端口（平台侧，如 15060）</label>
+        <input type="number" id="gb-port" value="15060" min="1024" max="65535">
+        <label class="lbl">SSRC（十位十进制）</label>
+        <input type="text" id="gb-ssrc" value="0123456789" spellcheck="false">
+        <label class="lbl">流模式</label>
+        <select id="gb-mode">
+          <option value="live">实时点播 Play</option>
+          <option value="playback">录像回放 Playback</option>
+          <option value="download">录像下载 Download</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">传输方式</label>
+        <select id="gb-transport">
+          <option value="udp">UDP（无 setup 行）</option>
+          <option value="passive">TCP 被动 a=setup:passive</option>
+          <option value="active">TCP 主动 a=setup:active</option>
+        </select>
+        <label class="lbl">编码 / 分辨率 / 帧率（f= 参数）</label>
+        <input type="text" id="gb-fparam" value="v/2/4/25/1/4000/1a/0/0/0/0/0/0" spellcheck="false">
+        <label class="lbl">Subject（通道号 + 时长，可选）</label>
+        <input type="text" id="gb-subject" value="" placeholder="34020000001320000001:0100000000,34020000002000000001:0" spellcheck="false">
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:.6rem">
+      <button class="btn-mini" id="gb-invite">生成 INVITE + SDP</button>
+      <button class="btn-mini" id="gb-copyinv">复制 SDP</button>
+    </div>
+    <pre class="code" id="gb-invout" style="min-height:8rem;max-height:14rem;overflow:auto;font-size:.75rem"></pre>
+  </div>
+
+  <div class="card">
+    <h4>⑥ 真实拉流播放（经网关）</h4>
+    <p class="small">浏览器不能直连国标设备，但可以接 wvp-GB28181-pro + ZLMediaKit（或 MediaMTX）转出的地址。输入一个 WHEP / HLS / FLV 地址，用页面共享的 StreamPlayer 真实拉流；RTSP / RTMP 会被正确拦截并提示走网关。</p>
+    <div data-lazy-viz data-viz="stream" data-opts='{"url":"https://demo-live.av-ontology.com/stream/live/34020000001320000001/hls.m3u8"}'></div>
+    <div class="btn-row" style="margin-top:.6rem">
+      <button class="btn-mini" id="gb-whep">填入 wvp WHEP 示例</button>
+      <button class="btn-mini" id="gb-hls">填入 HLS 示例</button>
+      <button class="btn-mini" id="gb-flv">填入 FLV 示例</button>
+    </div>
+  </div>
+</section>
+
 <section id="debug">
   <h2>🔬 抓包与排错：把“没画面”拆成可验证的假设</h2>
   <p>国标排错最有效的方法不是猜，而是<strong>按层次验证</strong>：注册成没成 → 心跳在不在 → 目录有没有 → INVITE 成没成 → RTP 到没到 → PS 能不能解 → 解码器有没有关键帧。每层都有明确的证据。</p>
@@ -803,6 +904,200 @@ ffplay -fflags nobuffer -flags low_delay \
 </footer>
 
 <script src="main.js?v=20261104"></script>
+<script>
+/* ========== GB28181 客户端实验台：生成报文 + 真实拉流 ========== */
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const val = id => ($(id) ? $(id).value.trim() : '');
+  const NONCE = 'a3f5c9e2b1d4';
+
+  function randomHex(n) {
+    let s = '';
+    for (let i = 0; i < n; i++) s += Math.floor(Math.random() * 16).toString(16);
+    return s;
+  }
+
+  // SIP Digest（RFC 3261 / RFC 7616 语义，与页面 Python 示例一致）
+  function digestResponse(username, password, realm, nonce, uri, method) {
+    const md5 = window.md5;
+    const ha1 = md5(username + ':' + realm + ':' + password);
+    const ha2 = md5(method + ':' + uri);
+    const cnonce = randomHex(8);
+    const nc = '00000001';
+    const resp = md5(ha1 + ':' + nonce + ':' + nc + ':' + cnonce + ':auth:' + ha2);
+    return {
+      header: 'Digest username="' + username + '", realm="' + realm + '", nonce="' + nonce +
+        '", uri="' + uri + '", response="' + resp + '", algorithm=MD5, qop=auth, nc=' + nc +
+        ', cnonce="' + cnonce + '"',
+      detail: { ha1, ha2, cnonce, nc, resp }
+    };
+  }
+
+  function buildRegister(auth) {
+    const sip = val('gb-sip'), realm = val('gb-realm'), devid = val('gb-devid'),
+      platform = val('gb-platform'), ip = val('gb-ip');
+    const uri = 'sip:' + platform + '@' + realm;
+    const branch = 'z9hG4bK' + randomHex(8);
+    const tag = randomHex(6);
+    const callId = randomHex(10) + '@' + (ip || 'localhost');
+    let out = 'REGISTER ' + uri + ' SIP/2.0\n' +
+      'Via: SIP/2.0/UDP ' + ip + ':5060;rport;branch=' + branch + '\n' +
+      'From: <sip:' + devid + '@' + realm + '>;tag=' + tag + '\n' +
+      'To: <sip:' + devid + '@' + realm + '>\n' +
+      'Call-ID: ' + callId + '\n' +
+      'CSeq: ' + (auth ? 2 : 1) + ' REGISTER\n' +
+      'Contact: <sip:' + devid + '@' + ip + ':5060>\n' +
+      'Max-Forwards: 70\n';
+    if (auth) {
+      const d = digestResponse(devid, val('gb-pass'), realm, NONCE, uri, 'REGISTER');
+      out += 'Authorization: ' + d.header + '\n';
+    }
+    out += 'Expires: 3600\n' +
+      'User-Agent: av-ontology-client v1.0\n' +
+      'Content-Length: 0';
+    return out;
+  }
+
+  function xmlEscape(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function buildMessage(kind) {
+    const realm = val('gb-realm'), devid = val('gb-devid'), platform = val('gb-platform'), ip = val('gb-ip');
+    let body = '';
+    if (kind === 'keepalive') {
+      body = '<Notify>\n  <CmdType>Keepalive</CmdType>\n  <SN>' + (101) + '</SN>\n' +
+        '  <DeviceID>' + devid + '</DeviceID>\n  <Status>OK</Status>\n</Notify>';
+    } else {
+      body = '<Query>\n  <CmdType>Catalog</CmdType>\n  <SN>' + (110) + '</SN>\n' +
+        '  <DeviceID>' + devid + '</DeviceID>\n</Query>';
+    }
+    const out = 'MESSAGE sip:' + platform + '@' + realm + ' SIP/2.0\n' +
+      'Via: SIP/2.0/UDP ' + ip + ':5060;rport;branch=z9hG4bK' + randomHex(8) + '\n' +
+      'From: <sip:' + devid + '@' + realm + '>;tag=' + randomHex(6) + '\n' +
+      'To: <sip:' + platform + '@' + realm + '>\n' +
+      'Call-ID: ' + randomHex(10) + '@' + (ip || 'localhost') + '\n' +
+      'CSeq: ' + (kind === 'keepalive' ? 101 : 110) + ' MESSAGE\n' +
+      'Max-Forwards: 70\n' +
+      'Content-Type: Application/MANSCDP+xml\n' +
+      'Content-Length: ' + body.length + '\n\n' +
+      body;
+    return out;
+  }
+
+  function buildInvite() {
+    const realm = val('gb-realm'), devid = val('gb-devid'), platform = val('gb-platform'),
+      ip = val('gb-ip'), channel = val('gb-channel'), port = val('gb-port') || '15060',
+      ssrc = val('gb-ssrc') || '0123456789', mode = val('gb-mode'),
+      transport = val('gb-transport'), fparam = val('gb-fparam'),
+      subject = val('gb-subject') || (channel + ':0100000000,' + platform + ':0');
+    const sname = mode === 'playback' ? 'Playback' : mode === 'download' ? 'Download' : 'Play';
+    const uri = 'sip:' + channel + '@' + realm;
+    let sdp = 'v=0\n' +
+      'o=' + platform + ' 0 0 IN IP4 ' + ip + '\n' +
+      's=' + sname + '\n' +
+      (mode !== 'live' ? 'u=' + channel + ':0\n' : '') +
+      'c=IN IP4 ' + ip + '\n' +
+      't=0 0\n' +
+      'm=video ' + port + ' RTP/AVP 96\n' +
+      'a=rtpmap:96 PS/90000\n' +
+      (transport === 'passive' ? 'a=setup:passive\n' : transport === 'active' ? 'a=setup:active\n' : '') +
+      'a=connection:new\n' +
+      'y=' + ssrc + '\n' +
+      'f=' + fparam;
+    const out = 'INVITE ' + uri + ' SIP/2.0\n' +
+      'Via: SIP/2.0/UDP ' + ip + ':5060;rport;branch=z9hG4bK' + randomHex(8) + '\n' +
+      'From: <sip:' + platform + '@' + realm + '>;tag=' + randomHex(6) + '\n' +
+      'To: <sip:' + channel + '@' + realm + '>\n' +
+      'Call-ID: play-' + Date.now().toString(36) + '@' + (ip || 'localhost') + '\n' +
+      'CSeq: 1 INVITE\n' +
+      'Subject: ' + subject + '\n' +
+      'Contact: <sip:' + platform + '@' + ip + ':5060>\n' +
+      'Content-Type: application/sdp\n' +
+      'Content-Length: ' + sdp.length + '\n\n' +
+      sdp;
+    return out;
+  }
+
+  function copyText(text, btn) {
+    const done = ok => {
+      if (!btn) return;
+      btn.textContent = ok ? '✓ 已复制' : '复制失败';
+      setTimeout(() => { btn.textContent = btn.dataset.orig || btn.textContent; }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(true); } catch (e) { done(false); }
+      document.body.removeChild(ta);
+    }
+  }
+
+  function updateDigest() {
+    const box = $('gb-digest');
+    if (!box) return;
+    const devid = val('gb-devid'), realm = val('gb-realm'), pass = val('gb-pass'),
+      platform = val('gb-platform');
+    const uri = 'sip:' + platform + '@' + realm;
+    if (!window.md5) { box.innerHTML = '⏳ 正在加载 MD5 库…'; return; }
+    const d = digestResponse(devid, pass, realm, NONCE, uri, 'REGISTER');
+    box.innerHTML =
+      'username  = <b>' + xmlEscape(devid) + '</b>\n' +
+      'realm     = <b>' + xmlEscape(realm) + '</b>\n' +
+      'method    = <b>REGISTER</b>\n' +
+      'uri       = <b>' + xmlEscape(uri) + '</b>\n\n' +
+      'HA1 = md5(user:realm:pass) = <code>' + d.detail.ha1 + '</code>\n' +
+      'HA2 = md5(method:uri)      = <code>' + d.detail.ha2 + '</code>\n' +
+      'nonce = ' + NONCE + ' · cnonce = ' + d.detail.cnonce + ' · nc = 00000001\n\n' +
+      'response = <b><code>' + d.detail.resp + '</code></b>\n' +
+      '<span class="small" style="color:#64748b">复制到真实 SIP 工具即可验证互通。</span>';
+  }
+
+  function fillStream(url) {
+    const box = document.querySelector('#client [data-lazy-viz][data-viz="stream"]');
+    if (!box) return;
+    const input = box.querySelector('[data-k="url"]');
+    if (!input) return;
+    input.value = url;
+    input.dispatchEvent(new Event('input'));
+  }
+
+  function bind() {
+    ['gb-sip', 'gb-realm', 'gb-devid', 'gb-platform', 'gb-pass', 'gb-ip'].forEach(id => {
+      const el = $(id); if (el) el.addEventListener('input', updateDigest);
+    });
+    const r1 = $('gb-reg1'); if (r1) r1.addEventListener('click', () => {
+      const t = buildRegister(false); $('gb-regout').textContent = t; copyText(t, r1);
+    });
+    const r2 = $('gb-reg2'); if (r2) r2.addEventListener('click', () => {
+      const t = buildRegister(true); $('gb-regout').textContent = t; copyText(t, r2);
+    });
+    const hb = $('gb-heartbeat'); if (hb) hb.addEventListener('click', () => {
+      const t = buildMessage('keepalive'); $('gb-msgout').textContent = t; copyText(t, hb);
+    });
+    const cat = $('gb-catalog'); if (cat) cat.addEventListener('click', () => {
+      const t = buildMessage('catalog'); $('gb-msgout').textContent = t; copyText(t, cat);
+    });
+    const inv = $('gb-invite'); if (inv) inv.addEventListener('click', () => {
+      $('gb-invout').textContent = buildInvite();
+    });
+    const ci = $('gb-copyinv'); if (ci) ci.addEventListener('click', () => {
+      copyText($('gb-invout').textContent || buildInvite(), ci);
+    });
+    const whep = $('gb-whep'); if (whep) whep.addEventListener('click', () => fillStream('https://demo-live.av-ontology.com/stream/live/34020000001320000001/whep'));
+    const hlsb = $('gb-hls'); if (hlsb) hlsb.addEventListener('click', () => fillStream('https://demo-live.av-ontology.com/stream/live/34020000001320000001/hls.m3u8'));
+    const flvb = $('gb-flv'); if (flvb) flvb.addEventListener('click', () => fillStream('https://demo-live.av-ontology.com/stream/live/34020000001320000001/live.flv'));
+  }
+
+  // 先加载 MD5 库（内置 vendor），再实时算摘要、绑事件
+  window.loadScript('vendor/md5/md5.min.js')
+    .then(() => { updateDigest(); bind(); })
+    .catch(() => { const b = $('gb-digest'); if (b) b.innerHTML = '⚠️ MD5 库加载失败'; });
+})();
+</script>
 </body>
 </html>
 

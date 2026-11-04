@@ -1349,6 +1349,9 @@
   window.HexViewer = HexViewer;
   window.SeqAnimator = SeqAnimator;
   window.GopViewer = GopViewer;
+  window.StreamPlayer = StreamPlayer;
+  window.detectStream = detectStream;
+  window.loadScript = loadScript;
 
   function init() {
     initToc();
