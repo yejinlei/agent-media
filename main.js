@@ -1224,6 +1224,7 @@
     // Shaka 已注册为 polyfill；直接 new Player
     const p = new window.shaka.Player();
     this.shaka = p;
+    window.__shaka = p; // 运行时探针：便于外部读取 ABR 轨道/带宽（仅测试用）
     await p.attach(v);
     p.addEventListener('error', e => this.log('Shaka 错误：' + e.detail, 'err'));
     p.addEventListener('adaptation', () => this.log('自适应切换（ABR）', 'ok'));
@@ -1242,7 +1243,7 @@
     }
     if (this.hls) { try { this.hls.destroy(); } catch (e) { } this.hls = null; }
     if (this.flv) { try { this.flv.destroy(); } catch (e) { } this.flv = null; }
-    if (this.shaka) { try { this.shaka.destroy(); } catch (e) { } this.shaka = null; }
+    if (this.shaka) { try { this.shaka.destroy(); } catch (e) { } if (window.__shaka === this.shaka) window.__shaka = null; this.shaka = null; }
     if (v) { v.pause(); v.removeAttribute('src'); v.srcObject = null; v.load(); }
     if (!quiet) this.log('已停止并释放资源');
   };

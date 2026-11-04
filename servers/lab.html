@@ -238,7 +238,7 @@ xiu ./config.toml   # 示例配置：
   <p>av-ontology · 音视频本体论研究站 · 实验均为纯前端实现，无任何后端</p>
 </div></footer>
 
-<script src="../main.js?v=20261104"></script>
+<script src="../main.js?v=20261104-abr"></script>
 <script>
 // ================= 浏览器内直播实验台 =================
 // 角色：pub(推流端) / srv(服务器) / view(观众端)，同页多标签，BroadcastChannel 信令。
@@ -593,16 +593,20 @@ xiu ./config.toml   # 示例配置：
       `minBufferTime="PT1.5S" minimumUpdatePeriod="PT2S" ` +
       `timeShiftBufferDepth="PT120S" availabilityStartTime="${srv.mpdStart}">\n` +
       `  <Period start="PT0S">\n` +
-      // 单 Representation：MediaRecorder 产出的是 muxed 音视频 fMP4（avc1+mp4a 同一段），
-      // Shaka 支持 muxed Representation，会从 init.mp4 的 moov 读出 video+audio 两条流
+      // 多档带宽阶梯：MediaRecorder 只产一份 muxed fMP4（avc1+mp4a 同一段），无法在
+      // 浏览器内转码，故各档 Representation 引用同一批 init.mp4 + seg-N.m4s 分段，
+      // 仅带宽声明不同——Shaka 的 ABR 据此选档、切换（adaptation/trackschanged 事件）。
+      // 每档用同一 SegmentTemplate 语法（SegmentTimeline + $Number$ 展开）。
       `    <AdaptationSet mimeType="video/mp4"${codecAttr} segmentAlignment="true" startWithSAP="1">\n` +
-      `      <Representation id="mux" bandwidth="900000">\n` +
+      [['low', 300000], ['mid', 900000], ['high', 2000000], ['uhd', 4000000]].map(r =>
+      `      <Representation id="${r[0]}" bandwidth="${r[1]}">\n` +
       `        <SegmentTemplate media="seg-$Number$.m4s" initialization="init.mp4" ` +
       `startNumber="${startNum}" timescale="1000">\n` +
       `          <SegmentTimeline>\n` + timeline +
       `          </SegmentTimeline>\n` +
       `        </SegmentTemplate>\n` +
-      `      </Representation>\n` +
+      `      </Representation>\n`
+      ).join('') +
       `    </AdaptationSet>\n` +
       `  </Period>\n` +
       `</MPD>`;
