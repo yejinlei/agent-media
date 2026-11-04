@@ -641,6 +641,9 @@ seg122.ts
   </div>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>工程口诀：</b>GOP 等于切片时长、切片从 IDR 开始、清单用相对路径、所有码率共用同一时间轴。做到这四点，HLS 的“莫名卡顿”会少一大半。</span></div>
+
+  <p class="small" style="margin-top:1.2rem"><b>就地播放</b>（页面内置 hls.js 播放器，点播放即拉清单、逐分片下载、喂给 MSE——正好把上面讲的流程跑一遍；预填的是公共测试流，换任意 <code>.m3u8</code> 地址也行）：</p>
+  <div data-lazy-viz data-viz="stream" data-opts='{"url":"https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}'></div>
 </section>
 
 <section id="hls-tags">

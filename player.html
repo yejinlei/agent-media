@@ -266,6 +266,9 @@ seg00122.ts
   <p>延迟由三段叠加：<strong>分片时长</strong>（必须等一片写完）+ <strong>playlist 刷新间隔</strong>（浏览器才知道有新片）+ <strong>播放器安全缓冲</strong>（通常囤 2–3 片）。6 秒分片 × 3 片缓冲，30 秒延迟就出来了。想快，只能把每一段都缩短——这就是 LL-HLS 在做的事。</p>
 
   <div class="callout callout-tip"><span class="ic">💡</span><span><b>选型口诀：</b>要“看得到”用 HLS，要“看得及时”用 WHEP。HLS 的优势是便宜、稳定、能上 CDN；劣势是它天然为“容忍延迟”的场景设计。</span></div>
+
+  <p class="small" style="margin-top:1.2rem"><b>就地播放</b>（hls.js 已内置 vendor/，点播放即拉流；换一个 <code>.m3u8</code> 地址也可以）：</p>
+  <div data-lazy-viz data-viz="stream" data-opts='{"url":"https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"}'></div>
   <div class="btns" style="margin-top:1rem"><a class="btn btn-pl" href="wasm.html#play-panel">🧪 动手试试：用 wasm ffplay 播一段 HLS 流</a></div>
 </section>
 
@@ -288,6 +291,9 @@ const player = mpegts.createPlayer({
 player.attachMediaElement(video);
 player.load();
 video.play();</pre>
+
+  <p class="small"><b>就地播放</b>（mpegts.js 已内置 vendor/）：公开的 HTTP-FLV 演示源不多，建议先用 <a href="#gateway">MediaMTX 网关配方</a> 把自己的摄像头/RTSP 源转成 <code>http://…/cam.flv</code> 再粘贴播放；也可以粘 <code>.ts</code> 直链，走同一条 mpegts.js 路线。</p>
+  <div data-lazy-viz data-viz="stream"></div>
 
   <div class="grid-2">
     <div class="card">

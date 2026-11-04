@@ -2,6 +2,10 @@
 (function () {
   'use strict';
 
+  // vendor 资源基准路径：基于 main.js 自身位置解析，子目录页面也能正确引用
+  const MAIN_BASE = ((document.currentScript && document.currentScript.src) || '').replace(/[^/]*$/, '');
+  const VENDOR = MAIN_BASE + 'vendor/';
+
   /* ========== 目录高亮 ========== */
   function initToc() {
     const toc = document.querySelector('aside.toc nav');
@@ -1186,7 +1190,7 @@
       return;
     }
     this.log('加载 hls.js（内置 vendor/）…');
-    await loadScript('vendor/hls/hls.min.js');
+    await loadScript(VENDOR + 'hls/hls.min.js');
     if (!window.Hls || !window.Hls.isSupported()) throw new Error('hls.js 不可用');
     const h = new window.Hls({ lowLatencyMode: true, enableWorker: true });
     this.hls = h;
@@ -1198,7 +1202,7 @@
   StreamPlayer.prototype.playFlv = async function (url, v) {
     const isTs = /\.ts(\?|$)/i.test(url);
     this.log('加载 mpegts.js（内置 vendor/）…');
-    await loadScript('vendor/mpegts/mpegts.js');
+    await loadScript(VENDOR + 'mpegts/mpegts.js');
     if (!window.mpegts || !window.mpegts.isSupported()) throw new Error('mpegts.js 不可用');
     const p = window.mpegts.createPlayer({ type: isTs ? 'mpegts' : 'flv', url, isLive: true, hasAudio: true });
     this.flv = p;
@@ -1237,13 +1241,13 @@
     const load2 = async (local, cdn, label) => {
       try { await load(local); } catch (e) { this.log('⚠️ 本地 ' + label + ' 加载失败，回退 CDN…'); await load(cdn); }
     };
-    if (!window.FFmpegWASM) await load2('vendor/ffmpeg/ffmpeg.js', 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js', 'ffmpeg.js');
-    if (!window.FFmpegUtil) await load2('vendor/ffmpeg/util.js', 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js', 'util.js');
+    if (!window.FFmpegWASM) await load2(VENDOR + 'ffmpeg/ffmpeg.js', 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js', 'ffmpeg.js');
+    if (!window.FFmpegUtil) await load2(VENDOR + 'ffmpeg/util.js', 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js', 'util.js');
     if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('ffmpeg.wasm 运行库加载失败');
     this.log('⏳ 实例化 ffmpeg-core.wasm（约 30 MB，首次需数十秒）…');
     const { toBlobURL } = window.FFmpegUtil;
     const blobUrl = async (name, mime) => {
-      try { return await toBlobURL('vendor/ffmpeg/' + name, mime); }
+      try { return await toBlobURL(VENDOR + 'ffmpeg/' + name, mime); }
       catch (e) { return await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/' + name, mime); }
     };
     const eng = new window.FFmpegWASM.FFmpeg();
