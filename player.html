@@ -151,7 +151,7 @@ if (url.endsWith('/whep'))  →  new RTCPeerConnection() + fetch POST</pre>
   <div class="grid-3">
     <div class="card">
       <h4>可以试的公开测试流</h4>
-      <p class="small">HLS：<code>https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8</code>（上方已预填，需联网）。它会走 hls.js 路线，日志里能看到清单解析过程。</p>
+      <p class="small">HLS：<code>https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8</code>（上方已预填，需联网）。它会走 hls.js 路线——播放库（hls.js / mpegts.js）已内置在 <code>vendor/</code> 随站点发布，不再依赖 CDN，日志里能看到清单解析过程。</p>
     </div>
     <div class="card">
       <h4>WHEP 需要你自己的网关</h4>
@@ -575,7 +575,7 @@ location /live/ {
   </div>
 </footer>
 
-<script src="main.js"></script>
+<script src="main.js?v=20261104"></script>
 </body>
 </html>
 

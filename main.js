@@ -1039,7 +1039,7 @@
   const SP_RULES = [
     { id: 'whep', re: /\/whep(\?|$)|mode=whep/i, label: 'WHEP（WebRTC）' },
     { id: 'hls', re: /\.m3u8(\?|$)|\/hls\//i, label: 'HLS（m3u8）' },
-    { id: 'flv', re: /\.flv(\?|$)/i, label: 'HTTP-FLV' },
+    { id: 'flv', re: /\.(flv|ts)(\?|$)/i, label: 'HTTP-FLV / MPEG-TS' },
     { id: 'rtsp', re: /^rtsp(s)?:\/\//i, label: 'RTSP（需网关）' },
     { id: 'rtmp', re: /^rtmp(s)?:\/\//i, label: 'RTMP（需网关）' },
     { id: 'file', re: /\.(mp4|webm|ogg|m4v)(\?|$)/i, label: '普通文件' }
@@ -1103,13 +1103,13 @@
       kind.className = t.id === 'rtsp' || t.id === 'rtmp' ? 'badge-no' : 'badge-ok';
       if (t.id === 'rtsp' || t.id === 'rtmp') {
         root.querySelector('[data-k="hint"]').innerHTML =
-          `<b>${t.label}</b> 浏览器不能直接打开：它没有任意 TCP 连接能力。<br>请用网关转成 WHEP / HLS / FLV，见页面下方“网关配方”。`;
+          `<b>${t.label}</b> 浏览器不能直接打开：它没有任意 TCP 连接能力。wasm 版 FFmpeg 同样做不到（wasm 拿不到 socket，也没编入 RTSP 协议），唯一出路是网关。<br>请用网关转成 WHEP / HLS / FLV，见页面下方“网关配方”。`;
       } else if (t.id === 'whep') {
         root.querySelector('[data-k="hint"]').innerHTML = 'WHEP：原生 RTCPeerConnection 直接收流，延迟通常 &lt; 1 秒。';
       } else if (t.id === 'hls') {
-        root.querySelector('[data-k="hint"]').innerHTML = 'HLS：Safari 原生播放；其他浏览器自动加载 hls.js。';
+        root.querySelector('[data-k="hint"]').innerHTML = 'HLS：Safari 原生播放；其他浏览器自动加载内置 hls.js（vendor/，无需联网取库）。';
       } else if (t.id === 'flv') {
-        root.querySelector('[data-k="hint"]').innerHTML = 'HTTP-FLV：自动加载 mpegts.js，延迟一般 1–3 秒。';
+        root.querySelector('[data-k="hint"]').innerHTML = 'HTTP-FLV / MPEG-TS：自动加载内置 mpegts.js（flv.js 的社区维护版），延迟一般 1–3 秒。';
       } else {
         root.querySelector('[data-k="hint"]').innerHTML = '粘贴一个流地址。RTSP / RTMP 不能直连，页面会给出网关方案。';
       }
@@ -1183,8 +1183,8 @@
       this.meta('HLS 原生播放 · 延迟通常 6–20 秒');
       return;
     }
-    this.log('加载 hls.js…');
-    await loadScript('https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js');
+    this.log('加载 hls.js（内置 vendor/）…');
+    await loadScript('vendor/hls/hls.min.js');
     if (!window.Hls || !window.Hls.isSupported()) throw new Error('hls.js 不可用');
     const h = new window.Hls({ lowLatencyMode: true, enableWorker: true });
     this.hls = h;
@@ -1194,15 +1194,16 @@
     this.meta('hls.js · 低延迟模式已开启');
   };
   StreamPlayer.prototype.playFlv = async function (url, v) {
-    this.log('加载 mpegts.js…');
-    await loadScript('https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js');
+    const isTs = /\.ts(\?|$)/i.test(url);
+    this.log('加载 mpegts.js（内置 vendor/）…');
+    await loadScript('vendor/mpegts/mpegts.js');
     if (!window.mpegts || !window.mpegts.isSupported()) throw new Error('mpegts.js 不可用');
-    const p = window.mpegts.createPlayer({ type: 'flv', url, isLive: true, hasAudio: true });
+    const p = window.mpegts.createPlayer({ type: isTs ? 'mpegts' : 'flv', url, isLive: true, hasAudio: true });
     this.flv = p;
     p.attachMediaElement(v); p.load();
-    p.on(window.mpegts.Events.ERROR, (t, d) => this.log('FLV 错误：' + t + ' ' + d, 'err'));
+    p.on(window.mpegts.Events.ERROR, (t, d) => this.log('FLV/TS 错误：' + t + ' ' + d, 'err'));
     await v.play();
-    this.log('FLV 拉流已启动', 'ok');
+    this.log((isTs ? 'MPEG-TS' : 'FLV') + ' 拉流已启动', 'ok');
     this.meta('mpegts.js · 延迟通常 1–3 秒');
   };
   StreamPlayer.prototype.stop = function (quiet) {
