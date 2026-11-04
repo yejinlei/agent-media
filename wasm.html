@@ -523,22 +523,51 @@ python -m http.server 8099
     });
   }
   async function loadLocalOrCdn(local, cdn, label) {
+    // ffmpeg.js / util.js 是 UMD 脚本，其内部 Worker chunk 指向 unpkg（跨源会被拒），
+    // 因此必须本地优先串行：本地失败才回退 CDN，绝不让 CDN 版本"竞速胜出"执行。
     try { await loadScript(local); }
     catch (e) {
       log('⚠️ 本地 ' + label + ' 加载失败，回退 CDN…');
       await loadScript(cdn);
     }
   }
-  async function blobUrlWithFallback(name, mime) {
-    try { return await toBlobURLSafe(URL_CORE + '/' + name, mime); }
-    catch (e) {
-      log('⚠️ 本地 ' + name + ' 读取失败，回退 CDN…');
-      return await toBlobURLSafe(CDN_CORE + '/' + name, mime);
-    }
+  // 双源竞速：本地 vendor 与 CDN 并行取，先成功者胜；并写入 Cache Storage（命中零网络）。
+  // 与 main.js 的 ffLoadUrl 行为一致，让 wasm.html 也享受主页后台预热的成果。
+  const WFF_CACHE = 'av-ontology-ffmpeg-v1';
+  async function ffFetchOne(url, mime) {
+    try {
+      const abs = new URL(url, location.href).href; // 统一绝对键，避免相对/绝对解析歧义
+      const r = await fetch(abs);
+      if (!r.ok) return null;
+      const b = await r.blob();
+      try { if ('caches' in window) (await caches.open(WFF_CACHE)).put(abs, new Response(b, { headers: { 'Content-Type': mime } })); } catch (e) { }
+      return URL.createObjectURL(b);
+    } catch (e) { return null; }
   }
-  async function toBlobURLSafe(url, mime) {
-    const { toBlobURL } = window.FFmpegUtil;
-    return toBlobURL(url, mime);
+  async function blobUrlWithFallback(name, mime) {
+    const local = new URL(URL_CORE + '/' + name, location.href).href;
+    const cdn = new URL(CDN_CORE + '/' + name, location.href).href;
+    // ① 缓存命中：零网络
+    if ('caches' in window) {
+      try {
+        const cache = await caches.open(WFF_CACHE);
+        for (const u of [local, cdn]) {
+          const hit = await cache.match(u);
+          if (hit) return URL.createObjectURL(await hit.blob());
+        }
+      } catch (e) { }
+    }
+    // ② 双源竞速：本地 ∥ CDN
+    const winner = await new Promise(resolve => {
+      let done = false;
+      const judge = (res) => { if (!done) { done = true; resolve(res); } };
+      ffFetchOne(local, mime).then(res => judge(res));
+      ffFetchOne(cdn, mime).then(res => judge(res));
+      setTimeout(() => { if (!done) { done = true; resolve(null); } }, 120000);
+    });
+    if (winner) return winner;
+    log('❌ 本地与 CDN 均无法获取 ' + name);
+    throw new Error('ffmpeg 资源下载失败：' + name);
   }
   async function ensureLoaded() {
     if (loaded) return;

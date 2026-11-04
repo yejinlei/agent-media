@@ -1244,15 +1244,13 @@
     if (!window.FFmpegWASM) await load2(VENDOR + 'ffmpeg/ffmpeg.js', 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js', 'ffmpeg.js');
     if (!window.FFmpegUtil) await load2(VENDOR + 'ffmpeg/util.js', 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js', 'util.js');
     if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('ffmpeg.wasm 运行库加载失败');
-    this.log('⏳ 实例化 ffmpeg-core.wasm（约 30 MB，首次需数十秒）…');
-    const { toBlobURL } = window.FFmpegUtil;
-    const blobUrl = async (name, mime) => {
-      try { return await toBlobURL(VENDOR + 'ffmpeg/' + name, mime); }
-      catch (e) { return await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/' + name, mime); }
-    };
+    this.log('⏳ 实例化 ffmpeg-core.wasm（约 30 MB；若已在主页后台预取则秒级就绪）…');
+    // core.js 与 wasm：先查预热缓存（命中零网络），未命中则本地 vendor 与 CDN 双源竞速取快者
+    const coreUrl = await ffLoadUrl('ffmpeg-core.js');
+    const wasmUrl = await ffLoadUrl('ffmpeg-core.wasm');
     const eng = new window.FFmpegWASM.FFmpeg();
     eng.on('log', ({ message }) => { if (this._probeBuf) this._probeBuf.push(message); this.log(message); });
-    await eng.load({ coreURL: await blobUrl('ffmpeg-core.js', 'text/javascript'), wasmURL: await blobUrl('ffmpeg-core.wasm', 'application/wasm') });
+    await eng.load({ coreURL: coreUrl, wasmURL: wasmUrl });
     this.wasmEngine = eng;
     this.log('✅ ffmpeg.wasm 就绪', 'ok');
     return eng;
@@ -1363,4 +1361,84 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
+
+  /* ========== ffmpeg.wasm 资源：双源竞速（本地 vendor ∥ CDN，取快者）+ Cache Storage 预热 ========== */
+  // 保留项目内 wasm 文件（本地源），同时可走 CDN；哪个先下完用哪个，胜者入缓存，命中零网络。
+  const FF_CACHE = 'av-ontology-ffmpeg-v1';
+  const FF_CDN = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/';
+  // 各资源的本地 vendor 与 CDN 候选
+  // 双源竞速只针对「数据型」core.js / core.wasm（纯字节，无内部 Worker，CDN 字节安全）。
+  // ffmpeg.js / util.js 是 KB 级 UMD 脚本（其内部 Worker URL 指向 unpkg，CDN 字节跨源会失败），
+  // 仍由 load2 本地优先串行加载，不参与竞速、也不入此缓存。
+  const FF_SOURCES = [
+    { name: 'ffmpeg-core.js',  mime: 'text/javascript',  local: VENDOR + 'ffmpeg/ffmpeg-core.js',   cdn: FF_CDN + 'ffmpeg-core.js' },
+    { name: 'ffmpeg-core.wasm', mime: 'application/wasm', local: VENDOR + 'ffmpeg/ffmpeg-core.wasm', cdn: FF_CDN + 'ffmpeg-core.wasm' },
+  ];
+  // 从单个 URL 取字节 → Blob URL；成功则写缓存。失败返回 null。
+  async function ffFetchOne(url, mime) {
+    try {
+      const abs = new URL(url, location.href).href; // 统一绝对键，避免相对/绝对解析歧义
+      const r = await fetch(abs);
+      if (!r.ok) return null;
+      const b = await r.blob();
+      try { if ('caches' in window) (await caches.open(FF_CACHE)).put(abs, new Response(b, { headers: { 'Content-Type': mime } })); } catch (e) { }
+      return URL.createObjectURL(b);
+    } catch (e) { return null; }
+  }
+  // 取某个资源的可用 Blob URL：缓存命中 → 零网络；否则本地与 CDN 并行竞速，先成功者胜。
+  // 返回 { url, from }（from: 'cache' | 'local' | 'cdn'）
+  async function ffLoadUrl(name) {
+    const src = FF_SOURCES.find(s => s.name === name);
+    if (!src) return null;
+    // ① 缓存命中：零网络，最快
+    if ('caches' in window) {
+      try {
+        const cache = await caches.open(FF_CACHE);
+        for (const u of [new URL(src.local, location.href).href, new URL(src.cdn, location.href).href]) {
+          const hit = await cache.match(u);
+          if (hit) return { url: URL.createObjectURL(await hit.blob()), from: 'cache' };
+        }
+      } catch (e) { }
+    }
+    // ② 双源竞速：本地 vendor 与 CDN 同时发起，先完成者胜（都成功时取先到；一方失败则取另一方）
+    const winner = await new Promise(resolve => {
+      let done = false;
+      const judge = (res, from) => { if (!done) { done = true; resolve({ res, from }); } };
+      ffFetchOne(src.local, src.mime).then(res => judge({ res, from: 'local' }, null)).catch(() => judge({ res: null, from: 'local' }));
+      ffFetchOne(src.cdn, src.mime).then(res => judge({ res, from: 'cdn' }, null)).catch(() => judge({ res: null, from: 'cdn' }));
+      setTimeout(() => { if (!done) { done = true; resolve({ res: null, from: 'timeout' }); } }, 120000);
+    });
+    if (winner.res) return { url: winner.res, from: winner.from };
+    throw new Error('ffmpeg 资源下载失败：' + name);
+  }
+  // 后台预取全部 4 个资源（主页打开后空闲时触发；多个页面共享单例）
+  let _ffPrewarm = null;
+  function prewarmFfmpeg() {
+    if (_ffPrewarm) return _ffPrewarm;
+    if (!('caches' in window)) return (_ffPrewarm = Promise.resolve(false));
+    _ffPrewarm = (async () => {
+      try {
+        const cache = await caches.open(FF_CACHE);
+        const pending = [];
+        for (const s of FF_SOURCES) {
+          const has = (await cache.match(new URL(s.local, location.href).href)) || (await cache.match(new URL(s.cdn, location.href).href));
+          if (!has) pending.push(s);
+        }
+        if (pending.length) {
+          const results = await Promise.allSettled(pending.map(s => ffLoadUrl(s.name)));
+          const ok = results.filter(x => x.status === 'fulfilled' && x.value && x.value.url).length;
+          console.log('[prewarm] ffmpeg 后台预取完成 ' + ok + '/' + pending.length);
+        } else {
+          console.log('[prewarm] ffmpeg 已缓存，跳过');
+        }
+        return true;
+      } catch (e) { console.warn('[prewarm] ffmpeg 预取失败', e); return false; }
+    })();
+    return _ffPrewarm;
+  }
+  // 主页打开后：空闲时（约 2s）后台预取；同源页面才预热
+  if (location.hostname) {
+    const t = setTimeout(() => { prewarmFfmpeg(); }, 2000);
+    if ('requestIdleCallback' in window) requestIdleCallback(() => { clearTimeout(t); prewarmFfmpeg(); }, { timeout: 8000 });
+  }
 })();
