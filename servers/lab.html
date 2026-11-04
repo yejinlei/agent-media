@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浏览器内直播实验台 · 迷你媒体服务器（WebRTC 推拉 + HLS 源站）</title>
+<meta name="description" content="把浏览器变成一个迷你媒体服务器：多标签页角色实验（推流端/服务器端/观众端），WebRTC 真推流真拉流，Service Worker 当 HLS 源站用 hls.js 真实拉流；附 MediaMTX / ZLMediaKit / SRS 真服务器联调配方。">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="top"><div class="in">
+  <a class="logo" href="../index.html">📺 av-<em>ontology</em></a>
+  <div class="nav-links">
+    <a href="../index.html">首页</a>
+    <a href="../solutions/">方案</a>
+    <a href="../container/">容器</a>
+    <a href="../codec/">编解码</a>
+    <a href="../protocol/">协议</a>
+    <a href="../hwaccel/">硬件</a>
+    <a href="../ffmpeg/">FFmpeg</a>
+    <a href="../gstreamer.html">GStreamer</a>
+    <a href="../gb28181.html">GB28181</a>
+    <a href="../player.html">播放器</a>
+    <a href="index.html" class="cur">服务器</a>
+    <a href="../wasm.html">WASM</a>
+    <a href="../lab.html">实验室</a>
+    <a href="../analyze.html">分析器</a>
+    <a class="gh" href="https://github.com/yejinlei/liveinonetools" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</div></nav>
+
+<header class="hero" style="padding:3.4rem 0 3rem">
+  <div class="wrap">
+    <h1>浏览器内直播实验台：<br><em>把一个标签页变成媒体服务器</em></h1>
+    <p>不需要安装任何东西。开三个标签页，分别扮演<strong>推流端</strong>、<strong>服务器</strong>、<strong>观众端</strong>，跑通一条完整的直播链路：WebRTC 真推流（WHIP 式信令）→ 服务器转发分发 → WebRTC 低延迟拉流（WHEP 式）+ Service Worker 当 HLS 真源站（hls.js 走真实 HTTP 拉流）。这就是媒体服务器的全部核心职责——只是把 TCP/UDP 换成了浏览器允许的三件武器。</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#lab">🧪 开始实验</a>
+      <a class="btn btn-ghost" href="#truth">先看协议边界</a>
+      <a class="btn btn-ghost" href="#real">对接真服务器</a>
+    </div>
+    <div class="pill-row">
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">WebRTC 推/拉</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">HLS 源站</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">Service Worker</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">BroadcastChannel</span>
+      <span class="pill" style="background:rgba(255,255,255,.14);color:#fff">MediaRecorder</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="body">
+<main>
+
+<section id="truth">
+  <h2>🧱 协议边界：哪些真实、哪些模拟、哪些物理不可能</h2>
+  <p class="lead">浏览器禁止网页监听任何 TCP/UDP 端口，也没有 raw socket——这对 SRS / ZLMediaKit / MediaMTX / nginx-rtmp 一视同仁，<strong>编译成 wasm 也开不了端口</strong>。但浏览器自己给了三件"服务器武器"，本实验台把它们用到极限：</p>
+  <div class="scroll-x">
+    <table class="cmp">
+      <thead><tr><th>方向</th><th>协议</th><th>本实验台</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>推流（接入）</td><td><b>WebRTC</b>（WHIP 式 HTTP 信令）</td><td><span class="badge-ok">真实</span></td><td>浏览器唯一能"真推流"的协议；信令走 BroadcastChannel（同一台浏览器内），媒体走 RTCPeerConnection</td></tr>
+        <tr><td>拉流（分发）</td><td><b>WebRTC</b>（WHEP 式）</td><td><span class="badge-ok">真实</span></td><td>服务器标签页把收到的 track 转发给 N 个观众——一个微型 SFU</td></tr>
+        <tr><td>拉流（分发）</td><td><b>HLS</b></td><td><span class="badge-ok">真实</span></td><td>MediaRecorder 产出 fMP4 分段 → Service Worker 拦截同源 fetch 当 HTTP 源站 → hls.js 真实拉流播放</td></tr>
+        <tr><td>推 / 拉</td><td>RTMP · RTSP · SRT · GB28181</td><td><span class="badge-no">物理不可能</span></td><td>需要监听端口，浏览器沙箱禁止；wasm 无 socket。→ 用下面的<a href="#real">真服务器联调卡</a>对接</td></tr>
+        <tr><td>拉流（分发）</td><td>HTTP-FLV · DASH</td><td><span class="badge-ok">预留</span></td><td>Service Worker 同样能响应（sw 源站架构已就位），后续版本加入</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout callout-i"><span class="ic">🧩</span><span><b>为什么标签页能当"服务器"？</b>三件武器：① <b>WebRTC</b>——页面可以主动与另一个页面建立点对点连接，收到的 track 可以再 <code>addTrack</code> 转发给别人（转发 = SFU 的本质）；② <b>Service Worker</b>——能拦截并响应同源 fetch，等于一个网页内 HTTP 服务器；③ <b>BroadcastChannel</b>——同源多标签页零部署消息总线，充当信令通道。</span></div>
+</section>
+
+<section id="lab">
+  <h2>🧪 实验：三步跑通直播全链路</h2>
+  <p class="lead">把本页开 <strong>2–3 个标签页</strong>（同一浏览器、同一网站即可）。每个标签页在下面选一个角色：<strong>📡 推流端</strong>往服务器推流，<strong>🖥️ 服务器</strong>负责接入、转发、HLS 分发和观众管理，<strong>👀 观众端</strong>选一种协议拉流观看。也可以单标签页自测：服务器角色开启"本地测试源自播"，直接在页内看 HLS 效果。</p>
+
+  <div class="grid-3" id="role-cards">
+    <div class="card" style="cursor:pointer" role="button" tabindex="0" data-role="pub"><h4>📡 我是推流端</h4><p class="small">测试图卡 / 摄像头麦克风 / 屏幕分享，以 WebRTC（WHIP 式）推给"服务器"标签页。</p></div>
+    <div class="card" style="cursor:pointer" role="button" tabindex="0" data-role="srv"><h4>🖥️ 我是服务器</h4><p class="small">接入推流、转发给多观众（WHEP 式）、切成 HLS 分段供 hls.js 真实拉流；显示统计、可踢人。</p></div>
+    <div class="card" style="cursor:pointer" role="button" tabindex="0" data-role="view"><h4>👀 我是观众端</h4><p class="small">两种拉流协议任选：WebRTC（亚秒延迟）或 HLS（2–6 秒，走 Service Worker 真源站）。</p></div>
+  </div>
+
+  <div class="card" style="margin:1rem 0">
+    <h4>📋 直播间状态（所有标签页共享）</h4>
+    <p class="small" id="roster">正在收集在线标签页…</p>
+  </div>
+
+  <!-- ============ 推流端 ============ -->
+  <div class="card role-panel" id="panel-pub" style="display:none">
+    <h4>📡 推流端 · WebRTC（WHIP 式信令）</h4>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.6rem 0">
+      <select id="pubSrc" style="padding:.5rem .6rem;border:1px solid var(--border);border-radius:.4rem;background:var(--card,#fff);font-size:.85rem">
+        <option value="card">🎨 测试图卡 + 提示音</option>
+        <option value="cam">🎥 摄像头 + 麦克风</option>
+        <option value="screen">🖥️ 屏幕分享</option>
+      </select>
+      <button class="btn btn-p" id="pubBtn">▶ 开始推流</button>
+      <span class="small" id="pubStatus">尚未推流。先另开一个标签页选「🖥️ 我是服务器」。</span>
+    </div>
+    <video id="pubVideo" autoplay playsinline muted style="width:100%;max-width:480px;border-radius:.6rem;background:#000;display:none"></video>
+    <p class="small" style="margin-top:.5rem">推流协议说明：本页用 <code>RTCPeerConnection</code> 发送媒体，SDP 交换消息格式与 WHIP 一致（offer→answer），只是"HTTP 请求"换成了 BroadcastChannel（同浏览器内零部署）。要跨设备/跨浏览器，请用 <a href="#real">真服务器</a>。</p>
+  </div>
+
+  <!-- ============ 服务器 ============ -->
+  <div class="card role-panel" id="panel-srv" style="display:none">
+    <h4>🖥️ 服务器 · 接入 / 转发 / 分发</h4>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.6rem 0">
+      <button class="btn btn-ghost" id="srvSelf">🎬 启用本地测试源自播（单标签页自测）</button>
+      <span class="small" id="srvPub">等待推流端接入…</span>
+    </div>
+    <div class="grid-2">
+      <div>
+        <h4 style="font-size:.95rem">观众（WHEP 式 · WebRTC）</h4>
+        <p class="small" id="srvViewers">暂无观众。</p>
+      </div>
+      <div>
+        <h4 style="font-size:.95rem">HLS 源站（Service Worker · 真实 HTTP）</h4>
+        <p class="small" id="srvHls">等待媒体…</p>
+        <p class="small" style="word-break:break-all">地址：<code id="hlsUrl">lab-hls/live.m3u8</code> <button class="btn-mini" id="copyHls">复制完整地址</button></p>
+      </div>
+    </div>
+    <video id="srvVideo" autoplay playsinline muted style="width:100%;max-width:480px;border-radius:.6rem;background:#000;margin-top:.6rem;display:none"></video>
+    <div class="grid-2" style="margin-top:.8rem">
+      <div>
+        <p class="small"><b>转发原理：</b>收到推流端的 <code>ontrack</code> 后保存 <code>MediaStream</code>；每个观众连接时 <code>addTrack</code> 同一批 track——这就是 SFU 转发的最小实现，不转码、只路由。</p>
+      </div>
+      <div>
+        <p class="small"><b>HLS 原理：</b><code>MediaRecorder</code> 以 2s 时间片录制 fMP4，页面拆出 init 段与媒体段推给 Service Worker；任何标签页/播放器请求 <code>lab-hls/live.m3u8</code> 都被 SW 用内存中的清单与分段响应。</p>
+      </div>
+    </div>
+    <p class="small" style="margin-top:.6rem"><b>在本页预览 HLS 源站</b>（等价于观众端拉 HLS）：</p>
+    <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.m3u8"}'></div>
+  </div>
+
+  <!-- ============ 观众端 ============ -->
+  <div class="card role-panel" id="panel-view" style="display:none">
+    <h4>👀 观众端 · 两种拉流协议</h4>
+    <div class="grid-2">
+      <div>
+        <h4 style="font-size:.95rem">① WebRTC（WHEP 式 · 亚秒延迟）</h4>
+        <button class="btn btn-p" id="viewBtn">▶ 连接服务器拉流</button>
+        <video id="viewVideo" autoplay playsinline muted style="width:100%;margin-top:.6rem;border-radius:.6rem;background:#000;display:none"></video>
+        <p class="small" id="viewStatus">尚未连接。<button class="btn-mini" id="unmuteBtn" style="display:none">🔊 打开声音</button></p>
+      </div>
+      <div>
+        <h4 style="font-size:.95rem">② HLS（Service Worker 真源站 · 2–6 秒延迟）</h4>
+        <p class="small">清单地址就是服务器面板显示的 <code>lab-hls/live.m3u8</code>。等「服务器」标签页开始分发后点 ▶：</p>
+        <div data-lazy-viz data-viz="stream" data-opts='{"url":"lab-hls/live.m3u8"}'></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="real">
+  <h2>🐳 真服务器联调卡：MediaMTX / ZLMediaKit / SRS</h2>
+  <p class="lead">要推 <b>RTMP / RTSP / SRT</b>、要跨设备观看、要 GB28181——就需要真的媒体服务器（监听端口这件事浏览器做不了，wasm 也不行）。下面三个都是"解压即用"级别的小型稳定服务器；起一个之后，把它的播放地址粘进下面的播放器直接验证。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>MediaMTX（最轻，单二进制）</h4>
+      <pre class="code" style="font-size:.72rem">docker run --rm -it \
+  -p 8189:8189/udp -p 1935:1935 \
+  -p 8888:8888 -p 8889:8889 \
+  bluenviron/mediamtx</pre>
+      <p class="small">推：<code>ffmpeg -re -f lavfi -i testsrc -c:v libx264 -f flv rtmp://127.0.0.1/live/test</code><br>看（WHEP）：<code>http://127.0.0.1:8889/test/whep</code><br>看（HLS）：<code>http://127.0.0.1:8888/test/index.m3u8</code></p>
+    </div>
+    <div class="card">
+      <h4>ZLMediaKit（国产 · GB28181 友好）</h4>
+      <pre class="code" style="font-size:.72rem">docker run --rm -it \
+  -p 554:554 -p 1935:1935 -p 8080:8080 \
+  -p 10000:10000 -p 10000:10000/udp \
+  zlmediakit/zlmediakit:master</pre>
+      <p class="small">推：<code>ffmpeg ... -f flv rtmp://127.0.0.1/live/test</code><br>看（HLS）：<code>http://127.0.0.1:8080/live/test/hls.m3u8</code><br>（Windows 也可直接下载 release 单文件运行）</p>
+    </div>
+    <div class="card">
+      <h4>SRS（老牌直播源站）</h4>
+      <pre class="code" style="font-size:.72rem">docker run --rm -it \
+  -p 1935:1935 -p 8080:8080 \
+  -p 1985:1985 -p 8000:8000/udp \
+  ossrs/srs:5</pre>
+      <p class="small">推：<code>ffmpeg ... -f flv rtmp://127.0.0.1/live/livestream</code><br>看（WHEP）：<code>http://127.0.0.1:1985/rtc/v1/whep/?app=live&stream=livestream</code><br>看（HLS）：<code>http://127.0.0.1:8080/live/livestream.m3u8</code><br><span style="color:#b45309">注：SRS 5 已无内置 RTSP 服务端（主打 RTMP/SRT/HLS/FLV/WebRTC）。</span></p>
+    </div>
+  </div>
+
+  <div class="grid-3" style="margin-top:1rem">
+    <div class="card">
+      <h4>xiu（纯 Rust · 极轻，边缘设备友好）</h4>
+      <pre class="code" style="font-size:.72rem">cargo install xiu
+xiu ./config.toml   # 示例配置：
+                    # rtmp 1935 · hls 8080 · httpflv 8081</pre>
+      <p class="small">推：<code>ffmpeg ... -f flv rtmp://127.0.0.1/live/test</code><br>看（FLV）：<code>http://127.0.0.1:8081/live/test.flv</code><br>看（HLS）：<code>http://127.0.0.1:8080/live/test.m3u8</code><br><span style="color:#64748b">端口以自带 config.toml 为准。</span></p>
+    </div>
+    <div class="card">
+      <h4>lal（Go · 原生 GB28181，安防场景）</h4>
+      <pre class="code" style="font-size:.72rem">docker run --rm -it \
+  -p 1935:1935 -p 8080:8080 -p 8081:8081 \
+  -p 5544:5544 q191201771/lal</pre>
+      <p class="small">推：<code>ffmpeg ... -f flv rtmp://127.0.0.1/live/test</code><br>拉（RTSP）：<code>rtsp://127.0.0.1:5544/live/test</code><br>看（HLS）：<code>http://127.0.0.1:8080/live/test.m3u8</code><br>GB28181 详见 <a href="../gb28181.html">国标页</a>。</p>
+    </div>
+    <div class="card">
+      <h4>选型一句话</h4>
+      <p class="small"><b>MediaMTX</b>：全协议收发、配置最少，浏览器联调首选；<b>ZLMediaKit</b>：国标+全协议、Windows 单文件；<b>SRS</b>：RTMP 直播集群成熟；<b>xiu</b>：资源占用极低的轻量节点；<b>lal</b>：要 GB28181 又想避开 ZLM 重度配置时选它。共同点：都需要真端口，所以浏览器/wasm 替代不了它们——<a href="#lab">浏览器内实验台</a>教的是原理，这五家才是生产答案。</p>
+    </div>
+  </div>
+
+  <p style="margin-top:1rem"><b>▶ 把你服务器给的播放地址粘进下面播放器验证</b>（WHEP / .m3u8 / .flv / .ts 都支持，播放库已内置）：</p>
+  <div data-lazy-viz data-viz="stream"></div>
+
+  <div class="callout callout-w"><span class="ic">⚠️</span><span><b>混合内容提醒：</b>本站在 GitHub Pages 是 HTTPS。若你的服务器在本机（http://127.0.0.1 除外，浏览器视为安全上下文）或纯 HTTP 的公网地址，浏览器可能拦截。本机调试请用 <code>127.0.0.1</code> 地址，或给服务器配 HTTPS。</span></div>
+</section>
+
+<section id="roadmap">
+  <h2>🗺️ 与全站的关系</h2>
+  <p>这里的"服务器"演示的是<strong>转发与分发职责</strong>。协议字节本身（RTMP chunk、RTSP 时序、HLS 清单结构）在<a href="../protocol/">协议页</a>逐条拆解；浏览器侧播放技术（WHEP/hls.js/mpegts.js）在<a href="../player.html">播放器页</a>；wasm 就地解析（ffprobe）在<a href="../wasm.html">WASM 页</a>。四页合起来，就是"从摄像头到观众"的完整本体论。</p>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer class="foot"><div class="wrap">
+  <p>av-ontology · 音视频本体论研究站 · 实验均为纯前端实现，无任何后端</p>
+</div></footer>
+
+<script src="../main.js?v=20261104"></script>
+<script>
+// ================= 浏览器内直播实验台 =================
+// 角色：pub(推流端) / srv(服务器) / view(观众端)，同页多标签，BroadcastChannel 信令。
+// 媒体面：RTCPeerConnection（真实 WebRTC）；HLS 分发：MediaRecorder fMP4 → Service Worker 源站。
+(function () {
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const MYID = Math.random().toString(16).slice(2, 6);
+  const ROLE_TXT = { pub: '📡 推流端', srv: '🖥️ 服务器', view: '👀 观众端', none: '— 未选角色' };
+
+  /* ---------- Service Worker（HLS 源站） ---------- */
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('lab-sw.js').catch(() => {});
+  }
+  function swSend(m) { if (navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage(m); }
+
+  /* ---------- 测试图卡源（画布动画 + 提示音） ---------- */
+  function makeTestCard() {
+    const cv = document.createElement('canvas'); cv.width = 640; cv.height = 360;
+    const g = cv.getContext('2d');
+    let raf = 0, run = true;
+    const t0 = Date.now();
+    const cols = ['#fff', '#ff0', '#0ff', '#0f0', '#f0f', '#f00', '#00f', '#111'];
+    function paint() {
+      const t = (Date.now() - t0) / 1000;
+      for (let i = 0; i < 8; i++) { g.fillStyle = cols[i]; g.fillRect(i * 80, 0, 80, 260); }
+      g.fillStyle = '#111'; g.fillRect(0, 260, 640, 100);
+      g.fillStyle = '#0f0'; g.fillRect((t * 120) % 640 - 30, 270, 60, 80);
+      g.fillStyle = '#fff'; g.font = '28px monospace';
+      g.fillText('av-ontology LIVE  ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }), 16, 300);
+      g.fillText('webRTC -> srv -> WHEP / HLS', 16, 336);
+    }
+    function loop() { if (!run) return; paint(); raf = requestAnimationFrame(loop); }
+    paint();               // 首帧先画，避免 captureStream 抓到空白黑帧
+    raf = requestAnimationFrame(loop);
+    // 后台兜底：标签页切到后台时 rAF 会被 Chrome 暂停，
+    // 若不补帧，WebRTC 编码器凑不齐 GOP、观众黑屏，HLS 也会切出空分片。
+    const iv = setInterval(() => { if (run) paint(); }, 1000);
+    const stream = cv.captureStream(30);
+    let actx = null;
+    try {
+      actx = new AudioContext();
+      const osc = actx.createOscillator(), gain = actx.createGain(), dst = actx.createMediaStreamDestination();
+      osc.frequency.value = 600; gain.gain.value = 0.05;
+      osc.connect(gain); gain.connect(dst); osc.start();
+      dst.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+    } catch (e) { /* 无声也可 */ }
+    return { stream, stop() { run = false; cancelAnimationFrame(raf); clearInterval(iv); stream.getTracks().forEach(t => t.stop()); if (actx) actx.close(); } };
+  }
+
+  /* ---------- 全局状态 ---------- */
+  let role = 'none';
+  let mySource = null;          // 本标签页持有的采集源（测试卡/摄像头/屏幕）
+  let pubPC = null;             // pub 角色：到服务器的连接
+  const srv = { pubStream: null, pubName: '', selfMode: false, viewers: new Map(), rec: null, recChunks: [], segs: [], seq: 0, initSent: false, lastFragWall: 0, acc: null, frag: null, statTimer: 0 };
+  let viewPC = null, viewStream = null;
+
+  /* ---------- 信令：BroadcastChannel ---------- */
+  // 会话隔离：同一浏览器可并行多组实验（?sid=xxx），互不抢答信令
+  const LAB_SID = (new URLSearchParams(location.search).get('sid') || 'default').replace(/[^\w-]/g, '');
+  const bc = new BroadcastChannel('av-ontology-live-lab-' + LAB_SID);
+  function post(m) {
+    try { bc.postMessage(Object.assign({ from: MYID }, m)); }
+    catch (err) { console.error('[lab] 信令消息发送失败(不可克隆?)', m.t, err); }
+  }
+  const roster = new Map(); // id -> {role, ts}
+  roster.set(MYID, { role, ts: Date.now() });
+
+  bc.onmessage = e => {
+    const m = e.data || {}; if (m.from === MYID) return;
+    if (m.t === 'who') { roster.set(m.from, { role: m.role, ts: Date.now() }); return; }
+    roster.set(m.from, Object.assign(roster.get(m.from) || {}, { ts: Date.now() }));
+    if (role === 'pub') onPubMsg(m);
+    if (role === 'srv') onSrvMsg(m);
+    if (role === 'view') onViewMsg(m);
+  };
+  function announce() { post({ t: 'who', role }); }
+  setInterval(() => { post({ t: 'who', role: role }); renderRoster(); }, 2000);
+  function renderRoster() {
+    const now = Date.now(), list = [];
+    roster.forEach((v, id) => { if (now - v.ts < 6000 && v.role && v.role !== 'none') list.push((id === MYID ? '（本页）' : '#' + id) + ' ' + (ROLE_TXT[v.role] || v.role)); });
+    $('#roster').textContent = list.length ? '在线：' + list.join(' · ') + '　——本页角色：' + ROLE_TXT[role] : '还没有其他标签页在线。把本页再开 1–2 个，选不同角色。本页角色：' + ROLE_TXT[role];
+  }
+
+  /* ---------- ICE / SDP 辅助 ----------
+     注意：RTCSessionDescription / RTCIceCandidate 不可结构化克隆，
+     走 BroadcastChannel 必须先转成纯 JSON 对象，否则 DataCloneError。 */
+  function plainSdp(d) { return d ? { type: d.type, sdp: d.sdp } : null; }
+  function plainCand(c) { return c ? { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment } : null; }
+  function wireIce(pc, peerId) {
+    pc.onicecandidate = ev => { if (ev.candidate) post({ t: 'ice', to: peerId, cand: plainCand(ev.candidate) }); };
+  }
+  function takeIce(m, pc) { if (m.cand && pc && pc.signalingState !== 'closed') pc.addIceCandidate(m.cand).catch(() => {}); }
+
+  /* ---------- 角色切换 ---------- */
+  document.querySelectorAll('#role-cards .card').forEach(c => {
+    c.addEventListener('click', () => selectRole(c.dataset.role));
+    c.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectRole(c.dataset.role); } });
+  });
+  function selectRole(r) {
+    teardown(); role = r;
+    document.querySelectorAll('.role-panel').forEach(p => p.style.display = 'none');
+    $('#panel-' + r).style.display = '';
+    announce(); renderRoster();
+    if (r === 'srv') initSrvPanel();
+  }
+  function teardown() {
+    stopPub(); srvStopAll(); stopView();
+    mySource = null;
+  }
+  window.addEventListener('beforeunload', () => { teardown(); post({ t: 'bye', role }); });
+
+  /* ================= 推流端 ================= */
+  async function startPub() {
+    const src = $('#pubSrc').value;
+    try {
+      if (src === 'card') mySource = makeTestCard();
+      else if (src === 'cam') mySource = { stream: await navigator.mediaDevices.getUserMedia({ video: { width: 640 }, audio: true }), stop() { this.stream.getTracks().forEach(t => t.stop()); } };
+      else mySource = { stream: await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }), stop() { this.stream.getTracks().forEach(t => t.stop()); } };
+    } catch (err) { $('#pubStatus').textContent = '❌ 获取媒体失败：' + (err.message || err); return; }
+    const v = $('#pubVideo'); v.srcObject = mySource.stream; v.style.display = '';
+    $('#pubStatus').textContent = '⏳ 媒体就绪，正在寻找服务器标签页…';
+    // 找一台"服务器"：广播 hello，取第一个应答（应答在 onPubMsg 里处理）
+    pubWaiting = true;
+    pubPC = new RTCPeerConnection({ iceServers: [] });
+    wireIce(pubPC, null);
+    mySource.stream.getTracks().forEach(t => pubPC.addTrack(t, mySource.stream));
+    pubPC.onconnectionstatechange = () => {
+      if (pubPC.connectionState === 'connected') $('#pubStatus').textContent = '✅ 推流中（WebRTC 已连接）。音频听不到是正常的：观众端才出声。';
+      if (['failed', 'closed', 'disconnected'].includes(pubPC.connectionState)) $('#pubStatus').textContent = '⚠️ 连接状态：' + pubPC.connectionState;
+    };
+    post({ t: 'pub-hello' });
+    setTimeout(() => { if (pubWaiting && !pubPC.remoteDescription) $('#pubStatus').textContent = '❌ 没有服务器应答。请先另开一个本页标签页，选择「🖥️ 我是服务器」，再回来重新开始推流。'; }, 4000);
+  }
+  let pubWaiting = false;
+  function onPubMsg(m) {
+    if (m.to !== MYID && m.t !== 'srv-hello') return;
+    if (m.t === 'srv-hello' && pubWaiting && pubPC) {
+      pubWaiting = false;
+      wireIce(pubPC, m.from);
+      $('#pubStatus').textContent = '⏳ 正在与服务器 #' + m.from + ' 协商…';
+      pubPC.createOffer().then(o => pubPC.setLocalDescription(o)).then(() => post({ t: 'pub-offer', to: m.from, sdp: plainSdp(pubPC.localDescription) })).catch(() => {});
+      return;
+    }
+    if (m.t === 'pub-answer' && pubPC) pubPC.setRemoteDescription(m.sdp).catch(() => {});
+    if (m.t === 'ice' && pubPC) takeIce(m, pubPC);
+  }
+  function stopPub() {
+    if (pubPC) { try { pubPC.close(); } catch (e) {} pubPC = null; }
+    if (mySource) { try { mySource.stop(); } catch (e) {} }
+    const v = $('#pubVideo'); if (v) { v.srcObject = null; v.style.display = 'none'; }
+    const s = $('#pubStatus'); if (s) s.textContent = '尚未推流。';
+  }
+  $('#pubBtn').addEventListener('click', () => { stopPub(); startPub(); });
+
+  /* ================= 服务器 ================= */
+  function initSrvPanel() {
+    try { $('#hlsUrl').textContent = new URL('lab-hls/live.m3u8', location.href).href; } catch (e) {}
+  }
+  $('#copyHls').addEventListener('click', () => { navigator.clipboard.writeText($('#hlsUrl').textContent).then(() => { $('#copyHls').textContent = '✅ 已复制'; setTimeout(() => $('#copyHls').textContent = '复制完整地址', 1500); }); });
+
+  $('#srvSelf').addEventListener('click', () => {
+    if (srv.selfMode) return;
+    srv.selfMode = true; $('#srvSelf').disabled = true;
+    const card = makeTestCard(); mySource = card;
+    acceptMedia(card.stream, '本地测试图卡（自播）');
+  });
+
+  function onSrvMsg(m) {
+    console.log('[srv-recv]', m.t, 'from', m.from, 'to', m.to);
+    if (m.t === 'pub-hello' && !srv.pubStream && !srv.selfMode) post({ t: 'srv-hello' });
+    if (m.t === 'pub-offer' && m.to === MYID) {
+      if (srv.pubPC) { try { srv.pubPC.close(); } catch (e) {} }
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      wireIce(pc, m.from);
+      pc.ontrack = ev => {
+        if (!srv.pubStream) acceptMedia(ev.streams[0] || new MediaStream([ev.track]), '#' + m.from + ' 的推流');
+      };
+      pc.setRemoteDescription(m.sdp)
+        .then(() => pc.createAnswer()).then(a => pc.setLocalDescription(a))
+        .then(() => post({ t: 'pub-answer', to: m.from, sdp: plainSdp(pc.localDescription) }));
+      srv.pubPC = pc; srv.pubId = m.from;
+      pc.onconnectionstatechange = () => {
+        if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+          $('#srvPub').textContent = '⚠️ 推流端 ' + m.from + ' 已断开（' + pc.connectionState + '）';
+          if (srv.pubPC === pc) { srv.pubPC = null; if (!srv.selfMode) { srvStopMedia(); } }
+        }
+      };
+    }
+    if (m.t === 'ice' && srv.pubPC && m.to === MYID) takeIce(m, srv.pubPC);
+    // 观众接入（WHEP 式）
+    if (m.t === 'viewer-hello' && srv.pubStream && srv.viewers.size < 8) post({ t: 'srv-ready', to: m.from });
+    if (m.t === 'viewer-offer' && m.to === MYID && srv.pubStream) {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      wireIce(pc, m.from);
+      srv.pubStream.getTracks().forEach(t => { try { pc.addTrack(t, srv.pubStream); } catch (e) {} });
+      pc.setRemoteDescription(m.sdp)
+        .then(() => pc.createAnswer()).then(a => pc.setLocalDescription(a))
+        .then(() => { console.log('[srv] viewer-answer ->', m.from); post({ t: 'viewer-answer', to: m.from, sdp: plainSdp(pc.localDescription) }); })
+        .catch(err => console.error('[srv] viewer 协商失败:', err));
+      srv.viewers.set(m.from, { pc, since: Date.now() });
+      pc.onconnectionstatechange = () => {
+        if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) { try { pc.close(); } catch (e) {} srv.viewers.delete(m.from); renderViewers(); }
+      };
+      renderViewers();
+    }
+    if (m.t === 'ice' && m.to === MYID) {
+      const vv = srv.viewers.get(m.from); if (vv) takeIce(m, vv.pc);
+    }
+  }
+  function acceptMedia(stream, name) {
+    srv.pubStream = stream; srv.pubName = name;
+    $('#srvPub').textContent = '✅ 正在服务：' + name + ' · ' + stream.getTracks().map(t => t.kind).join('+');
+    const v = $('#srvVideo'); v.srcObject = stream; v.style.display = '';
+    startHls(stream);
+    clearInterval(srv.statTimer);
+    srv.statTimer = setInterval(srvStats, 1000);
+    srvStats();
+  }
+  function srvStopMedia() {
+    srv.pubStream = null; srv.pubName = ''; srv.selfMode = false; $('#srvSelf').disabled = false;
+    const v = $('#srvVideo'); v.srcObject = null; v.style.display = 'none';
+    clearInterval(srv.statTimer);
+    if (srv.rec) { try { srv.rec.stop(); } catch (e) {} srv.rec = null; }
+    srv.segs = []; srv.seq = 0; srv.initSent = false; srv.acc = null; srv.frag = null;
+    swSend({ t: 'clear' });
+    srvViewersAll();
+    $('#srvPub').textContent = '等待推流端接入…'; $('#srvHls').textContent = '等待媒体…';
+  }
+  function srvViewersAll() { srv.viewers.forEach((v, id) => { try { v.pc.close(); } catch (e) {} post({ t: 'bye', to: id }); }); srv.viewers.clear(); renderViewers(); }
+  function srvStopAll() { srvViewersAll(); srvStopMedia(); }
+  function renderViewers() {
+    const el = $('#srvViewers'); if (!el) return;
+    if (!srv.viewers.size) { el.textContent = srv.pubStream ? '暂无观众。另开标签页选「👀 观众端」连接。' : '暂无观众。'; return; }
+    el.innerHTML = [...srv.viewers.keys()].map(id => '#' + id + ' <button class="btn-mini" data-kick="' + id + '">踢出</button>').join(' · ');
+    el.querySelectorAll('[data-kick]').forEach(b => b.addEventListener('click', () => {
+      const id = b.dataset.kick, v = srv.viewers.get(id);
+      if (v) { try { v.pc.close(); } catch (e) {} post({ t: 'bye', to: id }); srv.viewers.delete(id); renderViewers(); }
+    }));
+  }
+  function srvStats() {
+    if (!srv.pubPC || srv.pubPC.connectionState !== 'connected') return;
+    srv.pubPC.getStats().then(rep => {
+      rep.forEach(r => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video' && r.bytesReceived) {
+          if (srv.lastBytes) {
+            const kbps = Math.round((r.bytesReceived - srv.lastBytes) * 8 / 1000);
+            const fps = r.framesPerSecond ? Math.round(r.framesPerSecond) : '?';
+            $('#srvPub').textContent = '✅ 正在服务：' + srv.pubName + ' · 入 ' + kbps + ' kbps · ' + (r.frameWidth || '?') + 'x' + (r.frameHeight || '?') + ' @' + fps + 'fps · 观众 ' + srv.viewers.size;
+          }
+          srv.lastBytes = r.bytesReceived;
+        }
+      });
+    });
+  }
+
+  /* ---------- HLS 源站：MediaRecorder(fMP4) → 拆段 → SW ---------- */
+  const MP4_MIMES = ['video/mp4;codecs="avc1.42E01E,mp4a.40.2"', 'video/mp4;codecs=avc1.42E01E', 'video/mp4'];
+  function startHls(stream) {
+    const mime = (window.MediaRecorder && MP4_MIMES.find(c => MediaRecorder.isTypeSupported(c))) || null;
+    if (!mime) { $('#srvHls').textContent = '⚠️ 此浏览器不支持 MediaRecorder 录 MP4（Chrome/Edge 可用），HLS 分发不可用；WebRTC 转发不受影响。'; return; }
+    try {
+      srv.rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 900000, timeslice: 2000 });
+    } catch (e) { $('#srvHls').textContent = '⚠️ MediaRecorder 启动失败：' + e.message; return; }
+    srv.rec.ondataavailable = ev => { if (ev.data && ev.data.size) { srv.recChunks.push(ev.data); feedMp4Chunk(ev.data); } };
+    srv.rec.start(2000);
+    $('#srvHls').textContent = '⏳ 录制中，等待首个分段…';
+  }
+  async function feedMp4Chunk(blob) {
+    const u8 = new Uint8Array(await blob.arrayBuffer());
+    srv.acc = srv.acc ? concatU8(srv.acc, u8) : u8;
+    // 逐个解析顶层 box：[size u32BE][type 4cc][payload]
+    for (;;) {
+      if (!srv.acc || srv.acc.length < 8) break;
+      const size = (srv.acc[0] << 24 | srv.acc[1] << 16 | srv.acc[2] << 8 | srv.acc[3]) >>> 0;
+      if (size < 8) { srv.acc = null; return; }
+      if (size > srv.acc.length) break;
+      const type = String.fromCharCode(srv.acc[4], srv.acc[5], srv.acc[6], srv.acc[7]);
+      const box = srv.acc.slice(0, size);
+      srv.acc = srv.acc.slice(size);
+      handleBox(type, box);
+    }
+  }
+  function concatU8(a, b) { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; }
+  function handleBox(type, box) {
+    if (type === 'ftyp' || type === 'styp' || type === 'moov') {
+      srv.initParts = srv.initParts || []; srv.initParts.push(box);
+      if (type === 'moov') emitInit();
+      return;
+    }
+    if (type === 'free' || type === 'skip') return;
+    if (type === 'moof') { srv.frag = [box]; return; }
+    if (srv.frag) { srv.frag.push(box); if (type === 'mdat') closeFrag(); }
+  }
+  function emitInit() {
+    if (srv.initSent) return; srv.initSent = true;
+    const blob = new Blob(srv.initParts, { type: 'video/mp4' });
+    blob.arrayBuffer().then(buf => { swSend({ t: 'seg', name: 'init.mp4', buf }); pushManifest(); });
+  }
+  function closeFrag() {
+    const now = Date.now();
+    const dur = srv.lastFragWall ? Math.min(4, Math.max(0.5, (now - srv.lastFragWall) / 1000)) : 2;
+    srv.lastFragWall = now;
+    const name = 'seg-' + (++srv.seq) + '.m4s';
+    const frag = srv.frag; srv.frag = null;
+    new Blob(frag, { type: 'video/mp4' }).arrayBuffer().then(buf => {
+      swSend({ t: 'seg', name, buf });
+      srv.segs.push({ name, dur });
+      pushManifest();
+      $('#srvHls').textContent = '✅ 源站运行中 · 已切 ' + srv.segs.length + ' 段（最新 ' + name + ' · ' + dur.toFixed(1) + 's）· 滑动窗口 60 段';
+    });
+  }
+  function pushManifest() {
+    const win = srv.segs.slice(-60);
+    if (!win.length) return;
+    const base = srv.segs.length - win.length;
+    let mf = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:' + base + '\n#EXT-X-MAP:URI="init.mp4"\n';
+    win.forEach(s => { mf += '#EXTINF:' + s.dur.toFixed(2) + ',\n' + s.name + '\n'; });
+    swSend({ t: 'mf', text: mf });
+  }
+  // 下载整段录像（fMP4 各分片顺序拼接即完整文件）
+  const dlBtn = document.createElement('button'); dlBtn.className = 'btn btn-ghost'; dlBtn.textContent = '💾 下载已服务时段的 MP4';
+  dlBtn.addEventListener('click', () => { if (!srv.recChunks.length) return; const b = new Blob(srv.recChunks, { type: 'video/mp4' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'lab-live.mp4'; a.click(); });
+  $('#panel-srv .grid-2').after(dlBtn);
+
+  /* ================= 观众端 ================= */
+  function onViewMsg(m) {
+    if (m.to !== MYID) return;
+    if (m.t === 'srv-ready' && viewWaiting && viewPC) {
+      viewWaiting = false; viewSrv = m.from;
+      $('#viewStatus').textContent = '⏳ 正在与服务器 #' + m.from + ' 协商…';
+      startViewOffer(m.from);
+      return;
+    }
+    if (m.t === 'viewer-answer' && viewPC) { $('#viewStatus').textContent = '⏳ 已收到服务器应答，正在建立 ICE…'; viewPC.setRemoteDescription(m.sdp).catch(err => { $('#viewStatus').textContent = '❌ 应答设置失败：' + (err.message || err); }); }
+    if (m.t === 'ice' && viewPC) takeIce(m, viewPC);
+    if (m.t === 'bye' && viewPC) { stopView(); $('#viewStatus').textContent = '服务器结束了本次观看（被踢或服务器关闭）。'; }
+  }
+  let viewSrv = null, viewWaiting = false;
+  function startView() {
+    $('#viewStatus').textContent = '⏳ 正在寻找服务器标签页…';
+    viewWaiting = true;
+    viewPC = new RTCPeerConnection({ iceServers: [] });
+    viewPC.addTransceiver('video', { direction: 'recvonly' });
+    viewPC.addTransceiver('audio', { direction: 'recvonly' });
+    wireIce(viewPC, null);
+    viewPC.ontrack = ev => {
+      viewStream = viewStream || new MediaStream();
+      viewStream.addTrack(ev.track);
+      const v = $('#viewVideo'); if (!v.srcObject) v.srcObject = viewStream;
+      v.style.display = ''; v.play().catch(() => {});
+    };
+    viewPC.onconnectionstatechange = () => {
+      if (viewPC.connectionState === 'connected') { $('#viewStatus').textContent = '✅ WebRTC 拉流中（延迟通常 <1s）。'; $('#unmuteBtn').style.display = ''; }
+      else if (['failed', 'disconnected'].includes(viewPC.connectionState)) $('#viewStatus').textContent = '⚠️ 连接：' + viewPC.connectionState;
+      else $('#viewStatus').textContent = '⏳ WebRTC 状态：' + viewPC.connectionState + ' / ICE：' + viewPC.iceConnectionState;
+    };
+    viewPC.oniceconnectionstatechange = () => {
+      if (viewPC.connectionState !== 'connected') $('#viewStatus').textContent = '⏳ WebRTC：' + viewPC.connectionState + ' / ICE：' + viewPC.iceConnectionState;
+    };
+    post({ t: 'viewer-hello' });
+    setTimeout(() => { if (viewWaiting && !viewPC.remoteDescription) $('#viewStatus').textContent = '❌ 没有服务器应答。请先另开标签页选「🖥️ 我是服务器」并保证已有推流接入（或开自播）。'; }, 4000);
+  }
+  async function startViewOffer(srvId) {
+    wireIce(viewPC, srvId);
+    await viewPC.setLocalDescription(await viewPC.createOffer());
+    post({ t: 'viewer-offer', to: srvId, sdp: plainSdp(viewPC.localDescription) });
+  }
+  function stopView() {
+    if (viewPC) { try { viewPC.close(); } catch (e) {} viewPC = null; }
+    viewStream = null; viewSrv = null; viewWaiting = false;
+    const v = $('#viewVideo'); if (v) { v.srcObject = null; v.style.display = 'none'; }
+  }
+  $('#viewBtn').addEventListener('click', () => { stopView(); startView(); });
+  $('#unmuteBtn').addEventListener('click', () => { const v = $('#viewVideo'); v.muted = false; $('#unmuteBtn').style.display = 'none'; });
+
+  /* ---------- 深链：#pub / #srv / #view ---------- */
+  const hash = (location.hash || '').replace('#', '').split('?')[0];
+  if (['pub', 'srv', 'view'].includes(hash)) selectRole(hash);
+
+  /* ---------- 测试/排障句柄（只读） ---------- */
+  window.__AVLAB = {
+    myid: MYID,
+    get role() { return role; },
+    get viewer() { return viewPC ? { sig: viewPC.signalingState, conn: viewPC.connectionState, ice: viewPC.iceConnectionState, hasRemote: !!viewPC.remoteDescription, tracks: viewPC.getReceivers().length } : null; },
+    get server() { return { hasPubStream: !!srv.pubStream, viewers: [...srv.viewers.keys()], pubPC: !!srv.pubPC, segs: srv.segs.length }; }
+  };
+})();
+</script>
+</body>
+</html>
