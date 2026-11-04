@@ -152,6 +152,25 @@
         <button class="btn-mini" data-csp="asc">示例：AAC ASC 0x1210</button>
         <button class="btn-mini" data-csp="hvc">示例：hvcC 记录</button>
       </div>
+
+      <!-- 雷霄骅 · 逐 NAL 分析（致敬块 + 子面板） -->
+      <div class="ana-samples" style="margin-top:.9rem;border-top:1px dashed var(--border);padding-top:.9rem">
+        <span class="ana-meta">🧩 逐 NAL 分析（思路致敬雷霄骅 VideoEye / simplest_h264_parser）</span>
+      </div>
+      <div class="ana-actions" style="margin-top:.5rem">
+        <button class="btn btn-pl" id="ana-btn-nals">逐 NAL 解析 H.264 裸流</button>
+        <button class="btn btn-ghost" id="ana-btn-nal-demo">内置示例：IDR+P 帧流</button>
+        <button class="btn-mini" id="ana-btn-nal-clear">清空</button>
+      </div>
+      <p class="small" style="margin-top:.5rem;margin-bottom:0">拖入 <code>.h264</code> / <code>.264</code> / <code>.avc</code> 裸流，或粘贴十六进制（Annex B，<code>00 00 00 01</code> 起始码）。解析后逐 NAL 显示类型/长度/帧号，并给出 slice header 与宏块类型统计。</p>
+      <input type="file" id="ana-nal-file" accept=".h264,.264,.avc,.bin,.raw,video/h264" style="display:none">
+      <div class="ana-result" id="ana-nal-result" style="margin-top:.6rem"><div class="ana-empty">选择文件或点击「内置示例」，查看逐 NAL 分析。</div></div>
+      <!-- 致敬块 -->
+      <div class="ana-warn" style="margin-top:.8rem;border-left:3px solid #7c3aed;background:linear-gradient(90deg,#f5f3ff,#fff)">
+        <div style="font-weight:600">🙏 致敬 雷霄骅（雷神，leixiaohua1020）</div>
+        <div style="margin-top:.3rem">本面板的<strong>逐 NAL / slice header / 宏块统计</strong>思路，源于雷霄骅开源系列（<a href="https://gitee.com/leixiaohua1020" target="_blank" rel="noopener">Gitee · leixiaohua1020</a>）中的 <strong>VideoEye</strong>（视频实时码流分析）与 <strong>simplest_h264_parser</strong>（逐 NALU 解析）——雷神把 FFmpeg 的码流世界讲给了无数中国开发者。本站以原生 JS 复刻其<em>分析思路</em>，可视化用我们自己的风格实现，并保留独立实现。如果你也从中受益，请给雷神的开源项目点一颗星。</div>
+      </div>
+
       <div class="ana-result" id="ana-codec-result"><div class="ana-empty">粘贴 SPS / ASC / hvcC 后点击上方按钮。</div></div>
     </div>
 

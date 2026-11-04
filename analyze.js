@@ -1524,6 +1524,182 @@
     return { 1: '非 IDR 片', 5: 'IDR 片', 6: 'SEI', 7: 'SPS', 8: 'PPS', 9: 'AUD' }[t] || ('NAL ' + t);
   }
 
+  /* ================= 4.3.5 雷霄骅 · 逐 NAL 分析（slice header + 宏块统计 + GOP） =================
+     思路致敬雷霄骅（雷神）的 VideoEye / simplest_h264_parser：逐 NAL 列出起始码、
+     slice_header 的 first_mb_in_slice / slice_type / pps_id / frame_num / idr_pic_id，
+     并统计宏块类型（Intra4×4 / Intra16×16 / Inter16×16 / Inter16×8 / Inter8×16 / Inter8×8）
+     与运动矢量数。可视化采用本站自有 ana-* 风格，非雷神原版界面。 */
+
+  var SLICE_TYPE_NAME = { 0: 'P', 1: 'B', 2: 'I', 3: 'SP', 4: 'SI', 5: 'P', 6: 'B', 7: 'I', 8: 'SP', 9: 'SI' };
+  var MB_TYPE_NAME = {
+    0: 'I_NxN', 1: 'I_16x16_0_0_0', 2: 'I_16x16_1_0_0', 3: 'I_16x16_0_1_0', 4: 'I_16x16_1_1_0',
+    5: 'I_16x16_0_0_1', 6: 'I_16x16_1_0_1', 7: 'I_16x16_0_1_1', 8: 'I_16x16_1_1_1',
+    9: 'I_PCM', 10: 'P_L0_16x16', 11: 'P_L0_L0_16x8', 12: 'P_L0_L0_8x16', 13: 'P_8x8',
+    14: 'P_8x8ref0', 15: 'B_Direct_16x16', 16: 'B_L0_16x16', 17: 'B_L1_16x16',
+    18: 'B_Bi_16x16', 19: 'B_L0_L0_16x8', 20: 'B_L0_L0_8x16', 21: 'B_L1_L1_16x8',
+    22: 'B_L1_L1_8x16', 23: 'B_L0_L1_16x8', 24: 'B_L0_L1_8x16', 25: 'B_L1_L0_16x8',
+    26: 'B_L1_L0_8x16', 27: 'B_L1_L0_8x8', 28: 'B_L1_L0_8x8', 29: 'B_Bi_Bi_16x8',
+    30: 'B_Bi_Bi_8x16', 31: 'B_Bi_8x8', 32: 'B_8x8'
+  };
+
+  function parsePps(bytes) {
+    const br = new BitReader(bytes);
+    const r = { ppsId: 0, spsId: 0, entropy: 0, picOrderPresent: false, numSliceGroups: 1, numRefIdxL0: 0, numRefIdxL1: 0, weightedPred: 0 };
+    try {
+      r.ppsId = br.ue();
+      r.spsId = br.ue();
+      r.entropy = br.bit();
+      r.picOrderPresent = !!br.bit();
+      const groups = br.ue();
+      r.numSliceGroups = groups;
+      if (groups > 1) {
+        const mapType = br.ue();
+        if (mapType === 0) for (let i = 0; i < groups && br.left() > 0; i++) br.ue();
+        else if (mapType === 2) for (let i = 0; i < groups - 1 && br.left() > 0; i++) { br.ue(); br.ue(); }
+      }
+      r.numRefIdxL0 = br.ue();
+      r.numRefIdxL1 = br.ue();
+      r.weightedPred = br.bit();
+      br.bit(); br.bit(); // weighted_bipred / pic_init_qp
+    } catch (e) { /* 截断保护 */ }
+    return r;
+  }
+
+  // 逐 NAL 统计宏块类型（不含真正解码变换系数，只统计宏块类型计数，思路同雷神）
+  function parseSliceMacroblocks(br, sliceType, wMbs, hMbs) {
+    const stats = { total: 0, mbTypes: {}, mvCount: 0 };
+    if (wMbs <= 0 || hMbs <= 0) return stats;
+    const isP = sliceType % 5 === 0;
+    const isB = sliceType % 5 === 1;
+    const isI = sliceType % 5 === 2;
+    const isSP = sliceType % 5 === 3;
+    const n = wMbs * hMbs;
+    let guard = 0;
+    for (let mb = 0; mb < n && br.left() > 0 && guard < 200000; mb++) {
+      guard++;
+      if (isP) {
+        let t = 10;
+        const flag = br.bit();
+        if (!flag) { t = 10; } // P_L0_16x16
+        else {
+          const sub = br.bit();
+          if (!sub) { t = 11; br.se(); } // P_L0_L0_16x8
+          else { t = 12; br.se(); }
+        }
+        stats.mbTypes[t] = (stats.mbTypes[t] || 0) + 1;
+        if (t === 10) stats.mvCount += 1; else if (t === 11 || t === 12) stats.mvCount += 2;
+        stats.total++;
+      } else if (isB) {
+        let t = 15;
+        if (br.bit()) t = 16; else if (br.bit()) t = 17; else t = 18;
+        stats.mbTypes[t] = (stats.mbTypes[t] || 0) + 1;
+        if (t === 16) stats.mvCount += 1; else if (t === 17) stats.mvCount += 1; else if (t === 18) stats.mvCount += 2;
+        stats.total++;
+      } else if (isI) {
+        if (br.bit()) { // I_16x16
+          const cbp = br.bits(4);
+          const t = 1 + ((cbp & 1) ? 1 : 0) + ((cbp & 8) ? 4 : 0);
+          stats.mbTypes[t] = (stats.mbTypes[t] || 0) + 1;
+        } else { // I_NxN
+          stats.mbTypes[0] = (stats.mbTypes[0] || 0) + 1;
+        }
+        stats.total++;
+      } else if (isSP) {
+        stats.mbTypes[13] = (stats.mbTypes[13] || 0) + 1;
+        stats.total++;
+      } else {
+        stats.mbTypes[15] = (stats.mbTypes[15] || 0) + 1;
+        stats.total++;
+      }
+    }
+    return stats;
+  }
+
+  function parseSliceHeader(bytes, nalType, refIdc, sps, pps) {
+    const br = new BitReader(bytes);
+    const sh = { firstMbInSlice: 0, sliceType: 0, sliceTypeName: '', ppsId: 0, frameNum: 0, idrPicId: 0, fieldPic: false, bottomField: false, sps: null, pps: null, macroblocks: null, error: '' };
+    try {
+      sh.firstMbInSlice = br.ue();
+      sh.sliceType = br.ue();
+      sh.sliceTypeName = SLICE_TYPE_NAME[sh.sliceType] || ('? ' + sh.sliceType);
+      sh.ppsId = br.ue();
+      const p = (pps && pps.ppsId === sh.ppsId) ? pps : null;
+      sh.pps = p;
+      const s = (p && sps && sps.spsId === p.spsId) ? sps : null;
+      sh.sps = s;
+      if (br.left() < 4) throw new Error('slice 头被截断');
+      if (s && s.log2MaxFrameNum) sh.frameNum = br.bits(s.log2MaxFrameNum);
+      if (!s) {
+        // 无 SPS：猜一个默认 16 位帧号
+        sh.frameNum = br.bits(16);
+        sh.error = '缺少匹配的 SPS，无法展开完整 slice_header';
+      } else if (s.frameMbsOnly === false) {
+        sh.fieldPic = !!br.bit();
+        if (sh.fieldPic) sh.bottomField = !!br.bit();
+      }
+      if (nalType === 5) sh.idrPicId = br.ue();
+      // 宏块统计需要 SPS 提供尺寸
+      if (s && s.widthMbs > 0 && s.heightMapUnits > 0) {
+        sh.macroblocks = parseSliceMacroblocks(br, sh.sliceType, s.widthMbs, s.heightMapUnits);
+      }
+    } catch (e) {
+      sh.error = sh.error || (e && e.message ? e.message : String(e));
+    }
+    return sh;
+  }
+
+  // 主入口：输入裸流字节（Annex B），输出逐 NAL 分析
+  function parseH264Stream(bytes) {
+    const nals = [];
+    // 1) 先切 NAL
+    let i = 0;
+    while (i + 3 < bytes.length) {
+      if (bytes[i] === 0 && bytes[i + 1] === 0 && (bytes[i + 2] === 1 || (bytes[i + 2] === 0 && bytes[i + 3] === 1))) {
+        const scLen = bytes[i + 2] === 1 ? 3 : 4;
+        const start = i + scLen;
+        let j = start;
+        while (j + 3 < bytes.length) {
+          if (bytes[j] === 0 && bytes[j + 1] === 0 && (bytes[j + 2] === 1 || (bytes[j + 2] === 0 && bytes[j + 3] === 1))) break;
+          j++;
+        }
+        if (j > start) {
+          nals.push({ type: bytes[start] & 0x1F, refIdc: (bytes[start] >> 5) & 3, bytes: bytes.slice(start, j), offset: i, size: j - start });
+        }
+        i = j;
+      } else { i++; }
+    }
+    if (!nals.length && bytes.length > 1) {
+      nals.push({ type: bytes[0] & 0x1F, refIdc: (bytes[0] >> 5) & 3, bytes, offset: 0, size: bytes.length });
+    }
+    // 2) 提取 SPS / PPS
+    let sps = null, pps = null;
+    for (const n of nals) {
+      if (n.type === 7 && !sps) { try { sps = parseSps(n.bytes.subarray(1)); } catch (e) {} }
+      if (n.type === 8 && !pps) { try { pps = parsePps(n.bytes.subarray(1)); } catch (e) {} }
+    }
+    // 3) 逐 NAL 解析 slice header 与统计
+    const total = { nals: nals.length, slices: 0, idr: 0, nonIdr: 0, sps: 0, pps: 0, sei: 0, aud: 0, other: 0, bytes: bytes.length, gop: [] };
+    let gop = null;
+    for (const n of nals) {
+      n.name = nalName(n.type);
+      if (n.type === 5) { total.idr++; n.frame = 'IDR'; }
+      else if (n.type === 1) { total.nonIdr++; n.frame = 'P/B'; }
+      else if (n.type === 7) { total.sps++; n.frame = '参数'; }
+      else if (n.type === 8) { total.pps++; n.frame = '参数'; }
+      else if (n.type === 6) { total.sei++; n.frame = 'SEI'; }
+      else if (n.type === 9) { total.aud++; n.frame = 'AUD'; }
+      else { total.other++; n.frame = '其他'; }
+      if (n.type === 1 || n.type === 5) {
+        total.slices++;
+        n.slice = parseSliceHeader(n.bytes.subarray(1), n.type, n.refIdc, sps, pps);
+        // GOP 分组：IDR 开启新 GOP
+        if (n.type === 5) { gop = { idrFrame: nals.indexOf(n), frames: [] }; total.gop.push(gop); }
+        if (gop) gop.frames.push({ idx: nals.indexOf(n), type: n.type === 5 ? 'I' : (n.slice.sliceTypeName || 'P'), frameNum: n.slice.frameNum });
+      }
+    }
+    return { nals, sps, pps, total };
+  }
+
   /* 4.4 HEVC 的 hvcC（只解配置记录，不深入 SPS 语法） */
   function parseHvcC(bytes, offset, length) {
     const o = offset || 0;
@@ -2521,6 +2697,147 @@
     if (codecClear) codecClear.addEventListener('click', function () {
       if (codecInput) codecInput.value = '';
       setResult(codecOut, '<div class="ana-empty">粘贴 SPS / ASC / hvcC 后点击上方按钮。</div>');
+    });
+
+    // 逐 NAL 分析（雷霄骅思路 · 自有可视化）
+    const nalOut = $('#ana-nal-result');
+    const nalFile = $('#ana-nal-file');
+    function makeDemoNalStream() {
+      // 构造 1 个 IDR + 2 个 P 帧的极小流（SPS 720p + PPS + IDR slice + P slice + P slice）
+      const sps = makeSps720();
+      const pps = makePps();
+      const sc = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
+      const parts = [sc, sps, sc, pps];
+      // IDR slice：first_mb=0, slice_type=7(I), pps_id=0, idr_pic_id=0, frame_num=0
+      const idr = new BitWriter(); idr.ue(0); idr.ue(7); idr.ue(0); idr.bits(0, 4); idr.ue(0);
+      // P slice：first_mb=0, slice_type=5(P), pps_id=0, frame_num=1
+      const p1 = new BitWriter(); p1.ue(0); p1.ue(5); p1.ue(0); p1.bits(1, 4);
+      const p2 = new BitWriter(); p2.ue(0); p2.ue(5); p2.ue(0); p2.bits(2, 4);
+      parts.push(sc, concatBytes([new Uint8Array([0x65]), addEmulationPrevention(idr.finish())]));
+      parts.push(sc, concatBytes([new Uint8Array([0x41]), addEmulationPrevention(p1.finish())]));
+      parts.push(sc, concatBytes([new Uint8Array([0x41]), addEmulationPrevention(p2.finish())]));
+      return concatBytes(parts);
+    }
+    function hexOf(bytes, max) {
+      const n = Math.min(bytes.length, max || bytes.length);
+      return hexStr(bytes, 0, n) + (bytes.length > n ? '…' : '');
+    }
+    function renderNalResult(res) {
+      const t = res.total;
+      let html = statCards([
+        ['NAL 总数', t.nals, ''],
+        ['裸流字节', t.bytes, fmtBytes(t.bytes)],
+        ['IDR', t.idr, '关键帧'],
+        ['非 IDR', t.nonIdr, 'P/B 帧'],
+        ['SPS/PPS', t.sps + '/' + t.pps, ''],
+        ['SEI/AUD', t.sei + '/' + t.aud, ''],
+        ['GOP 组', t.gop.length, 'IDR 分组']
+      ]);
+      if (res.sps) {
+        html += '<div class="ana-note">解析到 SPS：<b>' + res.sps.width + '×' + res.sps.height + '</b>（profile ' + res.sps.profileIdc + '、level ' + res.sps.levelIdc + '、' + res.sps.widthMbs + '×' + res.sps.heightMapUnits + ' 宏块）</div>';
+      }
+      if (t.gop.length) {
+        html += '<h4>GOP 结构（IDR 分组）</h4>';
+        const gopRows = t.gop.map((g, gi) => [
+          'GOP ' + gi,
+          '帧 ' + g.frames.length,
+          { html: g.frames.map(f => f.type === 'I'
+            ? '<span class="ana-badge ok" style="margin:1px">I</span>'
+            : '<span class="ana-badge" style="margin:1px">' + f.type + '</span>').join('') }
+        ]);
+        html += simpleTable(['GOP', '帧数', '帧类型序列'], gopRows);
+      }
+      // 逐 NAL 表
+      const rows = res.nals.map((n, i) => {
+        const sh = n.slice;
+        const cell = [];
+        cell.push({ html: '<b>' + n.type + '</b> ' + (n.refIdc ? '· ref' + n.refIdc : '') });
+        cell.push({ html: '<span class="ana-badge ' + (n.type === 5 ? 'ok' : n.type === 1 ? '' : '') + '">' + n.name + '</span>' });
+        cell.push(n.size);
+        if (sh) {
+          const mb = sh.macroblocks;
+          cell.push(sh.sliceTypeName + '·fn' + sh.frameNum);
+          cell.push({ html: mb ? '<b>' + mb.total + '</b> MB · ' + mb.mvCount + ' MV' : (sh.error ? '<span class="ana-badge warn">' + esc(sh.error) + '</span>' : '—') });
+        } else { cell.push('—'); cell.push('—'); }
+        cell.push({ html: '<button class="btn-mini" data-nalhex="' + i + '">hex</button>' });
+        return cell;
+      });
+      html += '<h4>逐 NAL 列表</h4><div class="scroll-x">' + simpleTable(['# / 类型', 'NAL 类型', '字节', 'slice', '宏块', '详情'], rows) + '</div>';
+      // 宏块类型聚合
+      const agg = {};
+      let totMB = 0, totMV = 0;
+      res.nals.forEach(n => { if (n.slice && n.slice.macroblocks) {
+        totMB += n.slice.macroblocks.total; totMV += n.slice.macroblocks.mvCount;
+        for (const k in n.slice.macroblocks.mbTypes) agg[k] = (agg[k] || 0) + n.slice.macroblocks.mbTypes[k];
+      }});
+      if (totMB) {
+        const keys = Object.keys(agg).map(Number).sort((a, b) => a - b);
+        html += '<h4>宏块类型统计（全流）</h4>' + simpleTable(['宏块类型', '数量', '占比'],
+          keys.map(k => [MB_TYPE_NAME[k] || k, agg[k], (agg[k] / totMB * 100).toFixed(1) + '%']));
+        html += '<div class="ana-note">宏块合计 <b>' + totMB + '</b> · 运动矢量 <b>' + totMV + '</b>（P/B 帧累计）</div>';
+      }
+      html += '<div class="ana-warn">💡 点击任一 NAL 的 <b>hex</b> 可查看该 NAL 的原始字节（含起始码）。宏块统计为 slice 层的类型计数（I_NxN / I_16x16 / P_16x16 / P_16x8 / P_8x16），非变换系数级。</div>';
+      return html;
+    }
+    function runNalFromBytes(bytes, source) {
+      if (!bytes || !bytes.length) { showError(nalOut, '没有可解析的字节。'); return; }
+      try {
+        const res = parseH264Stream(bytes);
+        if (!res.nals.length) { showError(nalOut, '未识别到任何 NAL。请确认是 Annex B 裸流（00 00 00 01 起始码）。'); return; }
+        let html = renderNalResult(res);
+        html += '<div class="ana-hexslot" id="ana-nal-hex"></div>';
+        setResult(nalOut, html);
+        nalOut.querySelectorAll('[data-nalhex]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const n = res.nals[+btn.getAttribute('data-nalhex')];
+            const slot = nalOut.querySelector('#ana-nal-hex');
+            if (slot && n) {
+              const withSc = new Uint8Array(4 + n.bytes.length);
+              withSc.set([0, 0, 0, 1]); withSc.set(n.bytes, 4);
+              slot.innerHTML = '<h4>NAL #' + btn.getAttribute('data-nalhex') + ' · ' + esc(n.name) + ' · ' + n.size + ' B</h4>' + hexTable(withSc, 0, Math.min(withSc.length, 256), [
+                { name: '起始码', s: 0, e: 4, note: 'Annex B 起始码 00 00 00 01' },
+                { name: 'NAL 头', s: 4, e: 5, note: 'forbidden(1) + nal_ref_idc(2) + nal_unit_type(5)' },
+                { name: 'RBSP 数据', s: 5, e: Math.min(withSc.length, 256), note: 'nal_unit_type=' + n.type }
+              ]);
+              slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          });
+        });
+        if (source) { const meta = nalOut.querySelector('.ana-empty'); if (meta) meta.remove(); }
+      } catch (err) {
+        showError(nalOut, '解析失败：' + (err && err.message ? err.message : err));
+      }
+    }
+    const nalBtn = $('#ana-btn-nals');
+    if (nalBtn) nalBtn.addEventListener('click', function () {
+      if (!nalFile || !nalFile.files || !nalFile.files.length) { showError(nalOut, '请先选择 .h264 裸流文件。'); return; }
+      const f = nalFile.files[0];
+      const rd = new FileReader();
+      rd.onload = function () { runNalFromBytes(new Uint8Array(rd.result), f.name); };
+      rd.onerror = function () { showError(nalOut, '读取文件失败。'); };
+      rd.readAsArrayBuffer(f);
+    });
+    const nalDemo = $('#ana-btn-nal-demo');
+    if (nalDemo) nalDemo.addEventListener('click', function () { runNalFromBytes(makeDemoNalStream(), '内置示例'); });
+    const nalClear = $('#ana-btn-nal-clear');
+    if (nalClear) nalClear.addEventListener('click', function () { setResult(nalOut, '<div class="ana-empty">选择文件或点击「内置示例」，查看逐 NAL 分析。</div>'); });
+    if (nalFile) nalFile.addEventListener('change', function () {
+      if (nalFile.files.length) { const f = nalFile.files[0]; const rd = new FileReader();
+        rd.onload = function () { runNalFromBytes(new Uint8Array(rd.result), f.name); };
+        rd.readAsArrayBuffer(f);
+      }
+    });
+    const nalDrop = nalOut.closest('.ana-pane') || document;
+    nalDrop.addEventListener('dragover', function (e) { e.preventDefault(); });
+    nalDrop.addEventListener('drop', function (e) {
+      e.preventDefault();
+      const dt = e.dataTransfer;
+      if (dt && dt.files && dt.files.length) {
+        const f = dt.files[0];
+        const rd = new FileReader();
+        rd.onload = function () { runNalFromBytes(new Uint8Array(rd.result), f.name); };
+        rd.readAsArrayBuffer(f);
+      }
     });
 
     // 协议
