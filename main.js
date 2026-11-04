@@ -1044,6 +1044,7 @@
     { id: 'whep', re: /\/whep(\?|$)|mode=whep/i, label: 'WHEP（WebRTC）' },
     { id: 'hls', re: /\.m3u8(\?|$)|\/hls\//i, label: 'HLS（m3u8）' },
     { id: 'flv', re: /\.(flv|ts)(\?|$)/i, label: 'HTTP-FLV / MPEG-TS' },
+    { id: 'dash', re: /\.mpd(\?|$)|\/dash\//i, label: 'DASH（mpd）' },
     { id: 'rtsp', re: /^rtsp(s)?:\/\//i, label: 'RTSP（需网关）' },
     { id: 'rtmp', re: /^rtmp(s)?:\/\//i, label: 'RTMP（需网关）' },
     { id: 'file', re: /\.(mp4|webm|ogg|m4v)(\?|$)/i, label: '普通文件' }
@@ -1088,7 +1089,7 @@
     const root = this.el;
     root.innerHTML = `<div class="sp">
       <div class="sp-bar">
-        <input type="text" data-k="url" value="${this.opt.url || ''}" placeholder="rtsp://… · rtmp://… · https://…/index.m3u8 · …/live.flv · …/whep">
+        <input type="text" data-k="url" value="${this.opt.url || ''}" placeholder="rtsp://… · rtmp://… · https://…/index.m3u8 · …/live.flv · …/whep · …/manifest.mpd">
         <button class="btn-mini" data-act="play">▶ 播放</button>
         <button class="btn-mini" data-act="stop">■ 停止</button>
         <button class="btn-mini" data-act="probe" title="用 ffmpeg.wasm 就地拉流并解析出容器/编码/时长信息">🔬 wasm 解析</button>
@@ -1115,6 +1116,8 @@
         root.querySelector('[data-k="hint"]').innerHTML = 'HLS：Safari 原生播放；其他浏览器自动加载内置 hls.js（vendor/，无需联网取库）。';
       } else if (t.id === 'flv') {
         root.querySelector('[data-k="hint"]').innerHTML = 'HTTP-FLV / MPEG-TS：自动加载内置 mpegts.js（flv.js 的社区维护版），延迟一般 1–3 秒。';
+      } else if (t.id === 'dash') {
+        root.querySelector('[data-k="hint"]').innerHTML = 'DASH：自动加载内置 Shaka Player（vendor/，无需联网取库），支持多码率 ABR / DRM / 字幕。';
       } else {
         root.querySelector('[data-k="hint"]').innerHTML = '原生可播：mp4/webm 直链；其余类型可点 <b>🔬 wasm 解析</b>，用 ffmpeg.wasm 就地拉流探测出容器/编码/时长。RTSP / RTMP 仍需网关。';
       }
@@ -1142,6 +1145,7 @@
       if (t.id === 'whep') await this.playWhep(url, v);
       else if (t.id === 'hls') await this.playHls(url, v);
       else if (t.id === 'flv') await this.playFlv(url, v);
+      else if (t.id === 'dash') await this.playDash(url, v);
       else if (t.id === 'file') { v.src = url; await v.play(); this.log('直接使用 video 元素播放文件'); }
       else this.log('无法识别地址类型。WHEP 地址通常以 /whep 结尾，HLS 以 .m3u8 结尾。', 'err');
     } catch (e) {
@@ -1212,6 +1216,23 @@
     this.log((isTs ? 'MPEG-TS' : 'FLV') + ' 拉流已启动', 'ok');
     this.meta('mpegts.js · 延迟通常 1–3 秒');
   };
+  StreamPlayer.prototype.playDash = async function (url, v) {
+    this.log('加载 Shaka Player（内置 vendor/）…');
+    await loadScript(VENDOR + 'shaka/shaka-player.compiled.js');
+    if (!window.shaka || !window.shaka.Player) throw new Error('Shaka Player 不可用');
+    if (!shaka.Player.isBrowserSupported()) throw new Error('Shaka Player：浏览器不支持（需 MSE + 编解码器）');
+    // Shaka 已注册为 polyfill；直接 new Player
+    const p = new window.shaka.Player();
+    this.shaka = p;
+    await p.attach(v);
+    p.addEventListener('error', e => this.log('Shaka 错误：' + e.detail, 'err'));
+    p.addEventListener('adaptation', () => this.log('自适应切换（ABR）', 'ok'));
+    p.addEventListener('trackschanged', () => this.log('轨道变更', 'ok'));
+    await p.load(url);
+    await v.play().catch(() => this.log('自动播放被拦截，请点击视频控件', 'err'));
+    this.log('DASH 清单加载完成，开始播放', 'ok');
+    this.meta('Shaka Player · DASH · ABR 自适应已启用');
+  };
   StreamPlayer.prototype.stop = function (quiet) {
     const v = this.el.querySelector('[data-k="video"]');
     if (this.pc) {
@@ -1221,6 +1242,7 @@
     }
     if (this.hls) { try { this.hls.destroy(); } catch (e) { } this.hls = null; }
     if (this.flv) { try { this.flv.destroy(); } catch (e) { } this.flv = null; }
+    if (this.shaka) { try { this.shaka.destroy(); } catch (e) { } this.shaka = null; }
     if (v) { v.pause(); v.removeAttribute('src'); v.srcObject = null; v.load(); }
     if (!quiet) this.log('已停止并释放资源');
   };
@@ -1284,7 +1306,7 @@
       if (total > 250e6) throw new Error('内容 ' + (total / 1e6).toFixed(0) + ' MB，超出浏览器内存安全范围');
       return { bytes: concatBytes(parts), name: 'probe.ts' };
     }
-    if (/\.(mpd)(\?|$)/i.test(url)) throw new Error('DASH 清单请到「WASM 实验台」用真拉流（支持 SegmentTemplate 展开）');
+    if (/\.(mpd)(\?|$)/i.test(url)) throw new Error('DASH 的 wasm 逐段拉取请到「WASM 实验台」；本页直接点「播放」用 Shaka Player 播 .mpd 更省事。');
     const ext = (/\.([a-z0-9]{2,5})(?:[?#].*)?$/i.exec(url) || [])[1];
     return { bytes: await fetchBytes(url, '媒体'), name: 'probe.' + (ext ? ext.toLowerCase() : 'bin') };
   };
