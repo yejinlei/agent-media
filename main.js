@@ -1087,6 +1087,7 @@
         <input type="text" data-k="url" value="${this.opt.url || ''}" placeholder="rtsp://… · rtmp://… · https://…/index.m3u8 · …/live.flv · …/whep">
         <button class="btn-mini" data-act="play">▶ 播放</button>
         <button class="btn-mini" data-act="stop">■ 停止</button>
+        <button class="btn-mini" data-act="probe" title="用 ffmpeg.wasm 就地拉流并解析出容器/编码/时长信息">🔬 wasm 解析</button>
         <span class="badge-ok" data-k="kind">等待输入</span>
       </div>
       <div class="sp-stage"><video data-k="video" playsinline muted controls></video>
@@ -1111,7 +1112,7 @@
       } else if (t.id === 'flv') {
         root.querySelector('[data-k="hint"]').innerHTML = 'HTTP-FLV / MPEG-TS：自动加载内置 mpegts.js（flv.js 的社区维护版），延迟一般 1–3 秒。';
       } else {
-        root.querySelector('[data-k="hint"]').innerHTML = '粘贴一个流地址。RTSP / RTMP 不能直连，页面会给出网关方案。';
+        root.querySelector('[data-k="hint"]').innerHTML = '原生可播：mp4/webm 直链；其余类型可点 <b>🔬 wasm 解析</b>，用 ffmpeg.wasm 就地拉流探测出容器/编码/时长。RTSP / RTMP 仍需网关。';
       }
     };
     input.addEventListener('input', upd);
@@ -1119,6 +1120,7 @@
     if (this.opt.url) upd();
     root.querySelector('[data-act="play"]').addEventListener('click', () => this.play());
     root.querySelector('[data-act="stop"]').addEventListener('click', () => this.stop());
+    root.querySelector('[data-act="probe"]').addEventListener('click', () => this.probeWasm());
   };
   StreamPlayer.prototype.play = async function () {
     const url = this.el.querySelector('[data-k="url"]').value.trim();
@@ -1217,6 +1219,108 @@
     if (this.flv) { try { this.flv.destroy(); } catch (e) { } this.flv = null; }
     if (v) { v.pause(); v.removeAttribute('src'); v.srcObject = null; v.load(); }
     if (!quiet) this.log('已停止并释放资源');
+  };
+  /* ---------- wasm 就地解析：拉流 → ffmpeg.wasm -i 探测 → 结构化卡片 ---------- */
+  function concatBytes(parts) {
+    const total = parts.reduce((a, p) => a + p.length, 0);
+    const out = new Uint8Array(total); let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }
+  StreamPlayer.prototype.ensureWasm = async function () {
+    if (this.wasmEngine) return this.wasmEngine;
+    const load = src => new Promise((res, rej) => {
+      const s = document.createElement('script'); s.src = src; s.onload = res;
+      s.onerror = () => rej(new Error('无法加载脚本：' + src));
+      document.head.appendChild(s);
+    });
+    const load2 = async (local, cdn, label) => {
+      try { await load(local); } catch (e) { this.log('⚠️ 本地 ' + label + ' 加载失败，回退 CDN…'); await load(cdn); }
+    };
+    if (!window.FFmpegWASM) await load2('vendor/ffmpeg/ffmpeg.js', 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js', 'ffmpeg.js');
+    if (!window.FFmpegUtil) await load2('vendor/ffmpeg/util.js', 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js', 'util.js');
+    if (!window.FFmpegWASM || !window.FFmpegUtil) throw new Error('ffmpeg.wasm 运行库加载失败');
+    this.log('⏳ 实例化 ffmpeg-core.wasm（约 30 MB，首次需数十秒）…');
+    const { toBlobURL } = window.FFmpegUtil;
+    const blobUrl = async (name, mime) => {
+      try { return await toBlobURL('vendor/ffmpeg/' + name, mime); }
+      catch (e) { return await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/' + name, mime); }
+    };
+    const eng = new window.FFmpegWASM.FFmpeg();
+    eng.on('log', ({ message }) => { if (this._probeBuf) this._probeBuf.push(message); this.log(message); });
+    await eng.load({ coreURL: await blobUrl('ffmpeg-core.js', 'text/javascript'), wasmURL: await blobUrl('ffmpeg-core.wasm', 'application/wasm') });
+    this.wasmEngine = eng;
+    this.log('✅ ffmpeg.wasm 就绪', 'ok');
+    return eng;
+  };
+  StreamPlayer.prototype.pullForProbe = async function (url) {
+    const fetchBytes = async (u, tag) => {
+      const r = await fetch(u);
+      if (!r.ok) throw new Error(tag + ' HTTP ' + r.status + '（若跨域请确认目标允许 CORS）');
+      const b = await r.blob();
+      if (!b.size) throw new Error(tag + ' 拉取到 0 字节');
+      return new Uint8Array(await b.arrayBuffer());
+    };
+    if (/\.m3u8(\?|$)/i.test(url)) {
+      let text = await (await fetch(url)).text();
+      if (!/#EXTM3U/.test(text)) throw new Error('不是有效的 HLS 清单（缺少 #EXTM3U）');
+      let mediaUrl = url;
+      if (!/#EXTINF/.test(text)) {
+        const m = /#EXT-X-STREAM-INF:[^\n]*\n([^\n]+)/.exec(text);
+        if (!m) throw new Error('HLS 主清单未找到媒体清单');
+        mediaUrl = new URL(m[1].trim(), url).href;
+        text = await (await fetch(mediaUrl)).text();
+      }
+      const segs = text.split('\n').filter(l => l && !l.startsWith('#'));
+      if (!segs.length) throw new Error('清单里没有分片（直播流无历史分片，请用 VOD 地址）');
+      const parts = []; let total = 0;
+      for (let i = 0; i < segs.length; i++) {
+        const p = await fetchBytes(new URL(segs[i].trim(), mediaUrl).href, '分片 ' + (i + 1) + '/' + segs.length);
+        parts.push(p); total += p.length;
+        this.log('⏳ 拉分片 ' + (i + 1) + '/' + segs.length + '（' + (total / 1e6).toFixed(1) + ' MB）');
+      }
+      if (total > 250e6) throw new Error('内容 ' + (total / 1e6).toFixed(0) + ' MB，超出浏览器内存安全范围');
+      return { bytes: concatBytes(parts), name: 'probe.ts' };
+    }
+    if (/\.(mpd)(\?|$)/i.test(url)) throw new Error('DASH 清单请到「WASM 实验台」用真拉流（支持 SegmentTemplate 展开）');
+    const ext = (/\.([a-z0-9]{2,5})(?:[?#].*)?$/i.exec(url) || [])[1];
+    return { bytes: await fetchBytes(url, '媒体'), name: 'probe.' + (ext ? ext.toLowerCase() : 'bin') };
+  };
+  StreamPlayer.prototype.probeWasm = async function () {
+    const url = this.el.querySelector('[data-k="url"]').value.trim();
+    const btn = this.el.querySelector('[data-act="probe"]');
+    if (!url) { this.log('地址为空', 'err'); return; }
+    const t = detectStream(url);
+    if (t.id === 'rtsp' || t.id === 'rtmp') {
+      this.meta('❌ ' + t.label + '：wasm 也拉不下来（没有 socket），请先经网关转 HLS/FLV。');
+      this.log('❌ ' + t.label + ' 无法拉取：wasm 也没有 socket，请先经网关转成 HLS/FLV 再解析', 'err');
+      return;
+    }
+    btn.disabled = true;
+    this._probeBuf = [];
+    try {
+      const eng = await this.ensureWasm();
+      this.log('⏳ 拉取 ' + t.label + ' …');
+      const { bytes, name } = await this.pullForProbe(url);
+      this.log('✅ 拉取完成 ' + (bytes.length / 1e6).toFixed(2) + ' MB → ' + name, 'ok');
+      await eng.writeFile(name, bytes);
+      await eng.exec(['-hide_banner', '-i', name]);
+      await eng.deleteFile(name);
+      const lines = this._probeBuf.join('\n');
+      const input = (/Input #0, ([^\n]+?), from /.exec(lines) || [])[1] || '未知容器';
+      const dur = (/Duration: ([\d:.]+)/.exec(lines) || [])[1] || '-';
+      const streams = [...lines.matchAll(/Stream #0:(\d+)[^\n]*?: (Video|Audio|Data|Subtitle): ([^\n]+)/g)]
+        .map(m => ({ idx: m[1], kind: m[2], codec: m[3].trim() }));
+      const ic = { Video: '🎬', Audio: '🎧', Data: '📄', Subtitle: '💬' };
+      this.meta('<b>🔬 wasm 探测结果</b> · 容器 <code>' + input + '</code> · 时长 <code>' + dur + '</code><br>' +
+        (streams.length ? streams.map(s => '流 #' + s.idx + ' ' + (ic[s.kind] || '•') + ' <code>' + s.codec + '</code>').join('<br>') : '（未解析到流信息）'));
+      this.log('🔬 解析完成：' + input + ' · ' + dur, 'ok');
+    } catch (e) {
+      this.log('❌ wasm 解析失败：' + (e && e.message ? e.message : e), 'err');
+    } finally {
+      this._probeBuf = null;
+      btn.disabled = false;
+    }
   };
   StreamPlayer.fromElement = function (el) {
     let o = {}; try { o = JSON.parse(el.dataset.opts || '{}'); } catch (e) { }
