@@ -2592,6 +2592,24 @@
         if (f) handleFile(f, f.size > 100 * 1024 * 1024);
       });
     }
+    // 容器：从 URL 真拉（共享 pull.js：直链 / HLS / DASH）→ 走与本地文件相同的解析流程
+    const anaUrl = $('#ana-url'), anaUrlGo = $('#ana-url-go'), anaUrlHint = $('#ana-url-hint');
+    async function anaFromUrl() {
+      const u = (anaUrl.value || '').trim();
+      if (!u) { anaUrlHint.textContent = '请输入 URL'; return; }
+      if (!window.AVPull) { anaUrlHint.textContent = 'pull.js 未加载，请刷新重试'; return; }
+      anaUrlGo.disabled = true; anaUrlHint.textContent = '⏳ 正在拉取…';
+      try {
+        const res = await window.AVPull.pullAny(u, anaUrlHint);
+        const f = new File([res.blob], res.name, { type: res.blob.type || 'application/octet-stream' });
+        anaUrlHint.textContent = '✅ 拉取成功（' + res.name + ' · ' + (res.total / 1e6).toFixed(2) + ' MB）';
+        handleFile(f, f.size > 100 * 1024 * 1024);
+      } catch (err) {
+        anaUrlHint.textContent = '❌ ' + (err && err.message ? err.message : err);
+      } finally { anaUrlGo.disabled = false; }
+    }
+    if (anaUrlGo) anaUrlGo.addEventListener('click', function () { anaFromUrl(); });
+    if (anaUrl) anaUrl.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); anaFromUrl(); } });
     const resetBtn = $('#ana-reset');
     if (resetBtn) resetBtn.addEventListener('click', function () {
       if (input) input.value = '';
@@ -2827,6 +2845,24 @@
         rd.readAsArrayBuffer(f);
       }
     });
+    // NAL 裸流：从 URL 真拉（http(s) 直链）→ 走与本地文件相同的逐 NAL 解析
+    const nalUrl = $('#ana-nal-url'), nalUrlGo = $('#ana-nal-url-go'), nalUrlHint = $('#ana-nal-url-hint');
+    async function nalFromUrl() {
+      const u = (nalUrl.value || '').trim();
+      if (!u) { nalUrlHint.textContent = '请输入 URL'; return; }
+      if (!window.AVPull) { nalUrlHint.textContent = 'pull.js 未加载，请刷新重试'; return; }
+      nalUrlGo.disabled = true; nalUrlHint.textContent = '⏳ 正在拉取…';
+      try {
+        const res = await window.AVPull.pullAny(u, nalUrlHint);
+        const buf = await res.blob.arrayBuffer();
+        nalUrlHint.textContent = '✅ 拉取成功（' + res.name + ' · ' + (res.total / 1e6).toFixed(2) + ' MB）';
+        runNalFromBytes(new Uint8Array(buf), res.name);
+      } catch (err) {
+        nalUrlHint.textContent = '❌ ' + (err && err.message ? err.message : err);
+      } finally { nalUrlGo.disabled = false; }
+    }
+    if (nalUrlGo) nalUrlGo.addEventListener('click', function () { nalFromUrl(); });
+    if (nalUrl) nalUrl.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nalFromUrl(); } });
     const nalDrop = nalOut.closest('.ana-pane') || document;
     nalDrop.addEventListener('dragover', function (e) { e.preventDefault(); });
     nalDrop.addEventListener('drop', function (e) {
